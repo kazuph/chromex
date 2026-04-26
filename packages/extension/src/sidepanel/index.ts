@@ -293,6 +293,7 @@ declare global {
     __CODEX_SIDEPANEL_SMOKE__?: {
       waitForComposer(timeoutMs?: number): Promise<void>;
       injectFiles(files: SmokeAttachmentSeed[]): Promise<string[]>;
+      injectImageAnnotationReferenceFiles(files: SmokeAttachmentSeed[]): Promise<string[]>;
       enableDryRunSubmit(): void;
       submitWithEnter(text: string): Promise<{
         submissionCount: number;
@@ -5905,6 +5906,18 @@ function installSmokeHarness(): void {
       );
       await ingestSelectedFiles(browserFiles);
       return state.fileAttachments.map((attachment) => createFileChipLabel(attachment));
+    },
+    async injectImageAnnotationReferenceFiles(files: SmokeAttachmentSeed[]): Promise<string[]> {
+      const now = Date.now();
+      const browserFiles = files.map(
+        (file, index) =>
+          new File([base64ToBuffer(file.base64)], file.name, {
+            type: file.mimeType,
+            lastModified: file.lastModified ?? now + index,
+          }),
+      );
+      await ingestImageAnnotationReferenceFiles(browserFiles);
+      return state.imageAnnotationReferenceAttachments.map((attachment) => attachment.name);
     },
     enableDryRunSubmit(): void {
       smokeDryRunSubmissions = [];

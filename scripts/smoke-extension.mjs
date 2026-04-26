@@ -1039,7 +1039,7 @@ try {
   ) {
     throw new Error(`Smoke test failed: generated image follow-up editor did not render (${JSON.stringify(followupEditorState)}).`);
   }
-  await page.evaluate((files) => window.__CODEX_SIDEPANEL_SMOKE__?.injectFiles(files) ?? [], [
+  await page.evaluate((files) => window.__CODEX_SIDEPANEL_SMOKE__?.injectImageAnnotationReferenceFiles?.(files) ?? [], [
     {
       name: "followup-reference.png",
       mimeType: "image/png",

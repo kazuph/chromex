@@ -1,0 +1,30 @@
+{
+  "name": "chromex",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace @codex-sidepanel/shared && npm run build --workspace @codex-sidepanel/bridge && npm run build --workspace @codex-sidepanel/native-host && npm run build --workspace @codex-sidepanel/extension",
+    "test": "npm run test --workspace @codex-sidepanel/shared && npm run test --workspace @codex-sidepanel/bridge && npm run test --workspace @codex-sidepanel/native-host && npm run test --workspace @codex-sidepanel/extension",
+    "typecheck": "npm run typecheck --workspace @codex-sidepanel/shared && npm run typecheck --workspace @codex-sidepanel/bridge && npm run typecheck --workspace @codex-sidepanel/native-host && npm run typecheck --workspace @codex-sidepanel/extension",
+    "lint": "npm run lint --workspaces --if-present",
+    "smoke": "node scripts/smoke-extension.mjs",
+    "smoke:install-browser": "npx -y playwright@1.59.1 install chromium",
+    "diagnose:extension": "node scripts/diagnose-extension-load.mjs",
+    "sync:extension": "npm run build && node scripts/diagnose-extension-load.mjs --sync",
+    "release:audit": "node scripts/release-audit.mjs",
+    "audit": "npm audit --audit-level=high --omit=dev"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.1.30",
+    "@types/node": "^24.6.0",
+    "esbuild": "^0.25.4",
+    "playwright-core": "^1.59.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

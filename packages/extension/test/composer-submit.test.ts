@@ -1,0 +1,112 @@
+import { describe, expect, test } from "vitest";
+
+import { createPendingComposerDraftState, createRestoredComposerDraftState } from "../src/sidepanel/composer-draft.js";
+import { canSendComposerMessage } from "../src/sidepanel/composer-send-guard.js";
+import {
+  shouldInterceptComposerDropdownOnEnter,
+  shouldSubmitComposerOnKeydown,
+} from "../src/sidepanel/composer-submit.js";
+
+describe("composer submit key handling", () => {
+  test("submits on plain Enter", () => {
+    expect(
+      shouldSubmitComposerOnKeydown({
+        key: "Enter",
+        shiftKey: false,
+        isComposing: false,
+        compositionInProgress: false,
+      }),
+    ).toBe(true);
+  });
+
+  test("does not submit on Shift+Enter", () => {
+    expect(
+      shouldSubmitComposerOnKeydown({
+        key: "Enter",
+        shiftKey: true,
+        isComposing: false,
+        compositionInProgress: false,
+      }),
+    ).toBe(false);
+  });
+
+  test("does not submit while IME composition is active", () => {
+    expect(
+      shouldSubmitComposerOnKeydown({
+        key: "Enter",
+        shiftKey: false,
+        isComposing: true,
+        compositionInProgress: true,
+      }),
+    ).toBe(false);
+  });
+
+  test("does not submit when the browser reports the IME keyCode", () => {
+    expect(
+      shouldSubmitComposerOnKeydown({
+        key: "Enter",
+        shiftKey: false,
+        isComposing: false,
+        keyCode: 229,
+        compositionInProgress: false,
+      }),
+    ).toBe(false);
+  });
+
+  test("does not submit while a composer dropdown is open", () => {
+    expect(
+      shouldSubmitComposerOnKeydown({
+        key: "Enter",
+        shiftKey: false,
+        isComposing: false,
+        compositionInProgress: false,
+        dropdownOpen: true,
+      }),
+    ).toBe(false);
+  });
+
+  test("intercepts plain Enter for open composer dropdowns", () => {
+    expect(
+      shouldInterceptComposerDropdownOnEnter({
+        key: "Enter",
+        shiftKey: false,
+        isComposing: false,
+        compositionInProgress: false,
+        dropdownOpen: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldInterceptComposerDropdownOnEnter({
+        key: "Enter",
+        shiftKey: true,
+        isComposing: false,
+        compositionInProgress: false,
+        dropdownOpen: true,
+      }),
+    ).toBe(false);
+  });
+
+  test("clears the composer immediately while a submitted message is pending", () => {
+    expect(createPendingComposerDraftState()).toEqual({
+      composerDraft: "",
+      mentionQuery: null,
+      slashQuery: null,
+    });
+  });
+
+  test("restores the submitted text only when the pending send is cancelled or fails", () => {
+    expect(createRestoredComposerDraftState("현재 페이지 설명해줘")).toEqual({
+      composerDraft: "현재 페이지 설명해줘",
+      mentionQuery: null,
+      slashQuery: null,
+    });
+  });
+
+  test("allows a new message only when no prompt, turn, or stream is active", () => {
+    expect(canSendComposerMessage({ turnActive: false, promptActivityActive: false, streamingAssistantActive: false })).toBe(true);
+    expect(canSendComposerMessage({ turnActive: true, promptActivityActive: false, streamingAssistantActive: false })).toBe(false);
+    expect(canSendComposerMessage({ turnActive: false, promptActivityActive: true, streamingAssistantActive: false })).toBe(false);
+    expect(canSendComposerMessage({ turnActive: false, promptActivityActive: false, streamingAssistantActive: true })).toBe(false);
+    expect(canSendComposerMessage({ turnActive: true, promptActivityActive: true, streamingAssistantActive: true })).toBe(false);
+  });
+});

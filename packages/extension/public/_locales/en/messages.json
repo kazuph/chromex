@@ -1,0 +1,26 @@
+{
+  "extensionName": {
+    "message": "Chromex"
+  },
+  "extensionDescription": {
+    "message": "A Codex-powered browser assistant for page context, tabs, voice, and image editing."
+  },
+  "actionOpenSidePanel": {
+    "message": "Open Chromex"
+  },
+  "commandOpenSidePanel": {
+    "message": "Open Chromex"
+  },
+  "commandOpenPopup": {
+    "message": "Open Chromex popup"
+  },
+  "contextAskPage": {
+    "message": "Ask Chromex about this page"
+  },
+  "contextEditImage": {
+    "message": "Edit this image with Chromex"
+  },
+  "contextSummarizeYoutube": {
+    "message": "Summarize this YouTube video"
+  }
+}

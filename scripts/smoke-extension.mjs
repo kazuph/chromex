@@ -780,7 +780,7 @@ try {
     composerModelMenu.modelRows < 1 ||
     composerModelMenu.modelMenuIcons !== 0 ||
     composerModelMenu.modelDescription !== "Flagship" ||
-    composerModelMenu.triggerFlashVisible ||
+    !composerModelMenu.triggerFlashVisible ||
     !composerModelMenu.triggerCaretSvg ||
     composerModelMenu.triggerLabel !== "5.4" ||
     Number.parseFloat(composerModelMenu.triggerFontSize) > 13 ||

@@ -1107,10 +1107,6 @@ try {
   );
   await page.evaluate(() => {
     window.__CODEX_SIDEPANEL_SMOKE_SEEK_MESSAGES__ = [];
-    chrome.runtime.sendMessage = ((message) => {
-      window.__CODEX_SIDEPANEL_SMOKE_SEEK_MESSAGES__.push(message);
-      return Promise.resolve({ ok: true });
-    });
   });
   await page.locator('[data-youtube-seek="83"]').first().click();
   const seekMessage = await page.evaluate(() => window.__CODEX_SIDEPANEL_SMOKE_SEEK_MESSAGES__?.at(-1) ?? null);

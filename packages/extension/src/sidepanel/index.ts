@@ -290,6 +290,7 @@ declare global {
     SpeechRecognition?: SpeechRecognitionCtor;
     webkitSpeechRecognition?: SpeechRecognitionCtor;
     webkitAudioContext?: typeof AudioContext;
+    __CODEX_SIDEPANEL_SMOKE_SEEK_MESSAGES__?: Array<Record<string, unknown>>;
     __CODEX_SIDEPANEL_SMOKE__?: {
       waitForComposer(timeoutMs?: number): Promise<void>;
       injectFiles(files: SmokeAttachmentSeed[]): Promise<string[]>;
@@ -8401,6 +8402,13 @@ async function handleActionCard(actionId: string): Promise<void> {
 
 async function seekYouTubeTimestamp(seconds: number): Promise<void> {
   if (!Number.isFinite(seconds)) {
+    return;
+  }
+  if (smokeTestMode) {
+    window.__CODEX_SIDEPANEL_SMOKE_SEEK_MESSAGES__ = [
+      ...(window.__CODEX_SIDEPANEL_SMOKE_SEEK_MESSAGES__ ?? []),
+      { type: "youtube.seek", seconds },
+    ];
     return;
   }
   try {

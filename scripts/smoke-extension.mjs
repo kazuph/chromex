@@ -1101,7 +1101,7 @@ try {
   await page.evaluate(() =>
     window.__CODEX_SIDEPANEL_SMOKE__?.simulateActiveTabUpdateForTest?.({
       title: "A useful video - YouTube",
-      url: "https://www.youtube.com/watch?v=abc",
+      url: "https://www.youtube.com/watch?v=seek-smoke",
       actionCards: [],
     }),
   );

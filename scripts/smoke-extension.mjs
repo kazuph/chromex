@@ -870,12 +870,10 @@ try {
   ) {
     throw new Error(`Smoke test failed: settings panel is incomplete (${JSON.stringify(settingsControls)}).`);
   }
-  let profileDialogIndex = 0;
-  page.on("dialog", async (dialog) => {
-    profileDialogIndex += 1;
-    await dialog.accept(profileDialogIndex === 1 ? "Smoke Profile" : "Answer smoke prompts directly.");
-  });
   await page.locator("#create-profile").click();
+  await page.locator("#profile-editor-name").fill("Smoke Profile");
+  await page.locator("#profile-editor-prompt").fill("Answer smoke prompts directly.");
+  await page.locator("#save-profile-editor").click();
   await page.waitForFunction(
     () => {
       const select = document.querySelector("#profile-select");

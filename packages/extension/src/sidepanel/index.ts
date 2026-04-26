@@ -1239,10 +1239,10 @@ function renderNow(): void {
 
       <main class="main-stage ${isEmptyChat ? "empty" : ""} ${showOnboarding ? "onboarding" : ""}">
         ${
-          showAuthOnboarding
-            ? renderAuthOnboarding(strings)
-            : showUsageNoticeOnboarding
-              ? renderUsageNoticeOnboarding(strings)
+          showOnboarding
+            ? showAuthOnboarding
+              ? renderAuthOnboarding(strings)
+              : renderUsageNoticeOnboarding(strings)
             : state.activeView === "chat"
             ? renderChatView(strings)
             : state.activeView === "context"
@@ -1252,8 +1252,7 @@ function renderNow(): void {
       </main>
 
       ${
-        showAuthOnboarding
-          || showUsageNoticeOnboarding
+        showOnboarding
           ? ""
           : `<footer class="composer-shell ${composerSuggestionsOpen ? "has-suggestions" : ""}">
         ${state.activeView === "chat" && !isEmptyChat ? renderScrollToBottomButton() : ""}

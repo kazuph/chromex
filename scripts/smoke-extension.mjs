@@ -235,7 +235,7 @@ try {
     );
   }
   const slashEnterState = await page.evaluate(() =>
-    window.__CODEX_SIDEPANEL_SMOKE__?.submitWithEnter?.("/") ?? null,
+    window.__CODEX_SIDEPANEL_SMOKE__?.submitWithEnter?.("/research") ?? null,
   );
   if (
     !slashEnterState ||

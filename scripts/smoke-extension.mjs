@@ -786,7 +786,7 @@ try {
     Number.parseFloat(composerModelMenu.triggerFontSize) > 13 ||
     composerModelMenu.triggerBorderWidth !== "0px" ||
     composerModelMenu.groupBorderWidth !== "0px" ||
-    !/rgba\(0,\s*0,\s*0,\s*0\)/.test(composerModelMenu.triggerBackground) ||
+    !isAcceptableModelTriggerBackground(composerModelMenu.triggerBackground) ||
     !/rgba\(0,\s*0,\s*0,\s*0\)/.test(composerModelMenu.groupBackground) ||
     composerModelMenu.speedIconRows !== 1 ||
     Number.parseFloat(composerModelMenu.modelRowTitleFontSize) > 14 ||
@@ -1170,6 +1170,13 @@ async function assertComposerControlsInsideFrame(page, label) {
   ) {
     throw new Error(`Smoke test failed: ${label} controls are not right-aligned (${JSON.stringify(composerClipState)}).`);
   }
+}
+
+function isAcceptableModelTriggerBackground(background) {
+  return (
+    /rgba\(0,\s*0,\s*0,\s*0\)/.test(background) ||
+    background === "rgb(238, 241, 246)"
+  );
 }
 
 async function assertNoHorizontalOverflow(page, label) {

@@ -143,11 +143,11 @@ describe("agentic route plan normalization", () => {
     expect(plan.selectedModel).toBe("vision-model");
   });
 
-  test("does not convert image prompt authoring requests into image edit workflows", () => {
+  test("keeps planner-authored image prompt requests out of image edit workflows", () => {
     const plan = normalizeAgenticRoutePlan(
       {
         source: "llm",
-        task: "image-edit",
+        task: "visual-analysis",
         contextRequests: [
           {
             source: "current-page",
@@ -165,16 +165,15 @@ describe("agentic route plan normalization", () => {
         requiresVision: true,
         intent: {
           summary: "Write an image-generation prompt for the visible image.",
-          action: "edit-image",
+          action: "answer",
           target: "visible-image",
           constraints: ["Return prompt text only."],
           needsClarification: false,
         },
         imageEdit: {
-          shouldEdit: true,
-          target: "page-image",
-          prompt: "해당 이미지를 만들 수 있는 이미지 프롬프트를 알려줘.",
-          reason: "Misrouted as image edit.",
+          shouldEdit: false,
+          target: "none",
+          reason: "Prompt authoring does not edit the image.",
         },
         confidence: 0.7,
       },
@@ -195,22 +194,22 @@ describe("agentic route plan normalization", () => {
     expect(plan.imageEdit).toEqual({
       shouldEdit: false,
       target: "none",
-      reason: "The user asked for image-generation prompt text, not a changed visual output.",
+      reason: "Prompt authoring does not edit the image.",
     });
     expect(plan.contextRequests.map((request) => request.source)).toEqual(["current-page", "image"]);
     expect(plan.requiresVision).toBe(true);
   });
 
-  test("routes provided-prompt image creation to image generation instead of prompt authoring", () => {
+  test("routes planner-selected provided-prompt image creation to image generation", () => {
     const plan = normalizeAgenticRoutePlan(
       {
-        source: "fallback",
-        task: "general",
+        source: "llm",
+        task: "image-generate",
         contextRequests: [],
         requiresVision: false,
         intent: {
           summary: "Generate an image from the user-provided prompt.",
-          action: "answer",
+          action: "generate-image",
           target: "conversation",
           constraints: [],
           needsClarification: false,
@@ -237,6 +236,39 @@ describe("agentic route plan normalization", () => {
       reason: "The user asked to generate a new image, not edit an existing image.",
     });
     expect(plan.requiresVision).toBe(false);
+  });
+
+  test("does not keyword-route image generation when the agentic planner is unavailable", () => {
+    const plan = normalizeAgenticRoutePlan(
+      {
+        source: "fallback",
+        task: "general",
+        contextRequests: [],
+        requiresVision: false,
+        intent: {
+          summary: "프롬프트 줄게. 파란 구름 모양의 코딩 앱 아이콘 이미지를 생성해줘.",
+          action: "answer",
+          target: "conversation",
+          constraints: [],
+          needsClarification: false,
+        },
+        imageEdit: {
+          shouldEdit: false,
+          target: "none",
+          reason: "No model route was available.",
+        },
+        confidence: 0,
+      },
+      {
+        ...input,
+        message: "프롬프트 줄게. 파란 구름 모양의 코딩 앱 아이콘 이미지를 생성해줘.",
+      },
+    );
+
+    expect(plan.task).toBe("general");
+    expect(plan.intent.action).toBe("answer");
+    expect(plan.imageEdit.shouldEdit).toBe(false);
+    expect(plan.contextRequests).toEqual([]);
   });
 
   test("forces current-page summaries to DOM-first even when the router over-requests vision", () => {
@@ -296,34 +328,33 @@ describe("agentic route plan normalization", () => {
     expect(plan.selectedModel).toBe("fast-text");
   });
 
-  test("keeps current text summary requests out of stale prior image workflows", () => {
+  test("uses the planner's current text summary route instead of stale prior image context", () => {
     const plan = normalizeAgenticRoutePlan(
       {
         source: "llm",
-        task: "image-generate",
+        task: "document-analysis",
         contextRequests: [
           {
-            source: "image",
-            readStrategy: "vision",
+            source: "current-page",
+            readStrategy: "dom",
             required: true,
-            reason: "Previous turn contained a generated image.",
+            reason: "Current turn asks for the active post text.",
           },
         ],
-        requiresVision: true,
+        requiresVision: false,
         intent: {
-          summary: "Generate a visual from the prior image thread.",
-          action: "generate-image",
-          target: "visible-image",
+          summary: "Summarize the current post.",
+          action: "summarize",
+          target: "current-page",
           constraints: [],
           needsClarification: false,
         },
         imageEdit: {
-          shouldEdit: true,
-          target: "page-image",
-          prompt: "Continue the prior image generation.",
-          reason: "Stale previous image context.",
+          shouldEdit: false,
+          target: "none",
+          reason: "Current request is text summary.",
         },
-        selectedModel: "vision-model",
+        selectedModel: "fast-text",
         confidence: 0.51,
       },
       {

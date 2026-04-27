@@ -96,19 +96,18 @@ export function normalizeAgenticRoutePlan(rawPlan: unknown, input: AgenticRouteI
     });
   }
 
-  const textPageSummaryRequest = isTextPageSummaryRequest(input.message);
+  const rawIntent = asRecord(raw.intent);
+  const textPageSummaryRequest = isModelPlannedTextPageSummary(raw, rawIntent);
   const normalizedImageEdit = textPageSummaryRequest
     ? createSuppressedTextPageSummaryEditPlan()
     : normalizeImageEdit(raw.imageEdit, input);
   const shouldKeepImageEdit = shouldKeepImageEditOverImageGeneration(raw, normalizedImageEdit);
-  const isImageGenerationExecution =
-    !textPageSummaryRequest && isImageGenerationExecutionRequest(input.message) && !shouldKeepImageEdit;
-  const isImagePromptAuthoring = !isImageGenerationExecution && isImagePromptAuthoringRequest(input.message);
-  const imageEdit = isImagePromptAuthoring
-    ? createSuppressedImagePromptAuthoringEditPlan()
+  const isImageGenerationExecution = isModelPlannedImageGeneration(raw, rawIntent) && !shouldKeepImageEdit;
+  const imageEdit = textPageSummaryRequest
+    ? createSuppressedTextPageSummaryEditPlan()
     : isImageGenerationExecution
       ? createSuppressedImageGenerationEditPlan()
-    : repairIncompleteImageEditPlan(raw, normalizedImageEdit, input);
+      : repairIncompleteImageEditPlan(raw, normalizedImageEdit, input);
   if (imageEdit.shouldEdit && imageEdit.target === "page-image") {
     pushRequest({
       source: "current-page",
@@ -132,9 +131,7 @@ export function normalizeAgenticRoutePlan(rawPlan: unknown, input: AgenticRouteI
     });
   }
   const rawTaskCandidate = ROUTE_TASKS.has(raw.task as PromptRoutingTask)
-    ? textPageSummaryRequest
-      ? "document-analysis"
-      : (raw.task as PromptRoutingTask)
+    ? (raw.task as PromptRoutingTask)
     : isImageGenerationExecution
       ? "image-generate"
       : imageEdit.shouldEdit
@@ -143,17 +140,13 @@ export function normalizeAgenticRoutePlan(rawPlan: unknown, input: AgenticRouteI
   const rawTask =
     textPageSummaryRequest
       ? "document-analysis"
-      : isImagePromptAuthoring && rawTaskCandidate === "image-edit"
-      ? "visual-analysis"
       : isImageGenerationExecution
         ? "image-generate"
         : rawTaskCandidate;
   const normalizedIntent = normalizeIntent(raw.intent, input, imageEdit);
   const intent = textPageSummaryRequest
     ? normalizeTextPageSummaryIntent(normalizedIntent, input)
-    : isImagePromptAuthoring
-      ? normalizeImagePromptAuthoringIntent(normalizedIntent, input)
-      : rawTask === "image-generate"
+    : rawTask === "image-generate"
         ? normalizeImageGenerationIntent(normalizedIntent, input)
         : normalizedIntent;
   const browserControl = normalizeBrowserControl(raw.browserControl, intent, input);
@@ -557,20 +550,6 @@ function shouldKeepImageEditOverImageGeneration(
   return modelResolvedExistingVisual && imageEdit.shouldEdit;
 }
 
-function normalizeImagePromptAuthoringIntent(intent: AgenticIntentPlan, input: AgenticRouteInput): AgenticIntentPlan {
-  const hasVisualContext =
-    intent.target === "visible-image" ||
-    intent.target === "uploaded-file" ||
-    input.explicitAttachments.includes("image") ||
-    input.fileAttachments.some((attachment) => attachment.kind === "image");
-  return {
-    ...intent,
-    action: "answer",
-    target: hasVisualContext ? intent.target : "conversation",
-    needsClarification: false,
-  };
-}
-
 function normalizeTextPageSummaryIntent(intent: AgenticIntentPlan, input: AgenticRouteInput): AgenticIntentPlan {
   return {
     ...intent,
@@ -597,85 +576,18 @@ function normalizeImageGenerationIntent(intent: AgenticIntentPlan, input: Agenti
   };
 }
 
-function isImagePromptAuthoringRequest(message: string): boolean {
-  const normalized = message.trim().toLowerCase();
-  if (!normalized) {
-    return false;
-  }
-  const asksForPromptText =
-    /(이미지|그림|사진|비주얼|썸네일|포스터|슬라이드)[\s\S]{0,80}프롬프트/iu.test(normalized) ||
-    /프롬프트[\s\S]{0,80}(알려|작성|써|만들|생성|추천|제안|뽑아|정리)/iu.test(normalized) ||
-    /(image|visual|picture|photo|thumbnail|poster|slide)[\s\S]{0,80}prompt/iu.test(normalized) ||
-    /prompt[\s\S]{0,80}(for|to create|to make|that can create|write|draft|suggest|give|tell|describe)/iu.test(normalized);
-  if (!asksForPromptText) {
-    return false;
-  }
-  return !hasProvidedPromptExecutionCue(normalized);
+function isModelPlannedImageGeneration(rawPlan: Record<string, unknown>, rawIntent: Record<string, unknown>): boolean {
+  return rawPlan.task === "image-generate" || rawIntent.action === "generate-image";
 }
 
-function isImageGenerationExecutionRequest(message: string): boolean {
-  const normalized = message.trim().toLowerCase();
-  if (!normalized) {
+function isModelPlannedTextPageSummary(rawPlan: Record<string, unknown>, rawIntent: Record<string, unknown>): boolean {
+  if (rawIntent.target !== "current-page") {
     return false;
   }
-
-  const asksToGenerateImage =
-    /(이미지|그림|사진|비주얼|썸네일|포스터|슬라이드|카드뉴스|인포그래픽)[\s\S]{0,120}(생성|만들|제작|그려|그리|렌더|뽑아|출력)/iu.test(normalized) ||
-    /(생성|만들|제작|그려|그리|렌더|뽑아|출력)[\s\S]{0,120}(이미지|그림|사진|비주얼|썸네일|포스터|슬라이드|카드뉴스|인포그래픽)/iu.test(normalized) ||
-    /(generate|create|make|render|draw|produce)[\s\S]{0,120}(image|picture|photo|visual|thumbnail|poster|slide|infographic)/iu.test(normalized) ||
-    /(image|picture|photo|visual|thumbnail|poster|slide|infographic)[\s\S]{0,120}(generate|create|make|render|draw|produce)/iu.test(normalized);
-  if (!asksToGenerateImage) {
+  if (rawIntent.action !== "summarize" && rawIntent.action !== "extract") {
     return false;
   }
-
-  const asksOnlyForPromptText =
-    /(프롬프트[\s\S]{0,80}(알려|작성|써|만들|생성|추천|제안|정리)|prompt[\s\S]{0,80}(write|draft|suggest|give|tell|describe|create|make))/iu.test(normalized) &&
-    !hasProvidedPromptExecutionCue(normalized);
-  return !asksOnlyForPromptText;
-}
-
-function isTextPageSummaryRequest(message: string): boolean {
-  const normalized = message.trim().toLowerCase();
-  if (!normalized) {
-    return false;
-  }
-  if (mentionsVisualSubject(normalized) || mentionsHistorySubject(normalized)) {
-    return false;
-  }
-
-  const asksForSummary = /(요약|정리|핵심|summari[sz]e|summary|tl;?dr|recap|brief)/iu.test(normalized);
-  if (!asksForSummary) {
-    return false;
-  }
-
-  return (
-    /(이\s*글|글|게시글|포스트|기사|뉴스|본문|내용|문서|페이지|웹페이지|논문|메일|블로그)/iu.test(normalized) ||
-    /\b(this|current)\s+(post|article|page|webpage|document|paper|email|thread|content)\b/iu.test(normalized) ||
-    /\b(post|article|page|webpage|document|paper|email|thread|content)\b[\s\S]{0,80}\b(summari[sz]e|summary|recap|brief)\b/iu.test(normalized)
-  );
-}
-
-function mentionsVisualSubject(message: string): boolean {
-  return /(이미지|그림|사진|비주얼|스크린샷|화면|캡처|캡쳐|썸네일|포스터|슬라이드|인포그래픽|image|picture|photo|visual|screenshot|screen|thumbnail|poster|slide|infographic)/iu.test(
-    message,
-  );
-}
-
-function mentionsHistorySubject(message: string): boolean {
-  return /(기록|검색기록|방문|봤던|읽었던|어제|지난|저번|history|visited|browsing|yesterday|last\s+(week|month|year))/iu.test(
-    message,
-  );
-}
-
-function hasProvidedPromptExecutionCue(normalizedMessage: string): boolean {
-  return (
-    /(프롬프트(로|대로|를 사용|을 사용| 줄게|를 줄게|을 줄게| 줄 테니| 줄테니|는 아래|는 다음|는 이거)|아래 프롬프트|다음 프롬프트)/iu.test(
-      normalizedMessage,
-    ) ||
-    /(using this prompt|with this prompt|from this prompt|given prompt|provided prompt|following prompt|prompt below)/iu.test(
-      normalizedMessage,
-    )
-  );
+  return rawPlan.task !== "image-generate";
 }
 
 function repairIncompleteImageEditPlan(

@@ -1618,7 +1618,6 @@ async function maybeHandleAgenticImageGenerationWorkflow(
       workflow: "generated-image",
       model: "gpt-image-2",
       quality: "high",
-      size: inferGeneratedImageSize(payload.message),
     },
     {
       timeoutMs: IMAGE_EDIT_TIMEOUT_MS,
@@ -1638,17 +1637,6 @@ async function maybeHandleAgenticImageGenerationWorkflow(
       previewRefs,
     },
   };
-}
-
-function inferGeneratedImageSize(message: string): string {
-  const normalized = message.toLowerCase();
-  if (/(가로|와이드|landscape|wide|16:9|슬라이드|slide)/iu.test(normalized)) {
-    return "1536x1024";
-  }
-  if (/(정사각|square|1:1|아이콘|icon|로고|logo)/iu.test(normalized)) {
-    return "1024x1024";
-  }
-  return "1024x1536";
 }
 
 async function resolveWorkflowImageInput(

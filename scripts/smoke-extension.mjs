@@ -1000,8 +1000,11 @@ try {
     mainHeight: document.querySelector(".main-stage")?.getBoundingClientRect().height ?? 0,
   }));
   await page.locator("[data-message-copy]").first().click();
+  await page.waitForFunction(
+    () => document.querySelectorAll(".notification-toast.status-banner").length === 1,
+    { timeout: 2_000 },
+  );
   const floatingCopyToastState = await page.evaluate(() => {
-    const toast = document.querySelector(".notification-toast.status-banner");
     const stack = document.querySelector(".notification-stack");
     const style = stack ? getComputedStyle(stack) : null;
     return {

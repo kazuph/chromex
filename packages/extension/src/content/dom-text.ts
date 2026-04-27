@@ -1,4 +1,4 @@
-const MAX_BODY_TEXT_LENGTH = 100_000;
+const MAX_BODY_TEXT_LENGTH = 240_000;
 const MIN_USEFUL_TEXT_LENGTH = 24;
 
 export type TextCandidateInput = {

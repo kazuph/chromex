@@ -5,6 +5,7 @@ import { describe, expect, test } from "vitest";
 
 const sidepanelSource = readFileSync(resolve(process.cwd(), "src/sidepanel/index.ts"), "utf8");
 const sidepanelStateSource = readFileSync(resolve(process.cwd(), "src/sidepanel/sidepanel-state.ts"), "utf8");
+const backgroundSource = readFileSync(resolve(process.cwd(), "src/background/index.ts"), "utf8");
 const styles = readFileSync(resolve(process.cwd(), "public/sidepanel.css"), "utf8");
 
 describe("image reload placeholders", () => {
@@ -27,12 +28,23 @@ describe("image reload placeholders", () => {
   test("keeps active image workflow supplements under the process row", () => {
     expect(sidepanelSource).toContain("partitionPromptActivitySupplementMessages");
     expect(sidepanelSource).toContain("isPromptActivitySupplementMessage");
+    expect(sidepanelSource).toContain("isCurrentPromptActivityPendingImageMessage");
+    expect(sidepanelSource).toContain("pendingImageWorkflowMessageIdsByRequest.get(clientRequestId)");
     expect(sidepanelSource).toContain("isPendingImageMessage");
+    expect(sidepanelSource).not.toContain("return isTraceOnlyAssistantMessage(message) || isPendingImageMessage(message);");
+  });
+
+  test("waits for the confirmed image workflow before showing image placeholders", () => {
+    expect(backgroundSource).not.toContain("const imageWorkflowKind = getPromptImageWorkflowKind(agenticRoutePlan);");
+    expect(backgroundSource).toContain('emitStatus("preparing-image", "image-edit")');
+    expect(backgroundSource).toContain('emitStatus("preparing-image", "generated-image")');
   });
 
   test("creates a pending image message as soon as an image workflow starts", () => {
     expect(sidepanelSource).toContain("ensurePendingImageWorkflowMessage");
     expect(sidepanelSource).toContain("isImageWorkflowPromptActivityPhase");
+    expect(sidepanelSource).toContain("state.promptActivity?.clientRequestId !== event.clientRequestId");
+    expect(sidepanelSource).toContain("a previous image turn cannot leak into a text answer");
     expect(sidepanelSource).toContain("replacePendingImageWorkflowMessage");
     expect(sidepanelSource).toContain("createLoadingConversationImage");
     expect(sidepanelSource).toContain('phase: "preparing-image"');

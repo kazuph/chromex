@@ -41,7 +41,6 @@ await writeFile(
     {
       buildId,
       builtAt: new Date().toISOString(),
-      extensionRoot: outdir,
     },
     null,
     2,

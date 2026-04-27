@@ -90,7 +90,6 @@ import {
   shouldTriggerCatalogRefresh,
 } from "./catalog-refresh.js";
 import {
-  getPromptImageWorkflowKind,
   resolveUploadedImageReferenceInputs,
   resolveUploadedImageEditInput,
   type PromptImageWorkflowKind,
@@ -155,6 +154,7 @@ const bridge = new NativeBridgeClient();
 const UI_BRIDGE_TIMEOUT_MS = 4000;
 const UI_CONTEXT_TIMEOUT_MS = 2500;
 const CLICKED_IMAGE_SOURCE_TTL_MS = 10 * 60 * 1000;
+const PLAYWRIGHT_RUNTIME_INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
 const throttleVisibleTabCapture = createVisibleTabCaptureThrottle();
 const cancelledPromptClientRequestIds = new Set<string>();
 type ReadableBrowserTab = chrome.tabs.Tab & { id: number; url: string; windowId: number };
@@ -185,6 +185,7 @@ const state = {
   latestReroute: null as CodexModelReroute | null,
   accountStatus: null as UiInitPayload["accountStatus"] | null,
   workspaceHarness: null as WorkspaceHarnessSnapshot | null,
+  playwrightRuntime: createFallbackPlaywrightRuntime(),
   imageAssetFolder: null as UiInitPayload["imageAssetFolder"] | null,
   diagnosticLogFolder: null as UiInitPayload["diagnosticLogFolder"] | null,
   lastImageSourceTabId: undefined as number | undefined,
@@ -446,6 +447,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           return;
         case "skills.archive.install":
           sendResponse(await handleSkillArchiveInstall(message.filename, message.base64));
+          return;
+        case "runtime.playwright.status":
+          sendResponse({ playwrightRuntime: await refreshPlaywrightRuntime() });
+          return;
+        case "runtime.playwright.install":
+          sendResponse({ playwrightRuntime: await installPlaywrightRuntime() });
           return;
         case "skill.save":
           sendResponse({
@@ -728,7 +735,7 @@ async function buildUiInitPayload(windowId?: number): Promise<UiInitPayload> {
 
   const { settings, runtimeConfig } = await syncRuntimeConfigAndNormalizeSettings();
 
-  const [accountStatus, conversations, workspaceHarness, imageAssetFolder, diagnosticLogFolder] = await Promise.all([
+  const [accountStatus, conversations, workspaceHarness, playwrightRuntime, imageAssetFolder, diagnosticLogFolder] = await Promise.all([
     softTimeout(
       bridge.request<UiInitPayload["accountStatus"]>("account.status"),
       UI_BRIDGE_TIMEOUT_MS,
@@ -741,6 +748,12 @@ async function buildUiInitPayload(windowId?: number): Promise<UiInitPayload> {
       UI_BRIDGE_TIMEOUT_MS,
       state.workspaceHarness ?? createFallbackWorkspaceHarness(settings.workspaceRoot),
       "workspace.harness.read",
+    ),
+    softTimeout(
+      bridge.request<UiInitPayload["playwrightRuntime"]>("runtime.playwright.status"),
+      UI_BRIDGE_TIMEOUT_MS,
+      state.playwrightRuntime,
+      "runtime.playwright.status",
     ),
     softTimeout(
       bridge.request<UiInitPayload["imageAssetFolder"]>("image.asset.folder"),
@@ -757,6 +770,7 @@ async function buildUiInitPayload(windowId?: number): Promise<UiInitPayload> {
   ]);
   state.accountStatus = accountStatus;
   state.workspaceHarness = workspaceHarness;
+  state.playwrightRuntime = playwrightRuntime;
   state.imageAssetFolder = imageAssetFolder;
   state.diagnosticLogFolder = diagnosticLogFolder;
 
@@ -812,6 +826,7 @@ async function buildUiInitPayload(windowId?: number): Promise<UiInitPayload> {
     actionCards: currentContext?.actionCards?.length ? currentContext.actionCards : activeTabActionCards,
     settings,
     runtimeConfig,
+    playwrightRuntime,
     skills: [],
     appServerSkills: state.appServerSkills,
     connectedApps: state.connectedApps,
@@ -868,7 +883,7 @@ async function handlePromptSend(payload: PromptRequestPayload) {
   }
 
   const settings = await getStoredSettings();
-  const prepared = await buildPromptRequest(payload, (phase, workflow) => emitPromptStatus(payload, phase, workflow));
+  const prepared = await buildPromptRequest(payload, settings, (phase, workflow) => emitPromptStatus(payload, phase, workflow));
   if (!prepared.ok) {
     return prepared.response;
   }
@@ -956,6 +971,7 @@ async function handlePromptSend(payload: PromptRequestPayload) {
     payload.structuredInputs ?? [],
     state.appServerSkills,
     settings.enabledCodexSkillIds,
+    createCodexSkillRuntimeAvailability(settings),
   );
   const result = await bridge.request<{ threadId: string; turnId: string }>("prompt.send", {
     clientRequestId: payload.clientRequestId,
@@ -1045,7 +1061,7 @@ async function handleTurnSteer(payload: PromptRequestPayload) {
   }
 
   const settings = await getStoredSettings();
-  const prepared = await buildPromptRequest(payload, (phase, workflow) => emitPromptStatus(payload, phase, workflow));
+  const prepared = await buildPromptRequest(payload, settings, (phase, workflow) => emitPromptStatus(payload, phase, workflow));
   if (!prepared.ok) {
     return prepared.response;
   }
@@ -1115,6 +1131,7 @@ async function handleTurnSteer(payload: PromptRequestPayload) {
       payload.structuredInputs ?? [],
       state.appServerSkills,
       settings.enabledCodexSkillIds,
+      createCodexSkillRuntimeAvailability(settings),
     );
     const cancellationBeforeSteer = await getPromptCancellationResponse(payload);
     if (cancellationBeforeSteer) {
@@ -1210,6 +1227,7 @@ async function getPromptCancellationResponse(payload: PromptRequestPayload): Pro
 
 async function buildPromptRequest(
   payload: PromptRequestPayload,
+  settings: ExtensionSettings,
   emitStatus: PromptStatusEmitter = () => undefined,
 ): Promise<{
   ok: true;
@@ -1229,12 +1247,9 @@ async function buildPromptRequest(
   };
 }> {
   const activeTab = await getActiveTab().catch(() => null);
-  const agenticRoutePlan = await planAgenticRouteForPayload(payload, activeTab);
-  const imageWorkflowKind = getPromptImageWorkflowKind(agenticRoutePlan);
-  if (imageWorkflowKind) {
-    emitStatus("preparing-image", imageWorkflowKind);
-  }
-  const routePlan = routePlanToPromptRoutingPlan(agenticRoutePlan, createAgenticRouteInput(payload, activeTab));
+  const routeInput = createAgenticRouteInput(payload, activeTab, settings);
+  const agenticRoutePlan = await planAgenticRouteForPayload(payload, routeInput);
+  const routePlan = routePlanToPromptRoutingPlan(agenticRoutePlan, routeInput);
   const currentPageSupport = getCurrentPageSupport(activeTab?.url);
   const requestedContextRequests = payload.suppressPageContext
     ? filterSuppressedPageContextRequests(agenticRoutePlan.contextRequests)
@@ -1361,9 +1376,9 @@ async function buildPromptRequest(
 
 async function planAgenticRouteForPayload(
   payload: PromptRequestPayload,
-  activeTab: chrome.tabs.Tab | null,
+  routeInput: AgenticRouteInput,
 ): Promise<AgenticRoutePlan> {
-  const input = createAgenticRouteInput(payload, activeTab);
+  const input = routeInput;
   try {
     const plan = await bridge.request<unknown>("route.plan", { ...input });
     const normalized = normalizeAgenticRoutePlan(plan, input);
@@ -1386,7 +1401,11 @@ async function planAgenticRouteForPayload(
   }
 }
 
-function createAgenticRouteInput(payload: PromptRequestPayload, activeTab: chrome.tabs.Tab | null): AgenticRouteInput {
+function createAgenticRouteInput(
+  payload: PromptRequestPayload,
+  activeTab: chrome.tabs.Tab | null,
+  settings: ExtensionSettings,
+): AgenticRouteInput {
   const explicitAttachments = payload.attachments.filter(isAgenticRouteContextSource);
   const activeTabSupport = getCurrentPageSupport(activeTab?.url);
   return {
@@ -1402,6 +1421,11 @@ function createAgenticRouteInput(payload: PromptRequestPayload, activeTab: chrom
     ...(payload.selectedTabIds?.length ? { selectedTabIds: payload.selectedTabIds } : {}),
     ...(payload.historyQuery ? { historyQuery: payload.historyQuery } : {}),
     locale: chrome.i18n?.getUILanguage?.() ?? "",
+    browserAutomationCapabilities: {
+      dom: true,
+      playwright: state.playwrightRuntime.available && settings.playwrightBrowserControlEnabled,
+      "computer-use": false,
+    },
     activeTab: activeTab
       ? {
           ...(activeTab.title ? { title: activeTab.title } : {}),
@@ -1829,7 +1853,7 @@ async function handleInfographicGenerate(
     return gate.response;
   }
 
-  const context = await collectCurrentPageContext("dom");
+  const context = await collectInfographicPageContext();
   const activeTab = await getActiveTab().catch(() => null);
   const fileAttachments = await collectAutomaticDocumentAttachments(activeTab, ["current-page"], []);
   const prompt = buildInfographicPrompt({
@@ -1877,7 +1901,7 @@ async function handleSlideDeckImageGenerate(
     return gate.response;
   }
 
-  const context = await collectCurrentPageContext("dom");
+  const context = await collectInfographicPageContext();
   const activeTab = await getActiveTab().catch(() => null);
   const fileAttachments = await collectAutomaticDocumentAttachments(activeTab, ["current-page"], []);
   const prompt = buildSlideDeckImagePrompt({
@@ -1919,6 +1943,147 @@ function normalizeImageGeneratePreviewRefs(previewRefs: string[] | undefined, pr
     .map((ref) => ref.trim())
     .filter(Boolean);
   return Array.from(new Set(refs));
+}
+
+async function collectInfographicPageContext() {
+  let domContext: Awaited<ReturnType<typeof collectCurrentPageContext>>;
+  try {
+    domContext = await collectCurrentPageContext("dom");
+  } catch (error) {
+    void recordDiagnostic("extension.infographic_context.dom_failed", {
+      error: toErrorMessage(error),
+    });
+    return collectVisibleScreenOnlyInfographicContext(null);
+  }
+
+  if (!shouldFallbackToVisionForInfographic(domContext.envelope)) {
+    return domContext;
+  }
+
+  try {
+    const hybridContext = await collectCurrentPageContext("hybrid");
+    const mergedContext = mergeInfographicContextFallback(domContext, hybridContext);
+    if (mergedContext.envelope.visionAssets.length > 0) {
+      return mergedContext;
+    }
+    return await collectVisibleScreenOnlyInfographicContext(mergedContext);
+  } catch (error) {
+    void recordDiagnostic("extension.infographic_context.hybrid_fallback_failed", {
+      url: domContext.envelope.metadata.url,
+      error: toErrorMessage(error),
+    });
+    return collectVisibleScreenOnlyInfographicContext(domContext).catch(() => domContext);
+  }
+}
+
+function shouldFallbackToVisionForInfographic(envelope: PageContextEnvelope): boolean {
+  if (envelope.visionAssets.length > 0) {
+    return false;
+  }
+
+  const textLength = `${envelope.selectionText}\n${envelope.domSummary}`.replace(/\s+/gu, "").length;
+  return textLength < 280;
+}
+
+function mergeInfographicContextFallback(
+  domContext: Awaited<ReturnType<typeof collectCurrentPageContext>>,
+  hybridContext: Awaited<ReturnType<typeof collectCurrentPageContext>>,
+) {
+  return {
+    envelope: {
+      ...hybridContext.envelope,
+      selectionText: domContext.envelope.selectionText || hybridContext.envelope.selectionText,
+      domSummary: domContext.envelope.domSummary || hybridContext.envelope.domSummary,
+      adapterPayload: domContext.envelope.adapterPayload ?? hybridContext.envelope.adapterPayload,
+      privacyFlags: {
+        containsSensitiveFormData:
+          domContext.envelope.privacyFlags.containsSensitiveFormData ||
+          hybridContext.envelope.privacyFlags.containsSensitiveFormData,
+        userConsentedToHistory:
+          domContext.envelope.privacyFlags.userConsentedToHistory ||
+          hybridContext.envelope.privacyFlags.userConsentedToHistory,
+      },
+    },
+    readStrategy: hybridContext.readStrategy,
+    actionCards: hybridContext.actionCards.length ? hybridContext.actionCards : domContext.actionCards,
+  };
+}
+
+async function collectVisibleScreenOnlyInfographicContext(
+  baseContext: Awaited<ReturnType<typeof collectCurrentPageContext>> | null,
+) {
+  const activeTab = await getActiveTab();
+  assertPageReadable(activeTab.url);
+  const locale = chrome.i18n?.getUILanguage?.() ?? "";
+  const screenshotRef = await captureVisibleTab(activeTab);
+  const fallbackContext =
+    baseContext ??
+    createPaperPdfFallbackContext(activeTab, locale) ??
+    createGenericSiteFallbackContext(activeTab, locale) ??
+    createMinimalVisibleScreenContext(activeTab);
+  const adapterPayload = fallbackContext.envelope.adapterPayload;
+
+  return {
+    envelope: {
+      ...fallbackContext.envelope,
+      domSummary:
+        fallbackContext.envelope.domSummary ||
+        "DOM text was not available. Use the attached visible-screen screenshot as the primary source context.",
+      visionAssets: [
+        {
+          ref: screenshotRef,
+          kind: "screenshot" as const,
+        },
+        ...fallbackContext.envelope.visionAssets,
+      ],
+    },
+    readStrategy: "vision" as const,
+    actionCards: fallbackContext.actionCards.length
+      ? fallbackContext.actionCards
+      : inferActionCards({
+          readStrategy: "vision",
+          adapterActions: [],
+          availableSources: ["current-page"],
+          adapterPayload,
+          locale,
+        }),
+  };
+}
+
+function createMinimalVisibleScreenContext(activeTab: chrome.tabs.Tab & { url: string }): Awaited<ReturnType<typeof collectCurrentPageContext>> {
+  return {
+    envelope: {
+      metadata: {
+        url: activeTab.url,
+        title: activeTab.title?.trim() || "Current page",
+        domain: parseTabDomain(activeTab.url),
+      },
+      selectionText: "",
+      domSummary: "DOM text was not available. Use the attached visible-screen screenshot as the primary source context.",
+      visionAssets: [],
+      adapterPayload: null,
+      privacyFlags: {
+        containsSensitiveFormData: false,
+        userConsentedToHistory: false,
+      },
+    },
+    readStrategy: "vision",
+    actionCards: inferActionCards({
+      readStrategy: "vision",
+      adapterActions: [],
+      availableSources: ["current-page"],
+      adapterPayload: null,
+      locale: chrome.i18n?.getUILanguage?.() ?? "",
+    }),
+  };
+}
+
+function parseTabDomain(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return "";
+  }
 }
 
 function normalizeInfographicConversationContext(value: unknown): string {
@@ -2624,6 +2789,25 @@ async function handleSkillArchiveInstall(
   return result;
 }
 
+async function refreshPlaywrightRuntime(): Promise<UiInitPayload["playwrightRuntime"]> {
+  const runtime = await bridge.request<UiInitPayload["playwrightRuntime"]>("runtime.playwright.status");
+  state.playwrightRuntime = runtime;
+  return runtime;
+}
+
+async function installPlaywrightRuntime(): Promise<UiInitPayload["playwrightRuntime"]> {
+  const runtime = await bridge.request<UiInitPayload["playwrightRuntime"]>(
+    "runtime.playwright.install",
+    {},
+    {
+      timeoutMs: PLAYWRIGHT_RUNTIME_INSTALL_TIMEOUT_MS,
+      timeoutMessage: "Playwright Chromium install timed out.",
+    },
+  );
+  state.playwrightRuntime = runtime;
+  return runtime;
+}
+
 function mergeCodexSkills(left: CodexSkillOption[], right: CodexSkillOption[]): CodexSkillOption[] {
   const byId = new Map<string, CodexSkillOption>();
   for (const skill of [...left, ...right]) {
@@ -3163,6 +3347,25 @@ function createFallbackDiagnosticLogFolder(): UiInitPayload["diagnosticLogFolder
     rootDir: "",
     latestLogPath: "",
     files: [],
+  };
+}
+
+function createFallbackPlaywrightRuntime(): UiInitPayload["playwrightRuntime"] {
+  return {
+    available: false,
+    packageName: null,
+    packageVersion: "",
+    browserInstalled: false,
+    browserExecutablePath: "",
+    installable: false,
+    installCommand: "",
+    message: "Playwright runtime is not connected.",
+  };
+}
+
+function createCodexSkillRuntimeAvailability(settings: ExtensionSettings) {
+  return {
+    playwrightAvailable: state.playwrightRuntime.available && settings.playwrightBrowserControlEnabled,
   };
 }
 

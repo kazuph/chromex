@@ -158,6 +158,16 @@ export class BridgeRpcRouter {
             id: request.id,
             result: await this.#dependencies.workspace.updateConfig(request.params as never),
           };
+        case "runtime.playwright.status":
+          return {
+            id: request.id,
+            result: await this.#dependencies.workspace.readPlaywrightRuntime(),
+          };
+        case "runtime.playwright.install":
+          return {
+            id: request.id,
+            result: await this.#dependencies.workspace.installPlaywrightRuntime(),
+          };
         default:
           return {
             id: request.id,

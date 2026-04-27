@@ -48,8 +48,11 @@ npm run typecheck
 npm run test
 npm run build
 npm run release:audit
+npm run package:webstore
 npm audit --audit-level=high --omit=dev
 ```
+
+`npm run package:webstore` rebuilds the extension before packaging, removes the public unpacked-install manifest key from the staged copy, and validates that generated metadata, source maps, private keys, environment files, and source-only image assets are not present in the Chrome Web Store zip.
 
 The browser smoke test is optional for local release verification because it launches a real Chromium profile:
 

@@ -296,6 +296,69 @@ describe("agentic route plan normalization", () => {
     expect(plan.selectedModel).toBe("fast-text");
   });
 
+  test("keeps current text summary requests out of stale prior image workflows", () => {
+    const plan = normalizeAgenticRoutePlan(
+      {
+        source: "llm",
+        task: "image-generate",
+        contextRequests: [
+          {
+            source: "image",
+            readStrategy: "vision",
+            required: true,
+            reason: "Previous turn contained a generated image.",
+          },
+        ],
+        requiresVision: true,
+        intent: {
+          summary: "Generate a visual from the prior image thread.",
+          action: "generate-image",
+          target: "visible-image",
+          constraints: [],
+          needsClarification: false,
+        },
+        imageEdit: {
+          shouldEdit: true,
+          target: "page-image",
+          prompt: "Continue the prior image generation.",
+          reason: "Stale previous image context.",
+        },
+        selectedModel: "vision-model",
+        confidence: 0.51,
+      },
+      {
+        ...input,
+        message: "이글 요약좀 부탁해줘.",
+        contextHint: "assistant: 이미지를 생성했습니다.\nuser: 이 이미지를 더 선명하게 만들어줘.",
+        activeTab: {
+          title: "Threads post",
+          url: "https://threads.net/@example/post/1",
+          restricted: false,
+        },
+      },
+    );
+
+    expect(plan.task).toBe("document-analysis");
+    expect(plan.intent).toMatchObject({
+      action: "summarize",
+      target: "current-page",
+    });
+    expect(plan.contextRequests).toEqual([
+      expect.objectContaining({
+        source: "current-page",
+        readStrategy: "dom",
+      }),
+    ]);
+    expect(plan.imageEdit).toEqual({
+      shouldEdit: false,
+      target: "none",
+      reason: "The current user message asks for a text/page summary, so prior image context must not trigger image editing.",
+    });
+    expect(plan.requiresVision).toBe(false);
+    expect(plan.pageReadStrategy).toBe("dom");
+    expect(plan.selectedModel).toBe("fast-text");
+  });
+
   test("repairs browser-history intent into an explicit history context request", () => {
     const plan = normalizeAgenticRoutePlan(
       {
@@ -413,6 +476,48 @@ describe("agentic route plan normalization", () => {
       shouldControl: true,
       mode: "playwright",
       fallbackMode: "computer-use",
+      reason: "The request needs a multi-step browser automation harness.",
+    });
+  });
+
+  test("downgrades unavailable Playwright automation to DOM control", () => {
+    const plan = normalizeAgenticRoutePlan(
+      {
+        source: "llm",
+        task: "general",
+        contextRequests: [{ source: "current-page", readStrategy: "dom", required: true, reason: "Need page DOM." }],
+        intent: {
+          summary: "Run a browser flow against the current page.",
+          action: "navigate",
+          target: "current-page",
+          constraints: [],
+          needsClarification: false,
+        },
+        browserControl: {
+          shouldControl: true,
+          mode: "playwright",
+          fallbackMode: "computer-use",
+          reason: "The request needs a multi-step browser automation harness.",
+        },
+        imageEdit: {
+          shouldEdit: false,
+          target: "none",
+        },
+      },
+      {
+        ...input,
+        message: "이 페이지에서 가입 플로우를 테스트해줘",
+        browserAutomationCapabilities: {
+          dom: true,
+          playwright: false,
+          "computer-use": false,
+        },
+      },
+    );
+
+    expect(plan.browserControl).toEqual({
+      shouldControl: true,
+      mode: "dom",
       reason: "The request needs a multi-step browser automation harness.",
     });
   });

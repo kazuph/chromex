@@ -135,6 +135,73 @@ describe("sidepanel state normalization", () => {
     ]);
   });
 
+  test("persists bridge-backed generated images by asset ref instead of large data urls", () => {
+    const messages = serializeConversationMessagesForStorage([
+      {
+        id: "m1",
+        role: "assistant",
+        text: "이미지를 만들었습니다.",
+        images: [
+          {
+            src: "data:image/png;base64,abc123",
+            alt: "Generated image",
+            assetRef: "codex-asset:generated-1",
+            status: "ready",
+          },
+        ],
+      },
+    ]);
+
+    expect(messages[0]?.images).toEqual([
+      {
+        src: "",
+        alt: "Generated image",
+        assetRef: "codex-asset:generated-1",
+        status: "loading",
+      },
+    ]);
+  });
+
+  test("drops oversized inline image previews before conversation storage", () => {
+    const largeDataUrl = `data:image/png;base64,${"a".repeat(140 * 1024)}`;
+    const messages = serializeConversationMessagesForStorage([
+      {
+        id: "m1",
+        role: "user",
+        text: "이 이미지 참고해줘",
+        attachments: [
+          {
+            id: "file-1",
+            name: "large.png",
+            mimeType: "image/png",
+            kind: "image",
+            sizeBytes: 500_000,
+            previewSrc: largeDataUrl,
+          },
+        ],
+      },
+    ]);
+
+    expect(messages[0]?.attachments?.[0]).toMatchObject({
+      id: "file-1",
+      name: "large.png",
+      kind: "image",
+    });
+    expect(messages[0]?.attachments?.[0]?.previewSrc).toBeUndefined();
+  });
+
+  test("removes inline base64 image markdown from stored message text", () => {
+    const messages = serializeConversationMessagesForStorage([
+      {
+        id: "m1",
+        role: "assistant",
+        text: "이미지입니다 ![x](data:image/png;base64,abc123) 끝",
+      },
+    ]);
+
+    expect(messages[0]?.text).toBe("이미지입니다 ![x]([stored image asset]) 끝");
+  });
+
   test("keeps stale blob-only generated images as deleted placeholders", () => {
     const conversation = normalizePanelConversation({
       id: "chat-blob-only",

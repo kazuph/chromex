@@ -96,9 +96,13 @@ export function normalizeAgenticRoutePlan(rawPlan: unknown, input: AgenticRouteI
     });
   }
 
-  const normalizedImageEdit = normalizeImageEdit(raw.imageEdit, input);
+  const textPageSummaryRequest = isTextPageSummaryRequest(input.message);
+  const normalizedImageEdit = textPageSummaryRequest
+    ? createSuppressedTextPageSummaryEditPlan()
+    : normalizeImageEdit(raw.imageEdit, input);
   const shouldKeepImageEdit = shouldKeepImageEditOverImageGeneration(raw, normalizedImageEdit);
-  const isImageGenerationExecution = isImageGenerationExecutionRequest(input.message) && !shouldKeepImageEdit;
+  const isImageGenerationExecution =
+    !textPageSummaryRequest && isImageGenerationExecutionRequest(input.message) && !shouldKeepImageEdit;
   const isImagePromptAuthoring = !isImageGenerationExecution && isImagePromptAuthoringRequest(input.message);
   const imageEdit = isImagePromptAuthoring
     ? createSuppressedImagePromptAuthoringEditPlan()
@@ -119,25 +123,40 @@ export function normalizeAgenticRoutePlan(rawPlan: unknown, input: AgenticRouteI
       reason: "The visible image must be captured for editing.",
     });
   }
+  if (textPageSummaryRequest) {
+    pushRequest({
+      source: "current-page",
+      readStrategy: "dom",
+      required: true,
+      reason: "The current user message asks to summarize the active text/article/post.",
+    });
+  }
   const rawTaskCandidate = ROUTE_TASKS.has(raw.task as PromptRoutingTask)
-    ? (raw.task as PromptRoutingTask)
+    ? textPageSummaryRequest
+      ? "document-analysis"
+      : (raw.task as PromptRoutingTask)
     : isImageGenerationExecution
       ? "image-generate"
       : imageEdit.shouldEdit
       ? "image-edit"
       : "general";
   const rawTask =
-    isImagePromptAuthoring && rawTaskCandidate === "image-edit"
+    textPageSummaryRequest
+      ? "document-analysis"
+      : isImagePromptAuthoring && rawTaskCandidate === "image-edit"
       ? "visual-analysis"
       : isImageGenerationExecution
         ? "image-generate"
         : rawTaskCandidate;
-  const intent = isImagePromptAuthoring
-    ? normalizeImagePromptAuthoringIntent(normalizeIntent(raw.intent, input, imageEdit), input)
-    : rawTask === "image-generate"
-      ? normalizeImageGenerationIntent(normalizeIntent(raw.intent, input, imageEdit), input)
-    : normalizeIntent(raw.intent, input, imageEdit);
-  const browserControl = normalizeBrowserControl(raw.browserControl, intent);
+  const normalizedIntent = normalizeIntent(raw.intent, input, imageEdit);
+  const intent = textPageSummaryRequest
+    ? normalizeTextPageSummaryIntent(normalizedIntent, input)
+    : isImagePromptAuthoring
+      ? normalizeImagePromptAuthoringIntent(normalizedIntent, input)
+      : rawTask === "image-generate"
+        ? normalizeImageGenerationIntent(normalizedIntent, input)
+        : normalizedIntent;
+  const browserControl = normalizeBrowserControl(raw.browserControl, intent, input);
   if (intent.target === "browser-history" && !intent.needsClarification) {
     pushRequest({
       source: "history",
@@ -307,6 +326,7 @@ function normalizeIntent(
 function normalizeBrowserControl(
   rawBrowserControl: unknown,
   intent: AgenticIntentPlan,
+  input: AgenticRouteInput,
 ): AgenticBrowserControlRouting {
   const raw = asRecord(rawBrowserControl);
   const defaultShouldControl =
@@ -314,12 +334,21 @@ function normalizeBrowserControl(
     intent.target === "current-page" &&
     !intent.needsClarification;
   const shouldControl = typeof raw.shouldControl === "boolean" ? raw.shouldControl : defaultShouldControl;
-  const mode = BROWSER_AUTOMATION_MODES.has(raw.mode as BrowserAutomationMode)
+  const requestedMode = BROWSER_AUTOMATION_MODES.has(raw.mode as BrowserAutomationMode)
     ? (raw.mode as BrowserAutomationMode)
     : "dom";
-  const fallbackMode = BROWSER_AUTOMATION_MODES.has(raw.fallbackMode as BrowserAutomationMode)
+  const requestedFallbackMode = BROWSER_AUTOMATION_MODES.has(raw.fallbackMode as BrowserAutomationMode)
     ? (raw.fallbackMode as BrowserAutomationMode)
     : undefined;
+  const mode = isBrowserAutomationModeAvailable(requestedMode, input)
+    ? requestedMode
+    : requestedFallbackMode && isBrowserAutomationModeAvailable(requestedFallbackMode, input)
+      ? requestedFallbackMode
+      : "dom";
+  const fallbackMode =
+    requestedFallbackMode && isBrowserAutomationModeAvailable(requestedFallbackMode, input)
+      ? requestedFallbackMode
+      : undefined;
   const reason =
     typeof raw.reason === "string" && raw.reason.trim()
       ? raw.reason.trim()
@@ -333,6 +362,17 @@ function normalizeBrowserControl(
     ...(fallbackMode && fallbackMode !== mode ? { fallbackMode } : {}),
     reason,
   };
+}
+
+function isBrowserAutomationModeAvailable(mode: BrowserAutomationMode, input: AgenticRouteInput): boolean {
+  const capabilities = input.browserAutomationCapabilities;
+  if (!capabilities) {
+    return true;
+  }
+  if (mode === "dom") {
+    return capabilities.dom !== false;
+  }
+  return capabilities[mode] === true;
 }
 
 function normalizeHistoryQuery(raw: Record<string, unknown>, input: AgenticRouteInput): string {
@@ -493,6 +533,14 @@ function createSuppressedImageGenerationEditPlan(): AgenticImageEditRouting {
   };
 }
 
+function createSuppressedTextPageSummaryEditPlan(): AgenticImageEditRouting {
+  return {
+    shouldEdit: false,
+    target: "none",
+    reason: "The current user message asks for a text/page summary, so prior image context must not trigger image editing.",
+  };
+}
+
 function shouldKeepImageEditOverImageGeneration(
   rawPlan: Record<string, unknown>,
   imageEdit: AgenticImageEditRouting,
@@ -519,6 +567,16 @@ function normalizeImagePromptAuthoringIntent(intent: AgenticIntentPlan, input: A
     ...intent,
     action: "answer",
     target: hasVisualContext ? intent.target : "conversation",
+    needsClarification: false,
+  };
+}
+
+function normalizeTextPageSummaryIntent(intent: AgenticIntentPlan, input: AgenticRouteInput): AgenticIntentPlan {
+  return {
+    ...intent,
+    summary: intent.summary.trim() || input.message.trim(),
+    action: "summarize",
+    target: "current-page",
     needsClarification: false,
   };
 }
@@ -574,6 +632,39 @@ function isImageGenerationExecutionRequest(message: string): boolean {
     /(프롬프트[\s\S]{0,80}(알려|작성|써|만들|생성|추천|제안|정리)|prompt[\s\S]{0,80}(write|draft|suggest|give|tell|describe|create|make))/iu.test(normalized) &&
     !hasProvidedPromptExecutionCue(normalized);
   return !asksOnlyForPromptText;
+}
+
+function isTextPageSummaryRequest(message: string): boolean {
+  const normalized = message.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  if (mentionsVisualSubject(normalized) || mentionsHistorySubject(normalized)) {
+    return false;
+  }
+
+  const asksForSummary = /(요약|정리|핵심|summari[sz]e|summary|tl;?dr|recap|brief)/iu.test(normalized);
+  if (!asksForSummary) {
+    return false;
+  }
+
+  return (
+    /(이\s*글|글|게시글|포스트|기사|뉴스|본문|내용|문서|페이지|웹페이지|논문|메일|블로그)/iu.test(normalized) ||
+    /\b(this|current)\s+(post|article|page|webpage|document|paper|email|thread|content)\b/iu.test(normalized) ||
+    /\b(post|article|page|webpage|document|paper|email|thread|content)\b[\s\S]{0,80}\b(summari[sz]e|summary|recap|brief)\b/iu.test(normalized)
+  );
+}
+
+function mentionsVisualSubject(message: string): boolean {
+  return /(이미지|그림|사진|비주얼|스크린샷|화면|캡처|캡쳐|썸네일|포스터|슬라이드|인포그래픽|image|picture|photo|visual|screenshot|screen|thumbnail|poster|slide|infographic)/iu.test(
+    message,
+  );
+}
+
+function mentionsHistorySubject(message: string): boolean {
+  return /(기록|검색기록|방문|봤던|읽었던|어제|지난|저번|history|visited|browsing|yesterday|last\s+(week|month|year))/iu.test(
+    message,
+  );
 }
 
 function hasProvidedPromptExecutionCue(normalizedMessage: string): boolean {

@@ -3,6 +3,7 @@ import { describe, expect, test } from "vitest";
 
 import {
   createEnabledCodexSkillInputs,
+  getCodexSkillRuntimeRequirement,
   mergeStructuredInputsWithEnabledCodexSkills,
   normalizeEnabledCodexSkillIds,
   toggleEnabledCodexSkillId,
@@ -27,6 +28,24 @@ const skills: CodexSkillOption[] = [
     cwd: "/tmp/project",
     token: "$review",
   },
+  {
+    id: "/tmp/skills/playwright/SKILL.md#playwright",
+    name: "playwright",
+    description: "Playwright browser automation",
+    path: "/tmp/skills/playwright/SKILL.md",
+    scope: "user",
+    cwd: "/tmp/project",
+    token: "$playwright",
+  },
+  {
+    id: "/tmp/skills/browser/SKILL.md#browser",
+    name: "browser automation",
+    description: "Puppeteer Chromium workflow",
+    path: "/tmp/skills/browser/SKILL.md",
+    scope: "user",
+    cwd: "/tmp/project",
+    token: "$browser",
+  },
 ];
 
 describe("Codex skill settings", () => {
@@ -50,6 +69,37 @@ describe("Codex skill settings", () => {
         path: "/tmp/skills/review/SKILL.md",
         description: "Review helper",
         token: "$review",
+      },
+    ]);
+  });
+
+  test("detects install-required browser automation skills", () => {
+    expect(getCodexSkillRuntimeRequirement(skills[0]!)).toBeNull();
+    expect(getCodexSkillRuntimeRequirement(skills[2]!)).toBe("playwright");
+    expect(getCodexSkillRuntimeRequirement(skills[3]!)).toBe("playwright");
+  });
+
+  test("keeps runtime-gated browser automation skills disabled until the runtime is available", () => {
+    expect(createEnabledCodexSkillInputs(skills, [skills[2]!.id])).toEqual([]);
+    expect(createEnabledCodexSkillInputs(skills, [skills[2]!.id], { playwrightAvailable: true })).toEqual([
+      {
+        id: skills[2]!.id,
+        type: "skill",
+        name: "playwright",
+        path: "/tmp/skills/playwright/SKILL.md",
+        description: "Playwright browser automation",
+        token: "$playwright",
+      },
+    ]);
+    expect(createEnabledCodexSkillInputs(skills, [skills[3]!.id])).toEqual([]);
+    expect(createEnabledCodexSkillInputs(skills, [skills[3]!.id], { playwrightAvailable: true })).toEqual([
+      {
+        id: skills[3]!.id,
+        type: "skill",
+        name: "browser automation",
+        path: "/tmp/skills/browser/SKILL.md",
+        description: "Puppeteer Chromium workflow",
+        token: "$browser",
       },
     ]);
   });

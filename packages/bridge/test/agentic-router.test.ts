@@ -138,11 +138,16 @@ describe("agentic router helpers", () => {
     expect(prompt).toContain("visual object replacement");
     expect(prompt).toContain("active page shows a media/photo viewer or social post image");
     expect(prompt).toContain("For current-page summaries, news, articles, documentation, or text extraction, prefer current-page with readStrategy=dom or adapter");
+    expect(prompt).toContain("Treat userMessage as the current turn of record");
+    expect(prompt).toContain("must not override a clear current request");
+    expect(prompt).toContain("Never choose image-generate or image-edit solely because earlier turns contained uploaded images");
+    expect(prompt).toContain("summarize this post/article/page/text");
     expect(prompt).toContain("browserControl");
     expect(prompt).toContain("dom | playwright | computer-use");
     expect(prompt).toContain("Current extension executes safe current-page DOM actions directly");
-    expect(prompt).toContain("Use playwright when");
-    expect(prompt).toContain("Use computer-use when");
+    expect(prompt).toContain("Use playwright only when");
+    expect(prompt).toContain("Use computer-use only when");
+    expect(prompt).toContain("browserAutomationCapabilities.playwright is true");
     expect(prompt).toContain("Use image-generate when the user wants a new generated image");
     expect(prompt).toContain("If the user provides, pastes, references, or says they will give a prompt and asks to generate/create/render an image from it");
     expect(prompt).toContain("When exactly one uploaded image is present");

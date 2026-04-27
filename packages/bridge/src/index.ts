@@ -12,6 +12,7 @@ export { prepareUserFileAttachments } from "./file-attachments.js";
 export { BridgeHarnessRuntime } from "./harness.js";
 export { BridgeImageAssetStore, isBridgeImageAssetRef } from "./image-assets.js";
 export { BridgeDiagnosticLogStore } from "./diagnostics.js";
+export { PlaywrightRuntimeManager } from "./playwright-runtime.js";
 export {
   resolveCodexSidepanelConfigDir,
   resolveCodexSidepanelDataDir,

@@ -1,6 +1,6 @@
 import type { PageContextEnvelope, PromptEnvelope, ProfileTemplate, RawPageCapture, VisionAsset } from "./types.js";
 
-const DOM_SUMMARY_LIMIT = 100_000;
+const DOM_SUMMARY_TRANSPORT_LIMIT = 240_000;
 
 function cleanText(value: string): string {
   return value.replace(/\s+/g, " ").trim();
@@ -8,11 +8,11 @@ function cleanText(value: string): string {
 
 export function summarizeDomText(bodyText: string): string {
   const cleaned = cleanText(bodyText);
-  if (cleaned.length <= DOM_SUMMARY_LIMIT) {
+  if (cleaned.length <= DOM_SUMMARY_TRANSPORT_LIMIT) {
     return cleaned;
   }
 
-  return `${cleaned.slice(0, DOM_SUMMARY_LIMIT - 1).trimEnd()}…`;
+  return `${cleaned.slice(0, DOM_SUMMARY_TRANSPORT_LIMIT - 1).trimEnd()}…`;
 }
 
 export function normalizePageContext(raw: RawPageCapture): PageContextEnvelope {

@@ -16,6 +16,7 @@ import type {
   ImageAssetFolderSnapshot,
   OpenTabContext,
   PageContextEnvelope,
+  PlaywrightRuntimeCapability,
   ProfileTemplate,
   ReadStrategy,
   UserFileAttachment,
@@ -24,6 +25,7 @@ import type {
 
 import type { SkillOption } from "./sidepanel/skills.js";
 import type { UiLanguageSetting } from "./ui-language.js";
+import type { UiThemeSetting } from "./ui-theme.js";
 import type { VoiceNavigationCommand } from "./sidepanel/voice-commands.js";
 
 export interface ContentProbeResult {
@@ -99,6 +101,7 @@ export interface UiInitPayload {
   actionCards: ActionCard[];
   settings: ExtensionSettings;
   runtimeConfig: RuntimeConfigSnapshot;
+  playwrightRuntime: PlaywrightRuntimeCapability;
   skills: SkillOption[];
   appServerSkills: CodexSkillOption[];
   connectedApps: CodexAppOption[];
@@ -160,6 +163,7 @@ export interface TabListPayload {
 
 export interface ExtensionSettings {
   uiLanguage: UiLanguageSetting;
+  uiTheme: UiThemeSetting;
   usageNoticeAccepted: boolean;
   shareCurrentTabByDefault: boolean;
   rememberChats: boolean;
@@ -167,6 +171,7 @@ export interface ExtensionSettings {
   allowVoiceNavigation: boolean;
   allowBrowserActions: boolean;
   browserActionPermissionMode: BrowserActionPermissionMode;
+  playwrightBrowserControlEnabled: boolean;
   preferredVoice: string;
   workspaceRoot: string;
   codexBinPath: string;
@@ -221,6 +226,11 @@ export interface ConversationMessage {
   id: string;
   role: "user" | "assistant";
   text: string;
+  notice?: {
+    type: "context-compaction";
+    state: "running" | "completed";
+    automatic: boolean;
+  };
   delivery?: "text" | "voice";
   voice?: {
     startedAt: number;

@@ -417,6 +417,21 @@ export interface AgenticImageEditRouting {
 
 export type BrowserAutomationMode = "dom" | "playwright" | "computer-use";
 
+export interface PlaywrightRuntimeCapability {
+  available: boolean;
+  packageName: "playwright" | "playwright-core" | null;
+  packageVersion: string;
+  browserInstalled: boolean;
+  browserExecutablePath: string;
+  installable: boolean;
+  installCommand: string;
+  message: string;
+}
+
+export interface RuntimeCapabilitySnapshot {
+  playwright: PlaywrightRuntimeCapability;
+}
+
 export interface AgenticBrowserControlRouting {
   shouldControl: boolean;
   mode: BrowserAutomationMode;
@@ -460,6 +475,7 @@ export interface AgenticRouteInput {
     url?: string;
     restricted?: boolean;
   };
+  browserAutomationCapabilities?: Partial<Record<BrowserAutomationMode, boolean>>;
 }
 
 export type BrowserDomActionKind = "click" | "fill" | "select" | "scroll" | "focus" | "submit";

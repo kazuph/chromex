@@ -101,6 +101,18 @@ describe("BridgeImageAssetStore", () => {
     expect(Buffer.from(asset.dataBase64, "base64").toString("utf8")).toBe("generated-image");
   });
 
+  test("restores generated image asset refs from the persisted manifest after bridge restart", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "codex-sidepanel-asset-manifest-test-"));
+    const firstStore = new BridgeImageAssetStore(Promise.resolve(tempDir));
+    const previewRef = await firstStore.registerBase64(Buffer.from("durable-generated-image").toString("base64"), "image/png");
+    const secondStore = new BridgeImageAssetStore(Promise.resolve(tempDir));
+
+    const asset = await secondStore.read(previewRef);
+
+    expect(Buffer.from(asset.dataBase64, "base64").toString("utf8")).toBe("durable-generated-image");
+    expect(asset.mimeType).toBe("image/png");
+  });
+
   test("keeps workspace generated images under the workspace with relative platform-safe segments", () => {
     expect(resolveGeneratedImageOutputDir("/workspace/project")).toBe(
       join("/workspace/project", ".codex-sidepanel", "generated-images"),

@@ -10,6 +10,7 @@ import { BridgeImageAssetStore, resolveGeneratedImageOutputDir } from "./image-a
 import { BridgeRpcRouter } from "./router.js";
 import { InMemoryBridgeSecrets } from "./secrets.js";
 import { ExternalSkillArchiveStore } from "./skill-archives.js";
+import { PlaywrightRuntimeManager } from "./playwright-runtime.js";
 import type { BridgeRequest } from "./types.js";
 
 const secrets = new InMemoryBridgeSecrets();
@@ -20,6 +21,7 @@ const client = new CodexAppServerClient({
 const harness = new BridgeHarnessRuntime();
 const diagnostics = new BridgeDiagnosticLogStore();
 const externalSkills = new ExternalSkillArchiveStore(harness.resolveUserPath("external-skills"));
+const playwrightRuntime = new PlaywrightRuntimeManager();
 const imageAssets = new BridgeImageAssetStore({
   outputDir: async () => resolveGeneratedImageOutputDir(await harness.getWorkspaceRoot()),
   diagnostics,
@@ -74,6 +76,8 @@ const router = new BridgeRpcRouter({
         configuredCodexBinPathInvalid: runtime.configuredCommandInvalid,
       };
     },
+    readPlaywrightRuntime: async () => playwrightRuntime.readStatus(),
+    installPlaywrightRuntime: async () => playwrightRuntime.installChromium(),
     listExternalSkills: async (params) => externalSkills.listSkills(params?.cwd ?? (await harness.getWorkspaceRoot())),
     listExternalSkillRoots: async () => externalSkills.listScanRoots(),
     installSkillArchive: async (params) =>

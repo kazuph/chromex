@@ -176,10 +176,12 @@ import {
   UI_STRINGS,
   type UiLocale,
 } from "./i18n.js";
+import { normalizeUiThemeSetting, resolveUiTheme } from "../ui-theme.js";
 import { classifyRuntimeMessageError, isRetryableRuntimeMessageError, toErrorMessage } from "../runtime-errors.js";
 import { isCurrentPageAttachment, sanitizeUnavailableCurrentPageAttachments } from "../page-context.js";
 import { MAX_PROFILE_SYSTEM_PROMPT_LENGTH } from "../profile-templates.js";
 import {
+  getCodexSkillRuntimeRequirement,
   mergeStructuredInputsWithEnabledCodexSkills,
   toggleEnabledCodexSkillId,
 } from "../codex-skill-settings.js";
@@ -446,7 +448,9 @@ type ImageWorkflowPlaceholderKind = "image-edit" | "infographic" | "slide-images
 const pendingImageWorkflowMessageIdsByRequest = new Map<string, string>();
 const completedImageWorkflowMessageIdsByRequest = new Map<string, string>();
 const streamedImagePreviewRefsByRequest = new Map<string, string[]>();
+const contextCompactionNoticeIdsByKey = new Map<string, string>();
 const profileQuestionStreamBuffers = new Map<string, string>();
+let contextCompactionNoticeCounter = 0;
 
 const rootElement = document.querySelector<HTMLDivElement>("#app");
 if (!rootElement) {
@@ -454,6 +458,19 @@ if (!rootElement) {
 }
 const root: HTMLDivElement = rootElement;
 const initialLocale = detectUiLocale(getBrowserUiLanguage());
+
+function createFallbackPlaywrightRuntime(): UiInitPayload["playwrightRuntime"] {
+  return {
+    available: false,
+    packageName: null,
+    packageVersion: "",
+    browserInstalled: false,
+    browserExecutablePath: "",
+    installable: false,
+    installCommand: "",
+    message: "Playwright runtime is not connected.",
+  };
+}
 
 const state = {
   accountStatus: null as UiInitPayload["accountStatus"] | null,
@@ -477,6 +494,7 @@ const state = {
     codexBinSource: "missing",
     configuredCodexBinPathInvalid: false,
   } as UiInitPayload["runtimeConfig"],
+  playwrightRuntime: createFallbackPlaywrightRuntime(),
   imageAssetFolder: {
     rootDir: "",
     latestFolder: "",
@@ -522,6 +540,7 @@ const state = {
   appMenuRecentChatLimit: APP_MENU_RECENT_CHAT_LIMIT,
   settings: {
     uiLanguage: "auto",
+    uiTheme: "system",
     usageNoticeAccepted: false,
     shareCurrentTabByDefault: false,
     rememberChats: false,
@@ -529,6 +548,7 @@ const state = {
     allowVoiceNavigation: true,
     allowBrowserActions: true,
     browserActionPermissionMode: "ask",
+    playwrightBrowserControlEnabled: false,
     preferredVoice: "",
     workspaceRoot: "",
     codexBinPath: "",
@@ -600,6 +620,8 @@ let composerVoiceInputAnalyser: AnalyserNode | null = null;
 let composerVoiceInputWaveformTimer: number | null = null;
 let composerVoiceInputWaveformLevels = createSilentComposerVoiceWaveform();
 let composerVoiceInputAudioData: Uint8Array<ArrayBuffer> | null = null;
+let systemThemeMediaQuery: MediaQueryList | null = null;
+let systemThemeListenerInstalled = false;
 let composerVoiceInputFinalTranscript = "";
 let composerVoiceInputInterimTranscript = "";
 let composerVoiceInputCommitPromise: Promise<void> | null = null;
@@ -877,7 +899,20 @@ chrome.runtime.onMessage.addListener((message) => {
     shouldRender = true;
   }
   if (event.type === "prompt.status" && event.phase) {
-    if (!state.promptActivity || !event.clientRequestId || state.promptActivity.clientRequestId === event.clientRequestId) {
+    if (event.phase === "compacting") {
+      upsertContextCompactionNotice(
+        createContextCompactionNoticeKey(event.clientRequestId ? { clientRequestId: event.clientRequestId } : {}),
+        "running",
+      );
+      scheduleConversationPersist();
+      shouldRender = state.activeView === "chat";
+    } else if (
+      isImageWorkflowPromptActivityPhase(event.phase) &&
+      (!event.clientRequestId || state.promptActivity?.clientRequestId !== event.clientRequestId)
+    ) {
+      // Image placeholders are bound to a concrete prompt. Ignore stale or anonymous
+      // image status events so a previous image turn cannot leak into a text answer.
+    } else if (!state.promptActivity || !event.clientRequestId || state.promptActivity.clientRequestId === event.clientRequestId) {
       state.promptActivity = {
         clientRequestId: event.clientRequestId ?? state.promptActivity?.clientRequestId ?? "",
         phase: event.phase,
@@ -892,17 +927,17 @@ chrome.runtime.onMessage.addListener((message) => {
     }
   }
   if (event.type === "context.compaction.started") {
-    state.promptActivity = {
-      clientRequestId: state.promptActivity?.clientRequestId || `compact-${event.itemId ?? Date.now()}`,
-      phase: "compacting",
-    };
+    upsertContextCompactionNotice(createContextCompactionNoticeKey(event), "running");
+    scheduleConversationPersist();
     shouldRender = state.activeView === "chat";
   }
   if (event.type === "context.compaction.completed") {
     if (state.promptActivity?.phase === "compacting") {
       state.promptActivity = null;
     }
+    upsertContextCompactionNotice(createContextCompactionNoticeKey(event), "completed");
     state.actionStatus = getUiStrings(state.uiLocale).status.compactCompleted;
+    scheduleConversationPersist();
     shouldRender = state.activeView === "chat";
   }
   if (event.type === "turn.activity" && event.threadId && event.turnId) {
@@ -964,6 +999,7 @@ function applyActiveTabUpdate(message: {
 }
 
 async function initialize(): Promise<void> {
+  installSystemThemeListener();
   state.uiLocale = detectUiLocale(getBrowserUiLanguage());
   syncDocumentLanguage();
   try {
@@ -988,6 +1024,7 @@ async function initialize(): Promise<void> {
     state.modelCatalogState = payload.modelCatalogState;
     state.modelCatalogErrorMessage = payload.modelCatalogErrorMessage ?? "";
     state.runtimeConfig = payload.runtimeConfig;
+    state.playwrightRuntime = payload.playwrightRuntime;
     state.imageAssetFolder = payload.imageAssetFolder;
     state.diagnosticLogFolder = payload.diagnosticLogFolder;
     state.actionCards = collections.actionCards;
@@ -995,7 +1032,9 @@ async function initialize(): Promise<void> {
       ...payload.settings,
       allowBrowserActions: true,
       browserActionPermissionMode: normalizeBrowserActionPermissionMode(payload.settings.browserActionPermissionMode),
+      playwrightBrowserControlEnabled: payload.settings.playwrightBrowserControlEnabled === true,
       uiLanguage: normalizeUiLanguageSetting(payload.settings.uiLanguage),
+      uiTheme: normalizeUiThemeSetting(payload.settings.uiTheme),
       preferredVoice: normalizeCodexRealtimeVoice(payload.settings.preferredVoice),
     };
     state.uiLocale = resolveUiLocale(state.settings.uiLanguage, getBrowserUiLanguage());
@@ -2567,7 +2606,87 @@ function partitionPromptActivitySupplementMessages(messages: ConversationMessage
 }
 
 function isPromptActivitySupplementMessage(message: ConversationMessage): boolean {
-  return isTraceOnlyAssistantMessage(message) || isPendingImageMessage(message);
+  return isCurrentPromptActivityPendingImageMessage(message);
+}
+
+function isCurrentPromptActivityPendingImageMessage(message: ConversationMessage): boolean {
+  const clientRequestId = state.promptActivity?.clientRequestId;
+  if (!clientRequestId) {
+    return false;
+  }
+  const pendingMessageId = pendingImageWorkflowMessageIdsByRequest.get(clientRequestId);
+  return Boolean(pendingMessageId && message.id === pendingMessageId && isPendingImageMessage(message));
+}
+
+function createContextCompactionNoticeKey(input: {
+  clientRequestId?: string;
+  threadId?: string;
+  turnId?: string;
+  itemId?: string;
+}): string {
+  if (input.clientRequestId) {
+    return `client:${input.clientRequestId}`;
+  }
+  const eventKey = [input.threadId, input.turnId, input.itemId].filter(Boolean).join(":");
+  return eventKey || "context-compaction";
+}
+
+function upsertContextCompactionNotice(
+  key: string,
+  noticeState: NonNullable<ConversationMessage["notice"]>["state"],
+): void {
+  let messageId = contextCompactionNoticeIdsByKey.get(key);
+  if (!messageId) {
+    messageId = findRunningContextCompactionNotice()?.id;
+  }
+  if (!messageId) {
+    contextCompactionNoticeCounter += 1;
+    messageId = `context-compaction-${Date.now()}-${contextCompactionNoticeCounter}`;
+    state.messages.push(createContextCompactionNoticeMessage(messageId, noticeState));
+  } else {
+    const message = state.messages.find((entry) => entry.id === messageId);
+    if (message) {
+      message.notice = {
+        type: "context-compaction",
+        state: noticeState,
+        automatic: true,
+      };
+      message.text = "";
+      message.role = "assistant";
+    } else {
+      state.messages.push(createContextCompactionNoticeMessage(messageId, noticeState));
+    }
+  }
+  contextCompactionNoticeIdsByKey.set(key, messageId);
+}
+
+function findRunningContextCompactionNotice(): ConversationMessage | undefined {
+  for (let index = state.messages.length - 1; index >= 0; index -= 1) {
+    const message = state.messages[index];
+    if (!message) {
+      continue;
+    }
+    if (message.notice?.type === "context-compaction" && message.notice.state === "running") {
+      return message;
+    }
+  }
+  return undefined;
+}
+
+function createContextCompactionNoticeMessage(
+  id: string,
+  noticeState: NonNullable<ConversationMessage["notice"]>["state"],
+): ConversationMessage {
+  return {
+    id,
+    role: "assistant",
+    text: "",
+    notice: {
+      type: "context-compaction",
+      state: noticeState,
+      automatic: true,
+    },
+  };
 }
 
 function renderScrollToBottomButton(): string {
@@ -2616,6 +2735,9 @@ function createVoiceTranscriptMessageId(role: string | undefined): string {
 }
 
 function shouldRenderConversationMessage(message: ConversationMessage): boolean {
+  if (message.notice) {
+    return true;
+  }
   if (message.text.trim()) {
     return true;
   }
@@ -2633,6 +2755,9 @@ function isPendingImageMessage(message: ConversationMessage): boolean {
 }
 
 function renderConversationMessage(message: ConversationMessage): string {
+  if (message.notice) {
+    return renderConversationNoticeMessage(message);
+  }
   const strings = stringsForState();
   const imageHtml = renderConversationMessageImages(message.id, message.images);
   const attachmentHtml = renderConversationMessageAttachments(message.attachments);
@@ -2684,6 +2809,25 @@ function renderConversationMessage(message: ConversationMessage): string {
       ${cardHtml}
       ${voiceMetaHtml}
       ${actionsHtml}
+    </article>
+  `;
+}
+
+function renderConversationNoticeMessage(message: ConversationMessage): string {
+  const notice = message.notice;
+  if (notice?.type !== "context-compaction") {
+    return "";
+  }
+  const strings = stringsForState();
+  const label = notice.state === "completed" ? strings.status.compactNoticeCompleted : strings.status.compactNoticeRunning;
+  return `
+    <article class="message-row notice context-compaction ${notice.state}" data-message-id="${escapeAttribute(message.id)}">
+      <div class="message-context-notice" role="status" aria-live="polite">
+        <span class="context-notice-label">
+          ${renderUiIcon("archive", "context-notice-icon")}
+          <span class="context-notice-text">${escapeHtml(label)}</span>
+        </span>
+      </div>
     </article>
   `;
 }
@@ -3306,11 +3450,11 @@ function renderContextView(strings: ReturnType<typeof getUiStrings>): string {
           <input id="skill-archive-input" type="file" accept=".zip,application/zip" hidden />
         </div>
         <p class="stack-copy">${escapeHtml(strings.help.codexSkills)}</p>
-        ${
-          state.appServerSkills.length
-            ? `<div class="codex-skill-list">${state.appServerSkills.map((skill) => renderCodexSkillToggle(skill)).join("")}</div>`
-            : `<p class="empty-state">${escapeHtml(strings.help.emptySkills)}</p>`
-        }
+        <div class="codex-skill-list">
+          ${renderPlaywrightRuntimeSkill(strings)}
+          ${state.appServerSkills.map((skill) => renderCodexSkillToggle(skill)).join("")}
+        </div>
+        ${state.appServerSkills.length ? "" : `<p class="empty-state">${escapeHtml(strings.help.emptySkills)}</p>`}
       </section>
     </div>
   `;
@@ -3328,12 +3472,15 @@ function renderBackToChatHeader(strings: ReturnType<typeof getUiStrings>, view: 
 }
 
 function renderCodexSkillToggle(skill: CodexSkillOption): string {
-  const enabled = isCodexSkillEnabled(skill.id);
+  const strings = stringsForState();
+  const blockedByRuntime = isCodexSkillRuntimeBlocked(skill);
+  const enabled = !blockedByRuntime && isCodexSkillEnabled(skill.id);
+  const detail = blockedByRuntime ? strings.help.playwrightRuntimeSkill : skill.description || skill.path;
   return `
-    <label class="codex-skill-toggle ${enabled ? "enabled" : ""}">
+    <label class="codex-skill-toggle ${enabled ? "enabled" : ""} ${blockedByRuntime ? "disabled" : ""}">
       <span class="codex-skill-copy">
         <strong>${escapeHtml(skill.name)}</strong>
-        <span>${escapeHtml(skill.description || skill.path)}</span>
+        <span>${escapeHtml(detail)}</span>
       </span>
       <span class="settings-switch codex-skill-switch">
         <input
@@ -3341,6 +3488,7 @@ function renderCodexSkillToggle(skill: CodexSkillOption): string {
           data-codex-skill-toggle="${escapeAttribute(skill.id)}"
           aria-label="${escapeAttribute(skill.name)}"
           ${enabled ? "checked" : ""}
+          ${blockedByRuntime ? "disabled" : ""}
         />
         <span aria-hidden="true"></span>
       </span>
@@ -3348,8 +3496,59 @@ function renderCodexSkillToggle(skill: CodexSkillOption): string {
   `;
 }
 
+function renderPlaywrightRuntimeSkill(strings: ReturnType<typeof getUiStrings>): string {
+  const runtime = state.playwrightRuntime;
+  const enabled = runtime.available && state.settings.playwrightBrowserControlEnabled;
+  const statusLabel = runtime.available ? strings.status.connected : strings.status.setupNeeded;
+  const versionLabel = runtime.packageName && runtime.packageVersion ? ` · ${runtime.packageName} ${runtime.packageVersion}` : "";
+  const detail = `${runtime.message || strings.help.playwrightRuntimeSkill}${versionLabel}`;
+
+  return `
+    <div class="codex-skill-toggle runtime-skill ${enabled ? "enabled" : ""} ${runtime.available ? "" : "disabled"}">
+      <span class="runtime-skill-icon" aria-hidden="true">${renderUiIcon("code")}</span>
+      <span class="codex-skill-copy">
+        <strong>${escapeHtml(strings.labels.playwrightBrowserControl)}</strong>
+        <span>${escapeHtml(detail)}</span>
+      </span>
+      <span class="runtime-skill-actions">
+        <span class="runtime-skill-status ${runtime.available ? "ready" : "missing"}">${escapeHtml(statusLabel)}</span>
+        ${
+          runtime.available
+            ? ""
+            : `<button
+                type="button"
+                class="ghost-button small runtime-skill-button"
+                data-install-playwright-runtime
+                ${runtime.installable ? "" : "disabled"}
+              >${escapeHtml(strings.actions.installPlaywright)}</button>`
+        }
+        <button type="button" class="icon-button small" data-refresh-playwright-runtime title="${escapeAttribute(strings.actions.refresh)}" aria-label="${escapeAttribute(strings.actions.refresh)}">
+          ${renderUiIcon("refresh")}
+        </button>
+        <label class="settings-switch codex-skill-switch" aria-label="${escapeAttribute(strings.labels.playwrightBrowserControl)}">
+          <input
+            type="checkbox"
+            data-playwright-runtime-toggle
+            ${enabled ? "checked" : ""}
+            ${runtime.available ? "" : "disabled"}
+          />
+          <span aria-hidden="true"></span>
+        </label>
+      </span>
+    </div>
+  `;
+}
+
 function isCodexSkillEnabled(skillId: string): boolean {
   return state.settings.enabledCodexSkillIds.includes(skillId);
+}
+
+function isPlaywrightRuntimeEnabled(): boolean {
+  return state.playwrightRuntime.available && state.settings.playwrightBrowserControlEnabled;
+}
+
+function isCodexSkillRuntimeBlocked(skill: CodexSkillOption): boolean {
+  return getCodexSkillRuntimeRequirement(skill) === "playwright" && !isPlaywrightRuntimeEnabled();
 }
 
 function renderWorkspaceView(strings: ReturnType<typeof getUiStrings>): string {
@@ -3387,6 +3586,13 @@ function renderWorkspaceView(strings: ReturnType<typeof getUiStrings>): string {
               strings.labels.language,
               strings.settings.uiLanguage,
               renderLanguageSelect(),
+              {},
+            ),
+            renderSettingsRow(
+              "theme",
+              strings.settings.uiTheme,
+              strings.settingsPanel.themeDescription,
+              renderThemeSelect(),
               {},
             ),
             renderSettingsRow(
@@ -4154,6 +4360,7 @@ async function resetSettingsFromUi(): Promise<void> {
       allowBrowserActions: true,
       browserActionPermissionMode: normalizeBrowserActionPermissionMode(result.settings.browserActionPermissionMode),
       uiLanguage: normalizeUiLanguageSetting(result.settings.uiLanguage),
+      uiTheme: normalizeUiThemeSetting(result.settings.uiTheme),
       preferredVoice: normalizeCodexRealtimeVoice(result.settings.preferredVoice),
     };
     state.uiLocale = resolveUiLocale(state.settings.uiLanguage, getBrowserUiLanguage());
@@ -4286,6 +4493,50 @@ function renderLanguageSelect(): string {
       </select>
       <span aria-hidden="true">${renderUiIcon("chevron-down")}</span>
     </label>
+  `;
+}
+
+function renderThemeSelect(): string {
+  const selectedTheme = normalizeUiThemeSetting(state.settings.uiTheme);
+  const strings = getUiStrings(state.uiLocale);
+  const options = [
+    { value: "light", label: strings.settings.themeLight },
+    { value: "dark", label: strings.settings.themeDark },
+    { value: "system", label: strings.settings.themeSystem },
+  ] as const;
+  return `
+    <div class="theme-choice-grid" role="radiogroup" aria-label="${escapeAttribute(strings.settings.uiTheme)}">
+      ${options
+        .map(
+          (option) => `
+            <button
+              type="button"
+              class="theme-choice-card ${option.value === selectedTheme ? "selected" : ""}"
+              data-theme-choice="${option.value}"
+              role="radio"
+              aria-checked="${option.value === selectedTheme ? "true" : "false"}"
+              title="${escapeAttribute(option.label)}"
+            >
+              <span class="theme-preview theme-preview-${option.value}" aria-hidden="true">
+                <span class="theme-preview-window left">
+                  <span class="theme-preview-bar"></span>
+                  <span class="theme-preview-dots"></span>
+                </span>
+                ${
+                  option.value === "system"
+                    ? `<span class="theme-preview-window right">
+                        <span class="theme-preview-bar"></span>
+                        <span class="theme-preview-dots"></span>
+                      </span>`
+                    : ""
+                }
+              </span>
+              <span class="theme-choice-label">${escapeHtml(option.label)}</span>
+            </button>
+          `,
+        )
+        .join("")}
+    </div>
   `;
 }
 
@@ -4840,6 +5091,7 @@ function defaultPromptForContext(strings: ReturnType<typeof getUiStrings>): stri
 
 function buildConversationContextHint(): string {
   return state.messages
+    .filter((message) => !message.notice && message.text.trim())
     .slice(-8)
     .map((message) => `${message.role}: ${message.text}`)
     .join("\n")
@@ -6397,11 +6649,69 @@ async function toggleCodexSkillEnabled(skillId: string): Promise<void> {
   scheduleConversationPersist();
 }
 
+async function refreshPlaywrightRuntimeStatus(): Promise<void> {
+  try {
+    const result = await sendRuntimeMessage<{ playwrightRuntime: UiInitPayload["playwrightRuntime"] }>({
+      type: "runtime.playwright.status",
+    });
+    state.playwrightRuntime = result.playwrightRuntime;
+    state.actionStatus = stringsForState().status.playwrightRuntimeRefreshed;
+  } catch (error) {
+    state.actionStatus = toErrorMessage(error);
+  }
+  render();
+}
+
+async function installPlaywrightRuntimeFromSettings(): Promise<void> {
+  const strings = stringsForState();
+  state.actionStatus = strings.status.playwrightRuntimeInstalling;
+  renderSync();
+  try {
+    const result = await sendRuntimeMessage<{ playwrightRuntime: UiInitPayload["playwrightRuntime"] }>({
+      type: "runtime.playwright.install",
+    });
+    state.playwrightRuntime = result.playwrightRuntime;
+    if (result.playwrightRuntime.available) {
+      await updatePlaywrightRuntimeEnabled(true);
+      state.actionStatus = strings.status.playwrightRuntimeInstalled;
+    } else {
+      state.actionStatus = result.playwrightRuntime.message;
+    }
+  } catch (error) {
+    state.actionStatus = `${strings.status.playwrightRuntimeInstallFailed} ${toErrorMessage(error)}`;
+  }
+  render();
+}
+
+async function updatePlaywrightRuntimeEnabled(enabled: boolean): Promise<void> {
+  const result = await sendRuntimeMessage<ExtensionSettings>({
+    type: "settings.update",
+    settings: { playwrightBrowserControlEnabled: enabled },
+  });
+  state.settings = {
+    ...result,
+    preferredVoice: normalizeCodexRealtimeVoice(result.preferredVoice),
+  };
+  if (!enabled) {
+    state.structuredInputs = state.structuredInputs.filter(
+      (input) => input.type !== "skill" || !isRuntimeGatedStructuredInput(input),
+    );
+  }
+  scheduleConversationPersist();
+}
+
+function isRuntimeGatedStructuredInput(input: CodexStructuredInput): boolean {
+  return getCodexSkillRuntimeRequirement(input) === "playwright";
+}
+
 function getPromptStructuredInputs(): CodexStructuredInput[] {
   return mergeStructuredInputsWithEnabledCodexSkills(
     state.structuredInputs,
     state.appServerSkills,
     state.settings.enabledCodexSkillIds,
+    {
+      playwrightAvailable: isPlaywrightRuntimeEnabled(),
+    },
   );
 }
 
@@ -6548,6 +6858,36 @@ function syncDocumentLanguage(): void {
     : state.activeView === "context"
       ? `${strings.panelDocumentTitle} · ${strings.tabs.context}`
       : `${strings.panelDocumentTitle} · ${strings.tabs.chat}`;
+  syncDocumentTheme();
+}
+
+function syncDocumentTheme(): void {
+  const themeSetting = normalizeUiThemeSetting(state.settings.uiTheme);
+  const resolvedTheme = resolveUiTheme(themeSetting, getSystemPrefersDark());
+  document.documentElement.dataset.themeSetting = themeSetting;
+  document.documentElement.dataset.theme = resolvedTheme;
+  document.documentElement.style.colorScheme = resolvedTheme;
+}
+
+function getSystemPrefersDark(): boolean {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return true;
+  }
+  return window.matchMedia("(prefers-color-scheme: dark)").matches;
+}
+
+function installSystemThemeListener(): void {
+  if (systemThemeListenerInstalled || typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return;
+  }
+  systemThemeListenerInstalled = true;
+  systemThemeMediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+  systemThemeMediaQuery.addEventListener("change", () => {
+    if (normalizeUiThemeSetting(state.settings.uiTheme) !== "system") {
+      return;
+    }
+    syncDocumentTheme();
+  });
 }
 
 function captureScrollPositions(): Record<string, { scrollTop: number; stickToBottom: boolean }> {
@@ -7564,6 +7904,27 @@ function bindEvents(): void {
     });
   });
 
+  root.querySelector<HTMLInputElement>("[data-playwright-runtime-toggle]")?.addEventListener("change", async (event) => {
+    const input = event.currentTarget as HTMLInputElement | null;
+    if (!input || !state.playwrightRuntime.available) {
+      return;
+    }
+    await updatePlaywrightRuntimeEnabled(input.checked);
+    render();
+  });
+
+  root.querySelector<HTMLButtonElement>("[data-install-playwright-runtime]")?.addEventListener("click", async (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    await installPlaywrightRuntimeFromSettings();
+  });
+
+  root.querySelector<HTMLButtonElement>("[data-refresh-playwright-runtime]")?.addEventListener("click", async (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    await refreshPlaywrightRuntimeStatus();
+  });
+
   root.querySelector<HTMLButtonElement>("#upload-skill-archive")?.addEventListener("click", () => {
     root.querySelector<HTMLInputElement>("#skill-archive-input")?.click();
   });
@@ -7861,12 +8222,33 @@ function bindEvents(): void {
     state.settings = {
       ...state.settings,
       uiLanguage: normalizeUiLanguageSetting(state.settings.uiLanguage),
+      uiTheme: normalizeUiThemeSetting(state.settings.uiTheme),
       preferredVoice: normalizeCodexRealtimeVoice(state.settings.preferredVoice),
     };
     state.uiLocale = resolveUiLocale(state.settings.uiLanguage, getBrowserUiLanguage());
     syncDocumentLanguage();
     state.profiles = localizeBuiltinProfiles(state.profiles, state.uiLocale);
     render();
+  });
+
+  root.querySelectorAll<HTMLButtonElement>("[data-theme-choice]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const uiTheme = normalizeUiThemeSetting(button.dataset.themeChoice);
+      if (uiTheme === normalizeUiThemeSetting(state.settings.uiTheme)) {
+        return;
+      }
+      state.settings = await chrome.runtime.sendMessage({
+        type: "settings.update",
+        settings: { uiTheme },
+      });
+      state.settings = {
+        ...state.settings,
+        uiTheme: normalizeUiThemeSetting(state.settings.uiTheme),
+        preferredVoice: normalizeCodexRealtimeVoice(state.settings.preferredVoice),
+      };
+      syncDocumentTheme();
+      render();
+    });
   });
 
   root.querySelector<HTMLSelectElement>("#voice-select")?.addEventListener("change", async (event) => {
@@ -11078,11 +11460,10 @@ async function compactCurrentConversation(): Promise<void> {
   }
 
   const clientRequestId = `compact-${Date.now()}`;
-  state.promptActivity = {
-    clientRequestId,
-    phase: "compacting",
-  };
+  const noticeKey = createContextCompactionNoticeKey({ clientRequestId });
+  upsertContextCompactionNotice(noticeKey, "running");
   state.actionStatus = strings.status.compactStarted;
+  scheduleConversationPersist();
   render();
 
   try {
@@ -11102,14 +11483,13 @@ async function compactCurrentConversation(): Promise<void> {
       state.actionStatus = strings.status.compactSkipped;
     } else {
       state.threadId = result.threadId ?? state.threadId;
+      upsertContextCompactionNotice(noticeKey, "completed");
       state.actionStatus = strings.status.compactCompleted;
+      scheduleConversationPersist();
     }
   } catch (error) {
     state.initError = toUserFacingRuntimeError(error);
   } finally {
-    if (state.promptActivity?.clientRequestId === clientRequestId) {
-      state.promptActivity = null;
-    }
     render();
   }
 }

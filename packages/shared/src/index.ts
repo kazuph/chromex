@@ -2,6 +2,7 @@ export * from "./agentic-image-edit.js";
 export * from "./agentic-route.js";
 export * from "./action-cards.js";
 export * from "./context.js";
+export * from "./context-budget.js";
 export * from "./harness.js";
 export * from "./implicit-context.js";
 export * from "./profiles.js";

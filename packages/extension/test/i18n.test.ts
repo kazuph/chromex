@@ -14,6 +14,8 @@ describe("side panel i18n", () => {
     expect(getUiStrings("ko").actions.chatgptLogin).toBe("Codex OAuth 로그인");
     expect(getUiStrings("en").labels.actionCards).toBe("Suggested questions");
     expect(getUiStrings("ko").labels.actionCards).toBe("추천 질문");
+    expect(getUiStrings("en").settings.uiTheme).toBe("Theme");
+    expect(getUiStrings("ko").settings.themeLight).toBe("화이트");
     expect(getUiStrings("ko").help.emptyActions).toContain("추천 질문");
   });
 

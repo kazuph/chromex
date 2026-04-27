@@ -1,5 +1,5 @@
 :root {
-  color-scheme: dark;
+  color-scheme: light dark;
   --bg: #111214;
   --panel: #1f2023;
   --text: #f4f5f6;
@@ -97,4 +97,31 @@ h1 {
   background: rgba(255, 255, 255, 0.035);
   font-size: 14px;
   line-height: 20px;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f7f8fb;
+    --panel: #ffffff;
+    --text: #17191f;
+    --muted: #697386;
+    --line: rgba(21, 30, 48, 0.12);
+    --accent: #2563eb;
+    --accent-ink: #ffffff;
+  }
+
+  body {
+    background:
+      radial-gradient(circle at top left, rgba(37, 99, 235, 0.12), transparent 30%),
+      var(--bg);
+  }
+
+  .mic-shell {
+    background: linear-gradient(180deg, rgba(37, 99, 235, 0.04), transparent), var(--panel);
+    box-shadow: 0 18px 44px rgba(15, 23, 42, 0.12);
+  }
+
+  .mic-status {
+    background: rgba(15, 23, 42, 0.04);
+  }
 }

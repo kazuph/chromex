@@ -4,10 +4,18 @@ import {
   type ProfileTemplate,
 } from "@codex-sidepanel/shared";
 
-import type { ConversationSummary, ExtensionSettings, SavedConversation } from "../types.js";
+import type {
+  ConversationMessage,
+  ConversationMessageAttachment,
+  ConversationMessageImage,
+  ConversationSummary,
+  ExtensionSettings,
+  SavedConversation,
+} from "../types.js";
 import { normalizeStoredProfiles } from "../profile-templates.js";
 import type { SkillOption } from "../sidepanel/skills.js";
 import { normalizeUiLanguageSetting } from "../ui-language.js";
+import { normalizeUiThemeSetting } from "../ui-theme.js";
 import { normalizeEnabledCodexSkillIds } from "../codex-skill-settings.js";
 import { normalizeCustomSiteSuggestions } from "../custom-site-suggestions.js";
 import {
@@ -30,6 +38,7 @@ const STORAGE_KEYS = {
 
 export const DEFAULT_SETTINGS: ExtensionSettings = {
   uiLanguage: "auto",
+  uiTheme: "system",
   usageNoticeAccepted: false,
   shareCurrentTabByDefault: false,
   rememberChats: false,
@@ -37,6 +46,7 @@ export const DEFAULT_SETTINGS: ExtensionSettings = {
   allowVoiceNavigation: true,
   allowBrowserActions: true,
   browserActionPermissionMode: "ask",
+  playwrightBrowserControlEnabled: false,
   preferredVoice: "",
   workspaceRoot: "",
   codexBinPath: "",
@@ -46,6 +56,8 @@ export const DEFAULT_SETTINGS: ExtensionSettings = {
 };
 
 const CONVERSATION_KEYS = [STORAGE_KEYS.conversations, STORAGE_KEYS.currentConversationId] as const;
+const MAX_STORED_DATA_IMAGE_URL_CHARS = 128 * 1024;
+const MAX_CONVERSATION_HISTORY_BYTES = 4 * 1024 * 1024;
 
 export async function getStoredSettings(): Promise<ExtensionSettings> {
   const result = (await chrome.storage.local.get(STORAGE_KEYS.settings))[STORAGE_KEYS.settings] as
@@ -56,8 +68,10 @@ export async function getStoredSettings(): Promise<ExtensionSettings> {
     ...settings,
     allowBrowserActions: true,
     uiLanguage: normalizeUiLanguageSetting(settings.uiLanguage),
+    uiTheme: normalizeUiThemeSetting(settings.uiTheme),
     preferredVoice: normalizeCodexRealtimeVoice(settings.preferredVoice),
     browserActionPermissionMode: normalizeBrowserActionPermissionMode(settings.browserActionPermissionMode),
+    playwrightBrowserControlEnabled: settings.playwrightBrowserControlEnabled === true,
     enabledCodexSkillIds: normalizeEnabledCodexSkillIds(settings.enabledCodexSkillIds),
     customSiteSuggestions: normalizeCustomSiteSuggestions(settings.customSiteSuggestions),
   };
@@ -70,10 +84,12 @@ export async function updateStoredSettings(patch: Partial<ExtensionSettings>): P
     ...patch,
     allowBrowserActions: true,
     uiLanguage: normalizeUiLanguageSetting(patch.uiLanguage ?? current.uiLanguage),
+    uiTheme: normalizeUiThemeSetting(patch.uiTheme ?? current.uiTheme),
     preferredVoice: normalizeCodexRealtimeVoice(patch.preferredVoice ?? current.preferredVoice),
     browserActionPermissionMode: normalizeBrowserActionPermissionMode(
       patch.browserActionPermissionMode ?? current.browserActionPermissionMode,
     ),
+    playwrightBrowserControlEnabled: (patch.playwrightBrowserControlEnabled ?? current.playwrightBrowserControlEnabled) === true,
     enabledCodexSkillIds: normalizeEnabledCodexSkillIds(
       patch.enabledCodexSkillIds ?? current.enabledCodexSkillIds,
     ),
@@ -211,10 +227,7 @@ export async function listConversations(): Promise<SavedConversation[]> {
     | SavedConversation[]
     | undefined;
   return (result ?? [])
-    .map((conversation) => ({
-      ...conversation,
-      structuredInputs: conversation.structuredInputs ?? [],
-    }))
+    .map((conversation) => sanitizeConversationForStorage(conversation))
     .sort((left, right) => right.updatedAt - left.updatedAt);
 }
 
@@ -247,12 +260,27 @@ export async function saveConversation(conversation: SavedConversation): Promise
   const conversations = await listConversations();
   const area = await getConversationStorageArea();
   const nextConversation = {
-    ...conversation,
+    ...sanitizeConversationForStorage(conversation),
     title: buildConversationTitle(conversation),
     updatedAt: Date.now(),
   };
-  const next = [nextConversation, ...conversations.filter((item) => item.id !== conversation.id)].slice(0, 20);
-  await area.set({ [STORAGE_KEYS.conversations]: next });
+  const next = prepareConversationsForStorage([
+    nextConversation,
+    ...conversations.filter((item) => item.id !== conversation.id),
+  ]);
+  try {
+    await area.set({ [STORAGE_KEYS.conversations]: next });
+  } catch (error) {
+    if (!isStorageQuotaError(error)) {
+      throw error;
+    }
+    await area.set({
+      [STORAGE_KEYS.conversations]: prepareConversationsForStorage(
+        [nextConversation, ...conversations.filter((item) => item.id !== conversation.id)],
+        { aggressive: true },
+      ),
+    });
+  }
   return nextConversation;
 }
 
@@ -344,4 +372,124 @@ async function migrateConversationRetention(rememberChats: boolean): Promise<voi
   }
 
   await source.remove([...CONVERSATION_KEYS]);
+}
+
+export function prepareConversationsForStorage(
+  conversations: SavedConversation[],
+  options: { aggressive?: boolean } = {},
+): SavedConversation[] {
+  const sanitized = conversations
+    .map((conversation) => sanitizeConversationForStorage(conversation, options))
+    .slice(0, options.aggressive ? 8 : 20);
+  const next: SavedConversation[] = [];
+  for (const conversation of sanitized) {
+    const candidate = [...next, conversation];
+    if (estimateStorageBytes(candidate) > MAX_CONVERSATION_HISTORY_BYTES) {
+      if (next.length === 0) {
+        next.push(trimConversationToStorageBudget(conversation, MAX_CONVERSATION_HISTORY_BYTES));
+      }
+      break;
+    }
+    next.push(conversation);
+  }
+  return next;
+}
+
+export function sanitizeConversationForStorage(
+  conversation: SavedConversation,
+  options: { aggressive?: boolean } = {},
+): SavedConversation {
+  return {
+    ...conversation,
+    messages: (conversation.messages ?? []).map((message) => {
+      const images: ConversationMessageImage[] = (message.images ?? [])
+        .map((image) => {
+          const src = typeof image.src === "string" ? image.src.trim() : "";
+          const assetRef = typeof image.assetRef === "string" ? image.assetRef.trim() : "";
+          if (assetRef) {
+            return {
+              src: "",
+              alt: image.alt || "Image",
+              assetRef,
+              status: image.status === "error" || image.status === "deleted" ? image.status : "loading",
+            } satisfies ConversationMessageImage;
+          }
+          if (src.startsWith("blob:")) {
+            return { src: "", alt: image.alt || "Image", status: "deleted" } satisfies ConversationMessageImage;
+          }
+          if (src.startsWith("data:image/") && (options.aggressive || src.length > MAX_STORED_DATA_IMAGE_URL_CHARS)) {
+            return { src: "", alt: image.alt || "Image", status: "deleted" } satisfies ConversationMessageImage;
+          }
+          const next: ConversationMessageImage = {
+            src,
+            alt: image.alt || "Image",
+          };
+          if (image.status) {
+            next.status = image.status;
+          }
+          return next;
+        })
+        .filter((image) => image.src || image.assetRef || image.status);
+      const attachments: ConversationMessageAttachment[] = (message.attachments ?? []).map((attachment) => {
+        const previewSrc = attachment.previewSrc?.trim() ?? "";
+        const shouldKeepPreview =
+          previewSrc &&
+          !options.aggressive &&
+          (!previewSrc.startsWith("data:image/") || previewSrc.length <= MAX_STORED_DATA_IMAGE_URL_CHARS);
+        const next: ConversationMessageAttachment = {
+          ...attachment,
+        };
+        if (shouldKeepPreview) {
+          next.previewSrc = previewSrc;
+        } else {
+          delete next.previewSrc;
+        }
+        return next;
+      });
+      const nextMessage: ConversationMessage = {
+        ...message,
+        text: sanitizeMessageTextForStorage(message.text),
+      };
+      if (images.length) {
+        nextMessage.images = images;
+      } else {
+        delete nextMessage.images;
+      }
+      if (attachments.length) {
+        nextMessage.attachments = attachments;
+      } else {
+        delete nextMessage.attachments;
+      }
+      return nextMessage;
+    }),
+    attachments: conversation.attachments ?? [],
+    structuredInputs: conversation.structuredInputs ?? [],
+    selectedTabIds: conversation.selectedTabIds ?? [],
+    historyQuery: conversation.historyQuery ?? "",
+    readStrategyOverride: conversation.readStrategyOverride ?? "auto",
+  };
+}
+
+function trimConversationToStorageBudget(conversation: SavedConversation, maxBytes: number): SavedConversation {
+  let trimmed = sanitizeConversationForStorage(conversation, { aggressive: true });
+  while (trimmed.messages.length > 1 && estimateStorageBytes([trimmed]) > maxBytes) {
+    trimmed = {
+      ...trimmed,
+      messages: trimmed.messages.slice(1),
+    };
+  }
+  return trimmed;
+}
+
+function estimateStorageBytes(value: unknown): number {
+  return new TextEncoder().encode(JSON.stringify(value)).byteLength;
+}
+
+function sanitizeMessageTextForStorage(text: string): string {
+  return text.replace(/data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/=]+/giu, "[stored image asset]");
+}
+
+function isStorageQuotaError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /quota|kQuotaBytes|QUOTA_BYTES/iu.test(message);
 }

@@ -242,6 +242,56 @@ describe("AppServerCodexPlane", () => {
     expect(imageEvent?.type === "message.image" && isBridgeImageAssetRef(imageEvent.previewRef)).toBe(true);
   });
 
+  test("materializes oversized DOM context as a local file reference", async () => {
+    const client = new FakeCodexClient({
+      emitImageBeforeTurnCompleted: false,
+      agentText: "done",
+    });
+    const plane = new AppServerCodexPlane({
+      client: client as never,
+      harness: harness as never,
+      secrets: new InMemoryBridgeSecrets(),
+    });
+    const longDom = "한국어와 English가 섞인 긴 페이지 본문입니다. ".repeat(18_000);
+
+    await plane.sendPrompt(
+      {
+        profile,
+        model: "gpt-5.3-codex-spark",
+        message: "이 페이지를 핵심만 요약해줘.",
+        contexts: [
+          {
+            metadata: {
+              url: "https://example.com/long",
+              title: "Long Page",
+              domain: "example.com",
+            },
+            selectionText: "",
+            domSummary: longDom,
+            visionAssets: [],
+            adapterPayload: null,
+            privacyFlags: {
+              containsSensitiveFormData: false,
+              userConsentedToHistory: false,
+            },
+          },
+        ],
+      },
+      () => undefined,
+    );
+
+    const turnStart = client.calls.find((call) => call.method === "turn/start");
+    const inputItems = Array.isArray(turnStart?.params?.input) ? turnStart.params.input : [];
+    const textItem = inputItems.find(
+      (item): item is { type: "text"; text: string } =>
+        typeof item === "object" && item !== null && (item as { type?: unknown }).type === "text",
+    );
+
+    expect(textItem?.text).toContain("Full captured page text is available during this turn at:");
+    expect(textItem?.text).toContain("OVERSIZED PAGE CONTEXT FILE");
+    expect(textItem?.text.length ?? 0).toBeLessThan(longDom.length);
+  });
+
   test("emits sanitized turn activity for public search and file work without raw chain of thought", async () => {
     const client = new FakeCodexClient();
     const events: BridgeEvent[] = [];
@@ -919,6 +969,65 @@ describe("CodexImagePlane", () => {
     expect(textItem?.text).toContain("Input images or Reference images");
     expect(textItem?.text).toContain("Previous image prompt summary");
     expect(localImageItems).toEqual([]);
+  });
+
+  test("materializes visible-screen context for infographic generation", async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "codex-image-generate-screenshot-"));
+    const imageAssets = new BridgeImageAssetStore({
+      outputDir: () => join(workspaceRoot, ".codex-sidepanel", "generated-images"),
+    });
+    const client = new FakeCodexClient({ imageEditMode: true });
+    const plane = new CodexImagePlane(
+      {
+        runHooks: async () => ({ appendPrompt: [] }),
+        resolvePromptInstructions: async () => ({ text: "", sources: [] }),
+        getWorkspaceRoot: async () => workspaceRoot,
+      } as never,
+      { client: client as never, imageAssets },
+    );
+
+    await plane.startGenerate({
+      prompt: "Create an infographic from this visible dashboard.",
+      contexts: [
+        {
+          metadata: {
+            url: "https://example.com/dashboard",
+            title: "Visual dashboard",
+            domain: "example.com",
+          },
+          selectionText: "",
+          domSummary: "",
+          visionAssets: [
+            {
+              ref: `data:image/png;base64,${Buffer.from("visible screenshot").toString("base64")}`,
+              kind: "screenshot",
+            },
+          ],
+          adapterPayload: null,
+          privacyFlags: {
+            containsSensitiveFormData: false,
+            userConsentedToHistory: false,
+          },
+        },
+      ],
+      workflow: "infographic",
+      model: "gpt-image-2",
+      quality: "high",
+      size: "1024x1536",
+    });
+
+    const turnStart = client.calls.find((call) => call.method === "turn/start");
+    const inputItems = Array.isArray(turnStart?.params?.input) ? turnStart.params.input : [];
+    const localImageItems = inputItems.filter(
+      (item): item is { type: "localImage"; path: string } =>
+        typeof item === "object" &&
+        item !== null &&
+        (item as { type?: unknown }).type === "localImage" &&
+        typeof (item as { path?: unknown }).path === "string",
+    );
+
+    expect(localImageItems).toHaveLength(1);
+    expect(localImageItems[0]?.path).toContain("context-1-asset-1.png");
   });
 
   test("generates a normal image from a user-provided prompt without rewriting it as prompt advice", async () => {

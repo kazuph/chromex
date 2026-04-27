@@ -34,10 +34,13 @@ function readFinalDeclaration(selector: string, property: string): string {
 
 describe("Codex skill toggles", () => {
   test("renders Codex app-server skills as persistent on/off toggles", () => {
+    expect(sidepanelSource).toContain("renderContextView");
     expect(sidepanelSource).toContain("renderCodexSkillToggle");
     expect(sidepanelSource).toContain("data-codex-skill-toggle=");
     expect(sidepanelSource).toContain("toggleCodexSkillEnabled");
     expect(sidepanelSource).not.toContain("data-app-server-skill-id=");
+    expect(sidepanelSource).not.toContain("renderCodexSkillSettings");
+    expect(css).not.toContain(".settings-codex-skill-list");
   });
 
   test("sends only enabled Codex skills to the prompt runtime", () => {
@@ -50,5 +53,13 @@ describe("Codex skill toggles", () => {
     expect(readFinalDeclaration(".codex-skill-list", "display")).toBe("grid");
     expect(readFinalDeclaration(".codex-skill-toggle", "display")).toBe("flex");
     expect(readFinalDeclaration(".codex-skill-toggle.enabled", "border-color")).toBe("rgba(169, 199, 255, 0.24)");
+  });
+
+  test("blocks install-required automation skills unless the local runtime is enabled", () => {
+    expect(sidepanelSource).toContain("getCodexSkillRuntimeRequirement");
+    expect(sidepanelSource).toContain("isCodexSkillRuntimeBlocked");
+    expect(sidepanelSource).toContain("isRuntimeGatedStructuredInput");
+    expect(sidepanelSource).not.toContain("isPlaywrightSkillOption");
+    expect(sidepanelSource).not.toContain("isPlaywrightStructuredInput");
   });
 });

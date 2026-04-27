@@ -62,7 +62,7 @@ describe("composeBodyText", () => {
     expect(result.match(/Quarterly planning/g)).toHaveLength(1);
   });
 
-  test("keeps long DOM context up to 100k characters", () => {
+  test("keeps long DOM context up to the transport capture limit", () => {
     const longArticle = Array.from({ length: 4200 }, (_, index) => `Paragraph ${index} explains a different detail.`).join(" ");
     const result = composeBodyText(
       [
@@ -75,7 +75,7 @@ describe("composeBodyText", () => {
     );
 
     expect(result.length).toBeGreaterThan(90_000);
-    expect(result.length).toBeLessThanOrEqual(100_000);
+    expect(result.length).toBeLessThanOrEqual(240_000);
   });
 
   test("removes non-content nodes before text extraction", () => {

@@ -3,9 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  fitTextToTokenBudget,
   normalizeCodexRealtimeVoice,
   type PageContextEnvelope,
   type ProfileTemplate,
+  resolveDomContextBudget,
   type VoiceSessionState,
 } from "@codex-sidepanel/shared";
 
@@ -387,6 +389,90 @@ function isMissingThreadFailure(error: unknown): boolean {
 
 function computePromptRetryDelay(retryAttempt: number): number {
   return Math.min(MAX_PROMPT_RECONNECT_DELAY_MS, BASE_PROMPT_RECONNECT_DELAY_MS * 2 ** Math.max(0, retryAttempt - 1));
+}
+
+async function preparePageContextsForPrompt(input: {
+  params: PromptSendParams;
+  tempDir: string;
+}): Promise<{
+  contexts: PageContextEnvelope[];
+  appendices: string[];
+  tempPaths: string[];
+}> {
+  if (input.params.contexts.length === 0) {
+    return {
+      contexts: [],
+      appendices: [],
+      tempPaths: [],
+    };
+  }
+
+  const budget = resolveDomContextBudget({
+    userMessage: input.params.message,
+    contextCount: input.params.contexts.length,
+    fileAttachmentCount: input.params.fileAttachments?.length ?? 0,
+    ...(input.params.model ? { modelId: input.params.model } : {}),
+  });
+  const contexts: PageContextEnvelope[] = [];
+  const appendices: string[] = [];
+  const tempPaths: string[] = [];
+
+  for (const [index, context] of input.params.contexts.entries()) {
+    const fit = fitTextToTokenBudget(context.domSummary, budget.perContextDomTokens);
+    if (!fit.truncated) {
+      contexts.push(context);
+      continue;
+    }
+
+    const filePath = join(input.tempDir, `page-context-${index + 1}.txt`);
+    await writeFile(filePath, formatPageContextArtifact(context), "utf8");
+    tempPaths.push(filePath);
+    contexts.push({
+      ...context,
+      domSummary: [
+        fit.text,
+        "",
+        "[DOM context note]",
+        `The page text exceeded the inline token budget for this model, so only the highest-priority prefix is inlined.`,
+        `Full captured page text is available during this turn at: ${filePath}`,
+        `Original characters: ${fit.originalChars}; inline characters: ${fit.includedChars}; estimated original tokens: ${fit.originalTokens}; inline token budget: ${budget.perContextDomTokens}.`,
+        "If the answer depends on omitted sections, inspect that local file before answering instead of guessing.",
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    });
+    appendices.push(
+      [
+        "OVERSIZED PAGE CONTEXT FILE",
+        `Context: ${index + 1}`,
+        `Title: ${context.metadata.title}`,
+        `URL: ${context.metadata.url}`,
+        `Local path: ${filePath}`,
+        "Use this file only when the visible inline DOM context is insufficient for the user's request.",
+      ].join("\n"),
+    );
+  }
+
+  return {
+    contexts,
+    appendices,
+    tempPaths,
+  };
+}
+
+function formatPageContextArtifact(context: PageContextEnvelope): string {
+  return [
+    "Chromex captured page context",
+    `Title: ${context.metadata.title}`,
+    `URL: ${context.metadata.url}`,
+    `Domain: ${context.metadata.domain}`,
+    context.selectionText ? `Selection:\n${context.selectionText}` : "",
+    context.adapterPayload ? `Adapter payload:\n${JSON.stringify(context.adapterPayload, null, 2)}` : "",
+    "DOM text:",
+    context.domSummary,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 function getErrorMessage(error: unknown): string {
@@ -1273,9 +1359,17 @@ export class AppServerCodexPlane implements BridgeCodexPlane {
       ),
     });
     const preparedFiles = await prepareUserFileAttachments(params.fileAttachments ?? []);
+    const contextPreparation = await preparePageContextsForPrompt({
+      params,
+      tempDir: await this.#tempDirPromise,
+    });
+    tempPaths.push(...contextPreparation.tempPaths);
 
     return createCodexTurnInputItems(
-      params,
+      {
+        ...params,
+        contexts: contextPreparation.contexts,
+      },
       async (ref, contextIndex, assetIndex) => {
         const path = await this.#materializeInlineImage(ref, contextIndex, assetIndex);
         tempPaths.push(path);
@@ -1283,7 +1377,7 @@ export class AppServerCodexPlane implements BridgeCodexPlane {
       },
       {
         workspaceInstructions: workspaceInstructions.text,
-        promptAppendices: promptHooks.appendPrompt,
+        promptAppendices: [...promptHooks.appendPrompt, ...contextPreparation.appendices],
         fileSections: preparedFiles.sections,
         uploadedImages: preparedFiles.uploadedImages,
       },
@@ -2022,64 +2116,73 @@ export class CodexImagePlane implements BridgeImagePlane {
     const workflow = params.workflow ?? "generated-image";
     const preparedFiles = await prepareUserFileAttachments(params.fileAttachments ?? []);
     const conversationContext = params.conversationContext?.trim().slice(0, 8_000) ?? "";
-    const input = await createCodexTurnInputItems(
-      {
-        profile,
-        message: [
-          createImageGenerateWorkflowInstruction(workflow),
-          `Generation request: ${params.prompt}`,
-          conversationContext
-            ? [
-                "",
-                "PREVIOUS CONVERSATION CONTEXT - DO NOT DISPLAY VERBATIM",
-                conversationContext,
-                "Use this only to preserve the user's preferences, constraints, and terminology from the current chat.",
-              ].join("\n")
-            : "",
-          "Requirements:",
-          "- Generate a new image, not an edit of a missing input image.",
-          `- Image model target: ${model}.`,
-          `- Render target: ${size}, ${quality} quality.`,
-          `- Use case: ${createImageGenerateUseCase(workflow)}.`,
-          "- Treat all attached page data as PRIVATE PAGE CONTEXT and use it only as source material.",
-          "- If the generation request contains or references a user-provided prompt, execute that prompt as the visual brief. Do not rewrite it unless the user explicitly asks for prompt text instead of an image.",
-          "- Do not invent metrics, quotes, dates, citations, charts, logos, or facts that are not present in the page context.",
-          "- If exact numbers are unavailable, use qualitative callouts instead of fake numbers.",
-          "- Prioritize readable typography, concise section labels, clear hierarchy, high contrast, and generous whitespace.",
-          "- Keep in-image text crisp, correctly spelled, and legible on mobile.",
-          "- For a normal single-image request, produce exactly one final image.",
-          "- If the user explicitly asks for a slide deck or multiple slide images, generate the slide images sequentially in this same Codex turn, one image-generation tool call per slide, in slide order.",
-          "- For slide decks or any ordered multi-image set, use reference chaining: before generating image 2 and every later image, inspect the previous generated image result, keep its saved local path or preview reference, and carry forward the exact previous image prompt summary.",
-          "- Every image 2+ generation prompt must include an Input images or Reference images line naming the previous generated image as a visual continuity reference, plus a Previous image prompt summary and the reusable visual system to preserve.",
-          "- Use the previous image reference for consistent palette, typography, grid, spacing, components, lighting, and illustration/chart style. Do not duplicate the previous image's content unless the user explicitly asks for repeated content.",
-          "- Save the final image and mention the saved path in the response.",
-        ].join("\n"),
-        contexts,
-        ...(imagegenSkill
-          ? {
-              structuredInputs: [
-                {
-                  id: `skill:${imagegenSkill.id}`,
-                  type: "skill" as const,
-                  name: imagegenSkill.name,
-                  path: imagegenSkill.path,
-                  description: imagegenSkill.description,
-                  token: imagegenSkill.token,
-                },
-              ],
-            }
-          : {}),
-      },
-      async () => {
-        throw new Error("Unexpected inline image materialization request for infographic generation.");
-      },
-      {
-        workspaceInstructions: workspaceInstructions.text,
-        promptAppendices: promptHooks.appendPrompt,
-        fileSections: preparedFiles.sections,
-        uploadedImages: preparedFiles.uploadedImages,
-      },
-    );
+    const tempPaths: string[] = [];
+    let input: Awaited<ReturnType<typeof createCodexTurnInputItems>>;
+    try {
+      input = await createCodexTurnInputItems(
+        {
+          profile,
+          message: [
+            createImageGenerateWorkflowInstruction(workflow),
+            `Generation request: ${params.prompt}`,
+            conversationContext
+              ? [
+                  "",
+                  "PREVIOUS CONVERSATION CONTEXT - DO NOT DISPLAY VERBATIM",
+                  conversationContext,
+                  "Use this only to preserve the user's preferences, constraints, and terminology from the current chat.",
+                ].join("\n")
+              : "",
+            "Requirements:",
+            "- Generate a new image, not an edit of a missing input image.",
+            `- Image model target: ${model}.`,
+            `- Render target: ${size}, ${quality} quality.`,
+            `- Use case: ${createImageGenerateUseCase(workflow)}.`,
+            "- Treat all attached page data as PRIVATE PAGE CONTEXT and use it only as source material.",
+            "- If the generation request contains or references a user-provided prompt, execute that prompt as the visual brief. Do not rewrite it unless the user explicitly asks for prompt text instead of an image.",
+            "- Do not invent metrics, quotes, dates, citations, charts, logos, or facts that are not present in the page context.",
+            "- If exact numbers are unavailable, use qualitative callouts instead of fake numbers.",
+            "- Prioritize readable typography, concise section labels, clear hierarchy, high contrast, and generous whitespace.",
+            "- Keep in-image text crisp, correctly spelled, and legible on mobile.",
+            "- For a normal single-image request, produce exactly one final image.",
+            "- If the user explicitly asks for a slide deck or multiple slide images, generate the slide images sequentially in this same Codex turn, one image-generation tool call per slide, in slide order.",
+            "- For slide decks or any ordered multi-image set, use reference chaining: before generating image 2 and every later image, inspect the previous generated image result, keep its saved local path or preview reference, and carry forward the exact previous image prompt summary.",
+            "- Every image 2+ generation prompt must include an Input images or Reference images line naming the previous generated image as a visual continuity reference, plus a Previous image prompt summary and the reusable visual system to preserve.",
+            "- Use the previous image reference for consistent palette, typography, grid, spacing, components, lighting, and illustration/chart style. Do not duplicate the previous image's content unless the user explicitly asks for repeated content.",
+            "- Save the final image and mention the saved path in the response.",
+          ].join("\n"),
+          contexts,
+          ...(imagegenSkill
+            ? {
+                structuredInputs: [
+                  {
+                    id: `skill:${imagegenSkill.id}`,
+                    type: "skill" as const,
+                    name: imagegenSkill.name,
+                    path: imagegenSkill.path,
+                    description: imagegenSkill.description,
+                    token: imagegenSkill.token,
+                  },
+                ],
+              }
+            : {}),
+        },
+        async (ref, contextIndex, assetIndex) => {
+          const path = await this.#materializeInlineImage(ref, contextIndex, assetIndex);
+          tempPaths.push(path);
+          return path;
+        },
+        {
+          workspaceInstructions: workspaceInstructions.text,
+          promptAppendices: promptHooks.appendPrompt,
+          fileSections: preparedFiles.sections,
+          uploadedImages: preparedFiles.uploadedImages,
+        },
+      );
+    } catch (error) {
+      await Promise.all(tempPaths.map(async (path) => rm(path, { force: true }).catch(() => undefined)));
+      throw error;
+    }
     const thread = (await this.#client.request("thread/start", {
       ...(cwd ? { cwd } : {}),
       approvalPolicy: "never",
@@ -2229,6 +2332,8 @@ export class CodexImagePlane implements BridgeImagePlane {
     } catch (error) {
       unsubscribe();
       throw error;
+    } finally {
+      await Promise.all(tempPaths.map(async (path) => rm(path, { force: true }).catch(() => undefined)));
     }
   }
 
@@ -2246,6 +2351,21 @@ export class CodexImagePlane implements BridgeImagePlane {
 
   async #writeInputImage(image: ImageEditParams["image"]): Promise<string> {
     return (await this.#imageAssets.persistInputBase64(image.base64, image.mimeType)).path;
+  }
+
+  async #materializeInlineImage(dataUrl: string, contextIndex: number, assetIndex: number): Promise<string> {
+    const match = /^data:(.+?);base64,(.+)$/u.exec(dataUrl);
+    if (!match) {
+      throw new Error("Unsupported inline vision asset. Expected a base64 data URL.");
+    }
+
+    const mimeType = match[1] ?? "image/png";
+    const base64 = match[2] ?? "";
+    const extension = mimeTypeToExtension(mimeType);
+    const tempDir = await this.#tempDirPromise;
+    const filePath = join(tempDir, `context-${contextIndex + 1}-asset-${assetIndex + 1}.${extension}`);
+    await writeFile(filePath, Buffer.from(base64, "base64"));
+    return filePath;
   }
 
   async #record(event: string, details: Record<string, unknown>): Promise<void> {

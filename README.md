@@ -88,7 +88,7 @@ More detail is in [SECURITY.md](./SECURITY.md).
 - live voice captions and page navigation commands
 - non-destructive image editing for the current image or visible tab
 - native-host bridge boundary so credentials do not live in extension storage
-- Claude Code-style workspace harness:
+- Codex workspace harness:
   - `CODEX.md`
   - `.codex/settings.json`
   - `.codex/settings.local.json`
@@ -147,6 +147,16 @@ If model loading fails, check `Workspace > Connection` first. The panel now sepa
 
 The manifest includes a stable public key, so the installer can derive the unpacked extension ID automatically. If you need to override it manually, you can still run `node scripts/install-native-host.mjs <EXTENSION_ID>`.
 
+## Chrome Web Store Package
+
+Create an upload-ready extension zip from the repository root:
+
+```bash
+npm run package:webstore
+```
+
+This command rebuilds the extension, stages `packages/extension/dist`, removes the public unpacked-install `manifest.key`, strips source maps and local build metadata, validates the zip contents, and writes the package to `output/chrome-web-store/`. Zip creation is implemented in Node so contributors do not need platform-specific `zip` or `unzip` binaries.
+
 Useful installer flags:
 
 - `--browser=chrome,chrome-beta,chrome-dev,chrome-canary,chrome-for-testing,chromium`
@@ -190,7 +200,7 @@ What is not bundled:
 
 ## Workspace Harness
 
-The bridge supports a Claude Code-style workspace harness for repeatable project behavior:
+The bridge supports a Codex workspace harness for repeatable project behavior:
 
 - `CODEX.md`: project memory and persistent instructions
 - `.codex/settings.json`: shared permission mode and hook configuration
@@ -231,7 +241,6 @@ This repository includes a minimal seed harness under `.codex/` so the feature w
 - [docs/architecture.md](./docs/architecture.md)
 - [docs/browser-ai-parity.md](./docs/browser-ai-parity.md)
 - [docs/gemini-in-chrome-gap-analysis.md](./docs/gemini-in-chrome-gap-analysis.md)
-- [docs/claude-code-gap-analysis.md](./docs/claude-code-gap-analysis.md)
 - [docs/codex-app-server-gap-analysis.md](./docs/codex-app-server-gap-analysis.md)
 - [docs/attachment-routing-architecture.md](./docs/attachment-routing-architecture.md)
 - [docs/open-source-release-checklist.md](./docs/open-source-release-checklist.md)

@@ -21,6 +21,8 @@ import type {
 } from "../types.js";
 import type { SkillOption } from "./skills.js";
 
+const MAX_STORED_DATA_IMAGE_URL_CHARS = 128 * 1024;
+
 export interface SidepanelCollections {
   models: CodexModelOption[];
   profiles: ProfileTemplate[];
@@ -79,6 +81,7 @@ function normalizeMessages(messages: SavedConversation["messages"] | undefined):
         id: stringOrDefault(message.id, `message-${index + 1}`),
         role: message.role === "user" ? "user" : "assistant",
         text: stringOrDefault(message.text, ""),
+        ...normalizeMessageNotice(message.notice),
         ...normalizeMessageDelivery(message),
         ...(message.role === "user" ? normalizeMessageProfile(message.profile) : {}),
         ...(images.length ? { images } : {}),
@@ -191,7 +194,7 @@ function normalizeAttachmentPreviewSrc(
   if (!normalized || kind !== "image") {
     return "";
   }
-  if (/^data:image\/[a-z0-9.+-]+;base64,/iu.test(normalized)) {
+  if (/^data:image\/[a-z0-9.+-]+;base64,/iu.test(normalized) && normalized.length <= MAX_STORED_DATA_IMAGE_URL_CHARS) {
     return normalized;
   }
   if (/^(?:https?:\/\/|blob:|chrome-extension:\/\/)/iu.test(normalized)) {
@@ -252,7 +255,8 @@ export function serializeConversationMessagesForStorage(messages: ConversationMe
       return {
         id: message.id,
         role: message.role,
-        text: message.text,
+        text: sanitizeMessageTextForStorage(message.text),
+        ...normalizeMessageNotice(message.notice),
         ...normalizeMessageDelivery(message),
         ...(message.role === "user" ? normalizeMessageProfile(message.profile) : {}),
         ...(images.length ? { images } : {}),
@@ -261,6 +265,25 @@ export function serializeConversationMessagesForStorage(messages: ConversationMe
       } satisfies ConversationMessage;
     })
     .filter((message) => !isTraceOnlyProgressMessage(message));
+}
+
+function normalizeMessageNotice(
+  notice: ConversationMessage["notice"] | undefined,
+): Pick<ConversationMessage, "notice"> | Record<string, never> {
+  if (notice?.type !== "context-compaction") {
+    return {};
+  }
+  return {
+    notice: {
+      type: "context-compaction",
+      state: notice.state === "completed" ? "completed" : "running",
+      automatic: notice.automatic !== false,
+    },
+  };
+}
+
+function sanitizeMessageTextForStorage(text: string): string {
+  return text.replace(/data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/=]+/giu, "[stored image asset]");
 }
 
 function isTraceOnlyProgressMessage(message: ConversationMessage): boolean {
@@ -326,10 +349,10 @@ function serializeConversationImagesForStorage(
     .map((image) => {
       if (image.assetRef) {
         return {
-          src: image.src.startsWith("blob:") ? "" : image.src,
+          src: "",
           alt: image.alt,
           assetRef: image.assetRef,
-          status: image.src.startsWith("blob:") ? "loading" : (image.status ?? "ready"),
+          status: image.status === "error" || image.status === "deleted" ? image.status : "loading",
         } satisfies ConversationMessageImage;
       }
       if (image.src.startsWith("blob:")) {
@@ -339,7 +362,15 @@ function serializeConversationImagesForStorage(
           status: "deleted",
         } satisfies ConversationMessageImage;
       }
-      return normalizeMessageImage(image);
+      const normalized = normalizeMessageImage(image);
+      if (normalized.src.startsWith("data:image/") && normalized.src.length > MAX_STORED_DATA_IMAGE_URL_CHARS) {
+        return {
+          src: "",
+          alt: normalized.alt,
+          status: "deleted",
+        } satisfies ConversationMessageImage;
+      }
+      return normalized;
     })
     .filter((image) => image.src || image.assetRef || image.status === "deleted" || image.status === "error" || image.status === "loading");
 }

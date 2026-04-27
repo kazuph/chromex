@@ -1,6 +1,7 @@
 import {
   ArrowDown,
   ArrowLeft,
+  Archive,
   AudioLines,
   BadgeQuestionMark,
   Bookmark,
@@ -24,6 +25,7 @@ import {
   PanelRight,
   Paperclip,
   Plus,
+  RefreshCw,
   ScanLine,
   Send,
   Settings,
@@ -39,6 +41,7 @@ import {
 import { escapeAttribute } from "./html-escape.js";
 
 export type UiIconName =
+  | "archive"
   | "arrow-down"
   | "arrow-left"
   | "audio-lines"
@@ -64,6 +67,7 @@ export type UiIconName =
   | "paperclip"
   | "plus"
   | "question"
+  | "refresh"
   | "scan"
   | "send"
   | "settings"
@@ -75,6 +79,7 @@ export type UiIconName =
   | "zap";
 
 const UI_ICON_NODES: Record<UiIconName, IconNode> = {
+  archive: Archive,
   "arrow-down": ArrowDown,
   "arrow-left": ArrowLeft,
   "audio-lines": AudioLines,
@@ -100,6 +105,7 @@ const UI_ICON_NODES: Record<UiIconName, IconNode> = {
   paperclip: Paperclip,
   plus: Plus,
   question: BadgeQuestionMark,
+  refresh: RefreshCw,
   scan: ScanLine,
   send: Send,
   settings: Settings,

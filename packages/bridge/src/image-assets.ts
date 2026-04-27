@@ -10,6 +10,7 @@ import { resolveDefaultGeneratedImageDir, resolveOpenFolderCommand } from "./pla
 const ASSET_REF_PREFIX = "codex-asset:";
 const DEFAULT_CHUNK_BYTES = 256 * 1024;
 const MAX_CHUNK_BYTES = 768 * 1024;
+const ASSET_MANIFEST_FILE = ".codex-sidepanel-image-assets.json";
 
 export interface BridgeImageAssetReadResult {
   previewRef: string;
@@ -70,6 +71,7 @@ export class BridgeImageAssetStore {
     const storedPath = await this.#copyFileToAssetStore(filePath, mimeType);
     const assetId = randomUUID();
     this.#assets.set(assetId, { path: storedPath, mimeType, createdAt: Date.now() });
+    await this.#persistManifest();
     await this.#record("image.asset.registered", {
       sourcePath: filePath,
       storedPath,
@@ -134,7 +136,11 @@ export class BridgeImageAssetStore {
       throw new Error("Unsupported image asset reference.");
     }
 
-    const asset = this.#assets.get(assetId);
+    let asset = this.#assets.get(assetId);
+    if (!asset) {
+      await this.#loadManifest();
+      asset = this.#assets.get(assetId);
+    }
     if (!asset) {
       throw new Error("Generated image asset is no longer available.");
     }
@@ -189,6 +195,7 @@ export class BridgeImageAssetStore {
 
     this.#assets.delete(assetId);
     await rm(asset.path, { force: true });
+    await this.#persistManifest();
     await this.#record("image.asset.deleted", {
       previewRef,
       path: asset.path,
@@ -219,6 +226,7 @@ export class BridgeImageAssetStore {
   }
 
   async #listKnownAssets(rootDir: string): Promise<ImageAssetRecord[]> {
+    await this.#loadManifest();
     const assetsByPath = new Map<string, ImageAssetRecord>();
     for (const asset of this.#assets.values()) {
       assetsByPath.set(asset.path, asset);
@@ -252,6 +260,56 @@ export class BridgeImageAssetStore {
       });
     }
     return records;
+  }
+
+  async #persistManifest(): Promise<void> {
+    const manifestPath = join(await this.#resolveAssetDirectory(), ASSET_MANIFEST_FILE);
+    const assets = Array.from(this.#assets.entries()).map(([id, asset]) => ({
+      id,
+      path: asset.path,
+      mimeType: asset.mimeType,
+      createdAt: asset.createdAt,
+    }));
+    await writeFile(
+      manifestPath,
+      JSON.stringify(
+        {
+          version: 1,
+          assets,
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+  }
+
+  async #loadManifest(): Promise<void> {
+    const manifestPath = join(await this.#resolveAssetDirectory(), ASSET_MANIFEST_FILE);
+    const raw = await readFile(manifestPath, "utf8").catch(() => "");
+    if (!raw) {
+      return;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return;
+    }
+    if (!isManifestPayload(parsed)) {
+      return;
+    }
+    for (const asset of parsed.assets) {
+      const metadata = await stat(asset.path).catch(() => null);
+      if (!metadata?.isFile()) {
+        continue;
+      }
+      this.#assets.set(asset.id, {
+        path: asset.path,
+        mimeType: asset.mimeType,
+        createdAt: asset.createdAt,
+      });
+    }
   }
 
   async openFolder(folder?: string | null): Promise<{ opened: true; folder: string }> {
@@ -370,6 +428,34 @@ function mimeTypeToExtension(mimeType: string): string {
 
 function isImageAssetFileName(fileName: string): boolean {
   return /^(generated|input)-.+\.(?:png|jpe?g|webp|gif)$/iu.test(fileName);
+}
+
+function isManifestPayload(value: unknown): value is {
+  assets: Array<{
+    id: string;
+    path: string;
+    mimeType: string;
+    createdAt: number;
+  }>;
+} {
+  if (!value || typeof value !== "object" || !Array.isArray((value as { assets?: unknown }).assets)) {
+    return false;
+  }
+  return (value as { assets: unknown[] }).assets.every((asset) => {
+    if (!asset || typeof asset !== "object") {
+      return false;
+    }
+    const candidate = asset as Record<string, unknown>;
+    return (
+      typeof candidate.id === "string" &&
+      parseBridgeImageAssetRef(toBridgeImageAssetRef(candidate.id)) === candidate.id &&
+      typeof candidate.path === "string" &&
+      typeof candidate.mimeType === "string" &&
+      candidate.mimeType.startsWith("image/") &&
+      typeof candidate.createdAt === "number" &&
+      Number.isFinite(candidate.createdAt)
+    );
+  });
 }
 
 function clampInteger(value: number, min: number, max: number): number {

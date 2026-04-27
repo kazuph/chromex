@@ -4,6 +4,10 @@ import {
   clearConversationHistoryState,
   deleteConversationHistoryEntry,
 } from "../src/background/conversation-history.js";
+import {
+  prepareConversationsForStorage,
+  sanitizeConversationForStorage,
+} from "../src/background/storage.js";
 import type { SavedConversation } from "../src/types.js";
 
 function makeConversation(id: string): SavedConversation {
@@ -49,5 +53,66 @@ describe("conversation history helpers", () => {
       conversations: [],
       currentConversationId: null,
     });
+  });
+
+  test("strips bridge-backed generated image data before writing history", () => {
+    const conversation = makeConversation("image-chat");
+    conversation.messages = [
+      {
+        id: "assistant-1",
+        role: "assistant",
+        text: "image",
+        images: [
+          {
+            src: "data:image/png;base64,abc123",
+            alt: "Generated image",
+            assetRef: "codex-asset:00000000-0000-4000-8000-000000000000",
+            status: "ready",
+          },
+        ],
+      },
+    ];
+
+    expect(sanitizeConversationForStorage(conversation).messages[0]?.images).toEqual([
+      {
+        src: "",
+        alt: "Generated image",
+        assetRef: "codex-asset:00000000-0000-4000-8000-000000000000",
+        status: "loading",
+      },
+    ]);
+  });
+
+  test("strips inline base64 image data from stored message text", () => {
+    const conversation = makeConversation("inline-image-chat");
+    conversation.messages = [
+      {
+        id: "assistant-1",
+        role: "assistant",
+        text: "![image](data:image/png;base64,abc123)",
+      },
+    ];
+
+    expect(sanitizeConversationForStorage(conversation).messages[0]?.text).toBe("![image]([stored image asset])");
+  });
+
+  test("keeps conversation history under the storage byte budget", () => {
+    const conversations = Array.from({ length: 20 }, (_, index) => {
+      const conversation = makeConversation(`chat-${index}`);
+      conversation.messages = [
+        {
+          id: `message-${index}`,
+          role: "user",
+          text: "x".repeat(350_000),
+        },
+      ];
+      return conversation;
+    });
+
+    const prepared = prepareConversationsForStorage(conversations);
+    const encodedBytes = new TextEncoder().encode(JSON.stringify(prepared)).byteLength;
+
+    expect(encodedBytes).toBeLessThanOrEqual(4 * 1024 * 1024);
+    expect(prepared.length).toBeLessThan(conversations.length);
   });
 });

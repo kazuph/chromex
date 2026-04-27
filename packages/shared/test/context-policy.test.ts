@@ -73,7 +73,7 @@ describe("normalizePageContext", () => {
 
     expect(envelope.metadata.title).toBe("Example Story");
     expect(envelope.selectionText).toBe("Important quote");
-    expect(envelope.domSummary.length).toBeLessThanOrEqual(100_000);
+    expect(envelope.domSummary.length).toBeLessThanOrEqual(240_000);
     expect(envelope.visionAssets[0]?.ref).toBe("capture://visible-tab");
   });
 
@@ -96,7 +96,7 @@ describe("normalizePageContext", () => {
     });
 
     expect(envelope.domSummary.length).toBeGreaterThan(90_000);
-    expect(envelope.domSummary.length).toBeLessThanOrEqual(100_000);
+    expect(envelope.domSummary.length).toBeLessThanOrEqual(240_000);
   });
 
   test("preserves DOM image natural dimensions in vision assets", () => {

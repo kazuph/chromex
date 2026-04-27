@@ -20,6 +20,7 @@ import type {
   PageContextEnvelope,
   ProfileTemplate,
   PromptRoutingPlan,
+  PlaywrightRuntimeCapability,
   SkillArchiveInstallParams,
   SkillArchiveInstallResult,
   UserFileAttachment,
@@ -261,6 +262,8 @@ export interface BridgeWorkspacePlane {
   readHarness(): Promise<WorkspaceHarnessSnapshot>;
   readConfig(): Promise<BridgeRuntimeConfig>;
   updateConfig(config: Partial<BridgeRuntimeConfig>): Promise<BridgeRuntimeConfig>;
+  readPlaywrightRuntime(): Promise<PlaywrightRuntimeCapability>;
+  installPlaywrightRuntime(): Promise<PlaywrightRuntimeCapability>;
   listExternalSkills(params?: { cwd?: string }): Promise<CodexSkillOption[]>;
   listExternalSkillRoots(): Promise<string[]>;
   installSkillArchive(params: SkillArchiveInstallParams & { cwd?: string }): Promise<SkillArchiveInstallResult>;

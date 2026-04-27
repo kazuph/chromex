@@ -1,6 +1,6 @@
 # Chrome Web Store Listing Draft
 
-This document is written for an English-first Chrome Web Store launch. Replace the clearly marked `TODO` fields with the final public URLs before submission.
+This document is written for an English-first Chrome Web Store launch.
 
 Official submission references:
 
@@ -78,19 +78,19 @@ Initial public release of Chromex: side-panel chat, current-page context, multi-
 Support URL:
 
 ```text
-TODO: https://github.com/<owner>/<repo>/issues
+https://github.com/GENEXIS-AI/chromex/issues
 ```
 
 Homepage URL:
 
 ```text
-TODO: https://github.com/<owner>/<repo>
+https://genexis-ai.github.io/chromex/
 ```
 
 Privacy Policy URL:
 
 ```text
-TODO: https://<public-site>/privacy
+https://genexis-ai.github.io/chromex/privacy
 ```
 
 ## Store Assets
@@ -229,7 +229,7 @@ Chromex does not execute remotely hosted JavaScript in the extension. Extension 
 Before submitting:
 
 ```text
-1. Replace TODO support, homepage, and privacy policy URLs.
+1. Confirm support, homepage, and privacy policy URLs are reachable.
 2. Run npm run package:webstore and upload the generated Chrome Web Store ZIP.
 3. Confirm the packaged manifest does not include a key field.
 4. Upload the assets from output/chrome-web-store-assets/.

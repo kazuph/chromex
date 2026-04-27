@@ -830,6 +830,11 @@ try {
   await page.locator("#composer-model-menu-trigger").click();
   await page.waitForSelector("[data-composer-reasoning-option]", { timeout: 5_000 });
   await page.locator("[data-composer-reasoning-option]").first().click();
+  await page
+    .waitForFunction(() => !document.querySelector(".composer-model-dropdown"), {
+      timeout: 5_000,
+    })
+    .catch(() => undefined);
   const composerModelMenuClosed = await page.locator(".composer-model-dropdown").count();
   if (composerModelMenuClosed !== 0) {
     throw new Error("Smoke test failed: composer model dropdown did not close after selecting reasoning.");

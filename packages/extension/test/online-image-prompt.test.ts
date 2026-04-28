@@ -79,8 +79,24 @@ describe("online image prompt extraction", () => {
     const pointerOutHandler = getFunctionSource(contentSource, "handleImagePromptPointerOut");
     expect(pointerOutHandler).toContain("scheduleHideImagePromptHoverButton()");
     expect(pointerOutHandler).not.toContain("hideImagePromptHoverButton();");
+    const pointerMoveHandler = getFunctionSource(contentSource, "handleImagePromptPointerMove");
+    expect(pointerMoveHandler).toContain("scheduleHideImagePromptHoverButton()");
+    expect(pointerMoveHandler).not.toContain("hideImagePromptHoverButton();");
     expect(contentSource).toContain('button.addEventListener("pointerenter", clearImagePromptHoverHideTimer)');
     expect(contentSource).toContain('button.addEventListener("pointerover", clearImagePromptHoverHideTimer)');
+  });
+
+  test("rechecks the pointer location before removing a scheduled hover button", () => {
+    const scheduleHide = getFunctionSource(contentSource, "scheduleHideImagePromptHoverButton");
+    const conditionalHide = getFunctionSource(contentSource, "hideImagePromptHoverButtonIfPointerOutsideSurface");
+    const hideButton = getFunctionSource(contentSource, "hideImagePromptHoverButton");
+
+    expect(contentSource).toContain("let imagePromptHoverPointer");
+    expect(scheduleHide).toContain("hideImagePromptHoverButtonIfPointerOutsideSurface");
+    expect(conditionalHide).toContain("isPointerInsideImagePromptHoverSurface");
+    expect(conditionalHide).toContain("return;");
+    expect(conditionalHide).toContain("hideImagePromptHoverButton();");
+    expect(hideButton).toContain("imagePromptHoverPointer = null");
   });
 
   test("opens the side panel before async storage work and avoids extra page context", () => {

@@ -142,12 +142,8 @@ function createImageGenerationUnavailableForPlanMessage(planType: string | null)
   return `Image generation is not available on ${planLabel}. The Codex app-server image_gen tool may require a paid ChatGPT plan or API-key mode with image generation access.`;
 }
 
-function toImageGenerationAccessError(error: unknown): Error {
-  const message = error instanceof Error ? error.message : String(error);
-  if (/image_?gen\b.*not available.*free accounts/iu.test(message)) {
-    return new Error(createImageGenerationUnavailableForPlanMessage("free"));
-  }
-  return error instanceof Error ? error : new Error(message);
+function toImageGenerationError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
 }
 
 function isImageGenerationItem(value: unknown): value is ImageGenerationItem {
@@ -1909,12 +1905,12 @@ export class CodexImagePlane implements BridgeImagePlane {
       await this.#record("image.edit.completed", { jobId, previewRef });
       return { jobId, previewRef };
     } catch (error) {
-      const accessError = toImageGenerationAccessError(error);
+      const imageError = toImageGenerationError(error);
       await this.#record("image.edit.failed", {
         jobId,
-        error: accessError.message,
+        error: imageError.message,
       });
-      throw accessError;
+      throw imageError;
     }
   }
 
@@ -1975,12 +1971,12 @@ export class CodexImagePlane implements BridgeImagePlane {
       await this.#record("image.generate.completed", { jobId, previewRef, previewCount: previewRefs.length });
       return { jobId, previewRef, previewRefs };
     } catch (error) {
-      const accessError = toImageGenerationAccessError(error);
+      const imageError = toImageGenerationError(error);
       await this.#record("image.generate.failed", {
         jobId,
-        error: accessError.message,
+        error: imageError.message,
       });
-      throw accessError;
+      throw imageError;
     }
   }
 

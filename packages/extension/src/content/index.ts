@@ -24,9 +24,11 @@ let imagePromptHoverInstalled = false;
 let imagePromptHoverButton: HTMLButtonElement | null = null;
 let imagePromptHoverTarget: HTMLImageElement | null = null;
 let imagePromptHoverHideTimer: number | null = null;
+let imagePromptHoverPointer: { clientX: number; clientY: number } | null = null;
 const IMAGE_PROMPT_HOVER_BUTTON_CLASS = "chromex-image-prompt-button";
 const IMAGE_PROMPT_HOVER_BUTTON_SELECTOR = `.${IMAGE_PROMPT_HOVER_BUTTON_CLASS}`;
 const IMAGE_PROMPT_HOVER_HIDE_DELAY_MS = 100;
+const IMAGE_PROMPT_HOVER_SURFACE_PADDING_PX = 8;
 const highlightedElements = new Set<HTMLElement>();
 const domActionElementRefs = new Map<string, HTMLElement>();
 const AI_CONTROL_OVERLAY_MAX_MS = 45_000;
@@ -516,6 +518,7 @@ function installImagePromptHover(): void {
 }
 
 function handleImagePromptPointerOver(event: PointerEvent): void {
+  trackImagePromptHoverPointer(event);
   const target = event.target;
   if (!(target instanceof HTMLImageElement) || !isPromptExtractableImage(target)) {
     return;
@@ -524,6 +527,7 @@ function handleImagePromptPointerOver(event: PointerEvent): void {
 }
 
 function handleImagePromptPointerOut(event: PointerEvent): void {
+  trackImagePromptHoverPointer(event);
   if (event.target !== imagePromptHoverTarget) {
     return;
   }
@@ -535,6 +539,7 @@ function handleImagePromptPointerOut(event: PointerEvent): void {
 }
 
 function handleImagePromptPointerMove(event: PointerEvent): void {
+  trackImagePromptHoverPointer(event);
   const target = event.target;
   if (target instanceof HTMLImageElement && isPromptExtractableImage(target)) {
     showImagePromptHoverButton(target);
@@ -547,7 +552,7 @@ function handleImagePromptPointerMove(event: PointerEvent): void {
     clearImagePromptHoverHideTimer();
     return;
   }
-  hideImagePromptHoverButton();
+  scheduleHideImagePromptHoverButton();
 }
 
 function handleImagePromptVisibilityChange(): void {
@@ -559,16 +564,28 @@ function handleImagePromptVisibilityChange(): void {
 function isPointerInsideImagePromptHoverSurface(clientX: number, clientY: number): boolean {
   return (
     isPointInsideElementRect(imagePromptHoverTarget, clientX, clientY) ||
-    isPointInsideElementRect(imagePromptHoverButton, clientX, clientY)
+    isPointInsideElementRect(imagePromptHoverButton, clientX, clientY, IMAGE_PROMPT_HOVER_SURFACE_PADDING_PX)
   );
 }
 
-function isPointInsideElementRect(element: Element | null, clientX: number, clientY: number): boolean {
+function isPointInsideElementRect(element: Element | null, clientX: number, clientY: number, padding = 0): boolean {
   if (!element) {
     return false;
   }
   const rect = element.getBoundingClientRect();
-  return clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
+  return (
+    clientX >= rect.left - padding &&
+    clientX <= rect.right + padding &&
+    clientY >= rect.top - padding &&
+    clientY <= rect.bottom + padding
+  );
+}
+
+function trackImagePromptHoverPointer(event: Pick<PointerEvent, "clientX" | "clientY">): void {
+  imagePromptHoverPointer = {
+    clientX: event.clientX,
+    clientY: event.clientY,
+  };
 }
 
 function isPromptExtractableImage(image: HTMLImageElement): boolean {
@@ -626,8 +643,13 @@ function getImagePromptHoverButton(): HTMLButtonElement {
     cursor: "pointer",
     padding: "0",
   });
+  button.addEventListener("pointerenter", trackImagePromptHoverPointer);
   button.addEventListener("pointerenter", clearImagePromptHoverHideTimer);
+  button.addEventListener("pointerover", trackImagePromptHoverPointer);
   button.addEventListener("pointerover", clearImagePromptHoverHideTimer);
+  button.addEventListener("pointermove", trackImagePromptHoverPointer);
+  button.addEventListener("pointermove", clearImagePromptHoverHideTimer);
+  button.addEventListener("pointerleave", trackImagePromptHoverPointer);
   button.addEventListener("pointerleave", scheduleHideImagePromptHoverButton);
   button.addEventListener("click", (event) => {
     event.preventDefault();
@@ -651,7 +673,21 @@ function scheduleHideImagePromptHoverButton(): void {
   if (imagePromptHoverHideTimer) {
     return;
   }
-  imagePromptHoverHideTimer = window.setTimeout(hideImagePromptHoverButton, IMAGE_PROMPT_HOVER_HIDE_DELAY_MS);
+  imagePromptHoverHideTimer = window.setTimeout(
+    hideImagePromptHoverButtonIfPointerOutsideSurface,
+    IMAGE_PROMPT_HOVER_HIDE_DELAY_MS,
+  );
+}
+
+function hideImagePromptHoverButtonIfPointerOutsideSurface(): void {
+  imagePromptHoverHideTimer = null;
+  if (
+    imagePromptHoverPointer &&
+    isPointerInsideImagePromptHoverSurface(imagePromptHoverPointer.clientX, imagePromptHoverPointer.clientY)
+  ) {
+    return;
+  }
+  hideImagePromptHoverButton();
 }
 
 function hideImagePromptHoverButton(): void {
@@ -659,6 +695,7 @@ function hideImagePromptHoverButton(): void {
   imagePromptHoverButton?.remove();
   imagePromptHoverButton = null;
   imagePromptHoverTarget = null;
+  imagePromptHoverPointer = null;
   removeImagePromptHoverButtons();
 }
 

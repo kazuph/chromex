@@ -19,17 +19,21 @@ describe("image edit timeout policy", () => {
     );
   });
 
-  test("uses the full UI language catalog for image edit timeout failures", () => {
+  test("uses the full UI language catalog for image edit failures", () => {
     const locales = listSupportedUiLanguageOptions()
       .map((option) => option.locale)
       .filter((locale) => locale !== "auto");
 
     for (const locale of locales) {
-      const message = buildImageEditTimeoutMessage(getUiStrings(locale).errors.imageEditTimeout);
+      const strings = getUiStrings(locale);
+      const message = buildImageEditTimeoutMessage(strings.errors.imageEditTimeout);
+      expect(strings.errors.imageEdit, locale).toBeTruthy();
       expect(message, locale).toBeTruthy();
       expect(message, locale).not.toMatch(/free accounts|무료 계정/iu);
     }
 
+    expect(getUiStrings("fr").errors.imageEdit).not.toBe(getUiStrings("en").errors.imageEdit);
+    expect(getUiStrings("ja").errors.imageEdit).not.toBe(getUiStrings("en").errors.imageEdit);
     expect(buildImageEditTimeoutMessage(getUiStrings("fr").errors.imageEditTimeout)).not.toBe(
       buildImageEditTimeoutMessage(),
     );

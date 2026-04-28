@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { readFile, readdir, stat } from "node:fs/promises";
 import { extname, join, relative, sep } from "node:path";
 import process from "node:process";
@@ -9,6 +10,7 @@ const blockedPathPatterns = [
   /(^|\/)node_modules\//u,
   /^packages\/[^/]+\/dist\//u,
   /^output\//u,
+  /^\.codex\//u,
   /^\.codex-sidepanel\//u,
   /^__load_extension__(?:\/|\.crx$|\.pem$)/u,
   /(^|\/)\.DS_Store$/u,
@@ -79,6 +81,7 @@ const fallbackIgnoredDirectories = new Set([
   "dist",
   "coverage",
   "output",
+  ".codex",
   ".codex-sidepanel",
   "codex-sidepanel-backups",
   "chromex-backups",
@@ -152,7 +155,8 @@ function listGitCandidateFiles() {
     })
       .split("\n")
       .map((line) => line.trim())
-      .filter(Boolean);
+      .filter(Boolean)
+      .filter((line) => existsSync(join(root, line)));
   } catch {
     return null;
   }

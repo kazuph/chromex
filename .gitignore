@@ -11,7 +11,7 @@ __load_extension__/
 __load_extension__.crx
 __load_extension__.pem
 
-.codex/settings.local.json
+.codex/
 .codex-sidepanel/
 codex-sidepanel-backups/
 chromex-backups/

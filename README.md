@@ -77,8 +77,8 @@ More detail is in [SECURITY.md](./SECURITY.md).
 - `/` profile picker with searchable professional profiles
 - chat attachment support for images, text, PDF, DOCX, CSV, TSV, XLSX, and XLSM
 - mixed routing for `current page + uploaded files` with automatic profile/model/read-strategy selection
-- Codex skills loaded from `.codex/skills/*/SKILL.md` and injected only when enabled in context settings
-- legacy commands loaded from `.codex/commands/*.md`
+- optional workspace skills loaded from a user's local `.codex/skills/*/SKILL.md` and injected only when enabled in context settings
+- optional local command shortcuts loaded from `.codex/commands/*.md`
 - read strategy policy: `dom`, `vision`, `hybrid`, `adapter`
 - built-in profile templates for research, fact checking, strategy, product, marketing, sales, legal review, teaching, data analysis, UX, writing, support, HR, finance, communications, and critique workflows
 - YouTube adapter with current timestamp context and seek actions
@@ -88,7 +88,7 @@ More detail is in [SECURITY.md](./SECURITY.md).
 - live voice captions and page navigation commands
 - non-destructive image editing for the current image or visible tab
 - native-host bridge boundary so credentials do not live in extension storage
-- Codex workspace harness:
+- optional Codex workspace harness:
   - `CODEX.md`
   - `.codex/settings.json`
   - `.codex/settings.local.json`
@@ -198,9 +198,9 @@ What is not bundled:
 - ChatGPT login is enough for the default Codex image-edit flow.
 - API key login remains an optional fallback path.
 
-## Workspace Harness
+## Optional Workspace Harness
 
-The bridge supports a Codex workspace harness for repeatable project behavior:
+The bridge supports a Codex workspace harness for repeatable project behavior. These files are user workspace configuration and are intentionally ignored by this repository unless a contributor explicitly documents a public example outside `.codex/`.
 
 - `CODEX.md`: project memory and persistent instructions
 - `.codex/settings.json`: shared permission mode and hook configuration
@@ -209,12 +209,12 @@ The bridge supports a Codex workspace harness for repeatable project behavior:
 - `.codex/skills/*/SKILL.md`: reusable slash shortcuts
 - `.codex/commands/*.md`: legacy command shortcuts that still appear in the slash menu
 
-This repository includes a minimal seed harness under `.codex/` so the feature works immediately when you load the extension from this workspace.
+This repository does not commit a `.codex/` seed. Create those files locally only when you want workspace-specific behavior.
 
 ## Open-Source Hygiene
 
 - Do not commit native-host manifests, `__load_extension__*.pem`, `__load_extension__.crx`, `node_modules`, or build outputs.
-- Keep `.codex/settings.local.json` local-only.
+- Keep `.codex/` workspace configuration local-only unless it is a deliberately public sample outside the ignored `.codex/` path.
 - Run `npm run release:audit` before any public push.
 - Review [SECURITY.md](./SECURITY.md) before publishing or accepting outside contributions.
 - Follow the [open-source release checklist](./docs/open-source-release-checklist.md) for source backups, secret review, and verification.

@@ -13,6 +13,7 @@ tar \
   --exclude='./packages/*/node_modules' \
   --exclude='./packages/*/dist' \
   --exclude='./output' \
+  --exclude='./.codex' \
   --exclude='./.codex-sidepanel' \
   --exclude='./__load_extension__' \
   --exclude='./__load_extension__.crx' \
@@ -33,7 +34,7 @@ tar -xzf "$HOME/Desktop/chromex-backups/<archive>.tar.gz" -C /tmp/chromex-restor
 ## Source-Control Hygiene
 
 - Keep generated images, native-host manifests, unpacked-extension build output, `.pem`, `.crx`, logs, and local app data untracked.
-- Keep `.codex/settings.local.json` local-only.
+- Keep `.codex/` workspace configuration local-only unless a public sample is intentionally documented outside the ignored `.codex/` path.
 - Keep the committed extension manifest key public-only. Do not commit Chrome Web Store signing material.
 - Do not commit `OPENAI_API_KEY`, ChatGPT session tokens, native app-server auth files, or generated image originals.
 - Review every new file with `rg --files -g '!node_modules' -g '!packages/*/dist'` before publishing.

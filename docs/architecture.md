@@ -8,9 +8,9 @@ The current voice UX uses Codex app-server realtime transport. The side panel cr
 
 Authentication is exposed in the product as Codex OAuth. In implementation terms, the extension asks the bridge to call app-server `account/login/start` with `type: "chatgpt"` and opens the returned authorization URL. The extension never stores ChatGPT tokens or raw API keys.
 
-## Workspace Harness
+## Optional Workspace Harness
 
-The bridge now includes a filesystem-based workspace harness modeled after the public Claude Code settings and memory hierarchy.
+The bridge includes a filesystem-based workspace harness for local, repeatable browser-assistant behavior. Workspace files are optional user configuration and are not committed in this public repository by default.
 
 - `CODEX.md` and `.codex/CODEX.md` provide durable workspace instructions.
 - `.codex/rules/**/*.md` adds scoped rules that can target domains and profile ids.
@@ -150,7 +150,7 @@ Included now:
 - API key fallback
 - image editing overlay preview
 - Codex built-in image generation/editing via ChatGPT login
-- Claude Code-style workspace memory, rules, shortcuts, hooks, and permission modes
+- workspace memory, rules, shortcuts, hooks, and permission modes
 - Codex app-server realtime voice session lifecycle
 - app-server-planned constrained DOM actions for the active tab
 

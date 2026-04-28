@@ -19,7 +19,7 @@ Until a private channel exists, do not encourage public disclosure of active vul
 - The installer does not import `OPENAI_API_KEY` into a file.
 - Conversation history is session-only by default. Persistent device storage is opt-in.
 - Native-host child processes forward a reduced environment allowlist instead of the full parent shell.
-- Workspace hook commands also receive a reduced environment allowlist so repo-defined hooks do not automatically inherit unrelated secrets.
+- Workspace hook commands also receive a reduced environment allowlist so user-defined hooks do not automatically inherit unrelated secrets.
 - Native messaging manifests restrict access to the exact installed extension origin.
 - Legacy unpacked extension IDs are not allowed in native-host manifests unless the user explicitly passes the migration flag during install.
 - A stable public manifest key is committed intentionally so unpacked installs keep a stable origin for native messaging. This is public metadata, not a private signing secret.
@@ -36,7 +36,7 @@ Before publishing:
 6. Confirm `.gitignore` excludes build artifacts, `node_modules`, `.pem`, `.crx`, and local-only files
 7. Confirm `packages/extension/public/manifest.json` includes only the public extension key and no private signing material
 8. Confirm no generated native-host manifest or local secret file is tracked
-9. Review `.codex/settings.json` and `.codex/settings.local.json` so no unsafe hook or permission rule ships unintentionally
+9. Confirm `.codex/` workspace configuration is not tracked in the public repository
 10. Confirm the GitHub Actions matrix in `.github/workflows/ci.yml` is green on `ubuntu`, `macos`, and `windows`
 
 ## Data Handling Notes

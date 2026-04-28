@@ -3,11 +3,16 @@ export interface ComposerSendState {
   turnActive: boolean;
   promptActivityActive: boolean;
   streamingAssistantActive: boolean;
+  submissionStartingActive?: boolean;
 }
 
 export function canSendComposerMessage(state: ComposerSendState): boolean {
   const hasDraft = state.draft.trim().length > 0;
   if (!hasDraft) {
+    return false;
+  }
+
+  if (state.submissionStartingActive) {
     return false;
   }
 

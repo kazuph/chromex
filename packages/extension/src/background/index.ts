@@ -2620,6 +2620,7 @@ async function broadcastActiveTabSnapshot(): Promise<void> {
   if (!activeTab) {
     return;
   }
+  void installImagePromptHoverForTab(activeTab);
   const currentTab = tabToOpenTabContext(activeTab);
   await chrome.runtime
     .sendMessage({
@@ -2629,6 +2630,15 @@ async function broadcastActiveTabSnapshot(): Promise<void> {
       actionCards: inferActionCardsForOpenTab(currentTab, await getActiveUiLocale()),
     })
     .catch(() => undefined);
+}
+
+async function installImagePromptHoverForTab(tab: chrome.tabs.Tab | undefined | null): Promise<void> {
+  if (!tab?.id || !tab.url || !getCurrentPageSupport(tab.url).available) {
+    return;
+  }
+  await sendMessageToTab(tab as chrome.tabs.Tab & { id: number; url: string }, {
+    type: "page.image-prompt-hover.install",
+  }).catch(() => undefined);
 }
 
 function normalizePendingImagePromptExtraction(message: Record<string, unknown>): PendingImagePromptExtraction | null {
@@ -2766,12 +2776,12 @@ async function handlePageImagePromptExtraction(
     return { error: "No online image URL was provided." };
   }
 
-  const attachmentPromise = createOnlineImagePromptAttachment(extraction, tab);
   let sidePanelOpenPromise: Promise<void> | null = null;
   if (tab?.windowId) {
     state.browserWindowId = tab.windowId;
     sidePanelOpenPromise = chrome.sidePanel.open({ windowId: tab.windowId }).catch(() => undefined);
   }
+  const attachmentPromise = createOnlineImagePromptAttachment(extraction, tab);
   const attachment = await attachmentPromise;
   const pendingExtraction = attachment ? { ...extraction, attachment } : extraction;
   await chrome.storage.session.set({ pendingImagePromptExtraction: pendingExtraction });

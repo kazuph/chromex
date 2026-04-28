@@ -109,5 +109,14 @@ describe("composer submit key handling", () => {
     expect(canSendComposerMessage({ draft: "새 질문", turnActive: false, promptActivityActive: true, streamingAssistantActive: false })).toBe(false);
     expect(canSendComposerMessage({ draft: "새 질문", turnActive: false, promptActivityActive: false, streamingAssistantActive: true })).toBe(false);
     expect(canSendComposerMessage({ draft: "새 질문", turnActive: true, promptActivityActive: true, streamingAssistantActive: true })).toBe(true);
+    expect(
+      canSendComposerMessage({
+        draft: "새 질문",
+        turnActive: false,
+        promptActivityActive: false,
+        streamingAssistantActive: false,
+        submissionStartingActive: true,
+      }),
+    ).toBe(false);
   });
 });

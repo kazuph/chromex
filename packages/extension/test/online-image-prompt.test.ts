@@ -47,8 +47,13 @@ describe("online image prompt extraction", () => {
     expect(contentSource).toContain('chrome.runtime.getURL("icons/codex-32.png")');
     expect(contentSource).not.toContain('button.textContent = "✦"');
     expect(contentSource).toContain('document.addEventListener("pointerout"');
+    expect(contentSource).toContain('document.addEventListener("pointermove", handleImagePromptPointerMove, true)');
     expect(contentSource).toContain("handleImagePromptPointerOut");
     expect(contentSource).toContain("function handleImagePromptPointerOut");
+    expect(contentSource).toContain("function handleImagePromptPointerMove");
+    expect(contentSource).toContain("function isPointerInsideImagePromptHoverSurface");
+    expect(backgroundSource).toContain("function installImagePromptHoverForTab");
+    expect(backgroundSource).toContain("void installImagePromptHoverForTab(activeTab)");
     expect(backgroundSource).toContain('case "page.image-prompt-hover.install"');
     expect(backgroundSource).toContain('case "page.image-prompt.extract"');
     expect(backgroundSource).toContain("chrome.sidePanel.open");
@@ -69,6 +74,9 @@ describe("online image prompt extraction", () => {
 
     const backgroundHandler = getFunctionSource(backgroundSource, "handlePageImagePromptExtraction");
     expect(backgroundHandler).toContain("sidePanelOpenPromise = chrome.sidePanel.open");
+    expect(backgroundHandler.indexOf("sidePanelOpenPromise = chrome.sidePanel.open")).toBeLessThan(
+      backgroundHandler.indexOf("createOnlineImagePromptAttachment(extraction, tab)"),
+    );
     expect(backgroundHandler).toContain("await chrome.storage.session.set");
     expect(backgroundHandler).toContain("await sidePanelOpenPromise");
     expect(backgroundHandler.indexOf("await sidePanelOpenPromise")).toBeGreaterThan(

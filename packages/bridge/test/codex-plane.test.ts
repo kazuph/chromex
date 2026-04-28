@@ -616,6 +616,41 @@ describe("AppServerCodexPlane", () => {
     }));
   });
 
+  test("does not retry a completed prompt when post-completion hooks fail", async () => {
+    const client = new FakeCodexClient({
+      emitImageBeforeTurnCompleted: false,
+      agentText: "Final answer before hook failure.",
+    });
+    const plane = new AppServerCodexPlane({
+      client: client as never,
+      harness: {
+        ...harness,
+        runHooks: async (hook: string) => {
+          if (hook === "PromptComplete") {
+            throw new Error("app-server exited after prompt completion");
+          }
+          return { appendPrompt: [] };
+        },
+      } as never,
+      secrets: new InMemoryBridgeSecrets(),
+    });
+    const events: BridgeEvent[] = [];
+
+    await expect(plane.sendPrompt(promptParams, (event) => events.push(event))).resolves.toEqual({
+      threadId: "thread-1",
+      turnId: "turn-1",
+    });
+
+    expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    expect(events.filter((event) => event.type === "message.completed")).toEqual([
+      expect.objectContaining({
+        type: "message.completed",
+        itemId: "agent-1",
+        text: "Final answer before hook failure.",
+      }),
+    ]);
+  });
+
   test("routes concurrent prompt message events by thread before every turn id is known", async () => {
     const client = new ManualConcurrentCodexClient();
     const plane = new AppServerCodexPlane({

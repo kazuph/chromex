@@ -881,15 +881,33 @@ export class AppServerCodexPlane implements BridgeCodexPlane {
           this.#activeTurnId = turnId;
 
           await completed;
-          await this.#harness.runHooks("PromptComplete", `profile:${params.profile.id}`, {
-            profileId: params.profile.id,
-            threadId,
-            turnId,
-            cwd: cwd ?? "",
-          });
+          await this.#harness
+            .runHooks("PromptComplete", `profile:${params.profile.id}`, {
+              profileId: params.profile.id,
+              threadId,
+              turnId,
+              cwd: cwd ?? "",
+            })
+            .catch((error) =>
+              this.#record("prompt.complete.hook_failed", {
+                profileId: params.profile.id,
+                threadId,
+                turnId,
+                error: getErrorMessage(error),
+              }),
+            );
           return { threadId, turnId };
         } catch (error) {
           unsubscribe();
+          if (emittedAgentMessageItemIds.size > 0 && threadId && turnId) {
+            await this.#record("prompt.post_completion_error", {
+              threadId,
+              turnId,
+              emittedAgentMessageCount: emittedAgentMessageItemIds.size,
+              error: getErrorMessage(error),
+            });
+            return { threadId, turnId };
+          }
           if (!shouldRetryPromptFailure(error, failedAttempts)) {
             throw error;
           }

@@ -44,6 +44,9 @@ describe("open-source repository hygiene", () => {
     expect(publicReleaseScript).toContain("/^docs\\//u");
     expect(readme).toContain("npm run package:public");
     expect(koreanReadme).toContain("npm run package:public");
+    expect(readme).toContain("./assets/chromex-hero.png");
+    expect(koreanReadme).toContain("./assets/chromex-hero.png");
+    expect(existsSync(resolve(repoRoot, "assets/chromex-hero.png"))).toBe(true);
     expect(readme).not.toContain(["What", "Is", "Not", "Published"].join(" "));
     expect(koreanReadme).not.toContain(["공개하지", "않는", "항목"].join(" "));
     expect(readme).not.toContain(["intentionally", "excludes"].join(" "));
@@ -74,6 +77,9 @@ describe("open-source repository hygiene", () => {
 
     expect(packageJson.scripts?.["package:public"]).toContain("scripts/package-public-release.mjs");
     expect(packageJson.scripts?.["release:audit:history"]).toBe("node scripts/audit-git-history.mjs");
+    expect(existsSync(resolve(repoRoot, "RELEASE.md"))).toBe(true);
+    expect(readRepoFile("RELEASE.md")).toContain("0.1.1");
+    expect(readRepoFile("RELEASE.md")).toContain("semantic versioning");
     expect(existsSync(resolve(repoRoot, "scripts/package-public-release.mjs"))).toBe(true);
     expect(existsSync(resolve(repoRoot, "scripts/audit-git-history.mjs"))).toBe(true);
   });

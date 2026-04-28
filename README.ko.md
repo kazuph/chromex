@@ -9,6 +9,8 @@ Chromex는 Chrome과 Codex를 로컬 네이티브 브리지로 연결하는 Chro
 
 배포 주체: **GenexisAI CHOI**.
 
+![Chromex 브라우저 사이드 패널 어시스턴트](./assets/chromex-hero.png)
+
 ## 주요 기능
 
 - 현재 웹페이지, 선택한 열린 탭, 스크린샷, 업로드 파일, PDF, Office 파일, 이미지, 브라우저 기록을 사용자가 요청할 때만 바탕으로 대화합니다.
@@ -143,6 +145,10 @@ npm run package:public
 
 - `chromex-*-public-source-*.zip`: GitHub 공개용 소스 아카이브
 - `chromex-*-unpacked-extension-*.zip`: Chrome 개발자 모드에서 바로 로드할 수 있는 패키지. 압축 해제 후 **압축해제된 확장 프로그램을 로드합니다**에서 `chromex-extension` 폴더를 선택합니다.
+
+## 릴리즈 관리
+
+Chromex는 `0.1.1`부터 일반 오픈소스 릴리즈 이력을 사용합니다. 버전 정책, pull request 흐름, 릴리즈 체크리스트는 [RELEASE.md](./RELEASE.md)에 정리되어 있습니다.
 
 ## 문제 해결
 

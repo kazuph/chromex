@@ -730,6 +730,7 @@ let initializePromise: Promise<void> | null = null;
 let initializeQueued = false;
 let composerCompositionInProgress = false;
 let smokeDryRunSubmissions: string[] = [];
+let promptSubmissionBootstrapInFlight = false;
 let chatScrollUserOverrideUntil = 0;
 const completedTurnIds = new Set<string>();
 const cancelledPromptRequestIds = new Set<string>();
@@ -1724,6 +1725,7 @@ function renderNow(): void {
     turnActive: currentTurnActive,
     promptActivityActive: Boolean(state.promptActivity),
     streamingAssistantActive: state.streamingAssistantMessageIds.size > 0,
+    submissionStartingActive: promptSubmissionBootstrapInFlight,
   });
   const composerPrimaryAction = resolveComposerPrimaryAction({
     composerDraft: state.composerDraft,
@@ -7315,6 +7317,7 @@ function canSendCurrentComposerMessage(draft = state.composerDraft): boolean {
     turnActive: isCurrentTurnActive(),
     promptActivityActive: Boolean(state.promptActivity),
     streamingAssistantActive: state.streamingAssistantMessageIds.size > 0,
+    submissionStartingActive: promptSubmissionBootstrapInFlight,
   });
 }
 
@@ -9156,6 +9159,12 @@ async function sendPrompt(
     }
   }
 
+  let conversationIdAtSend = state.currentConversationId;
+  let userMessageId = "";
+  let clientRequestId = "";
+  promptSubmissionBootstrapInFlight = true;
+
+  try {
   Object.assign(state, createPendingComposerDraftState());
   state.activeView = "chat";
   const activeProfileId = ensureComposerProfileSelection();
@@ -9167,7 +9176,7 @@ async function sendPrompt(
     });
     hydrateConversation(created.conversation);
   }
-  const conversationIdAtSend = state.currentConversationId;
+  conversationIdAtSend = state.currentConversationId;
   if (options.resetThread) {
     state.threadId = "";
     state.activeTurn = null;
@@ -9189,13 +9198,14 @@ async function sendPrompt(
   );
   const nextFileAttachments = [...state.fileAttachments, ...generatedImageAttachments];
   const messageProfile = createMessageProfileSnapshot();
-  const userMessageId = `user-${Date.now()}`;
-  const clientRequestId = `prompt-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  userMessageId = `user-${Date.now()}`;
+  clientRequestId = `prompt-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   setActivePromptUserMessageId(resolveActivePromptUserMessageIdForSend(userMessageId, sendAsTurnSteer));
   state.promptActivity = {
     clientRequestId,
     phase: "preparing",
   };
+  promptSubmissionBootstrapInFlight = false;
   promptRequestConversationIds.set(clientRequestId, conversationIdAtSend);
   promptActivitiesByConversationId.set(conversationIdAtSend, state.promptActivity);
   state.messages.push({
@@ -9209,7 +9219,6 @@ async function sendPrompt(
   render();
   scheduleConversationPersist();
 
-  try {
     const result = await sendRuntimeMessageWithConfirmation<{
       threadId: string;
       turnId: string;
@@ -9392,6 +9401,7 @@ async function sendPrompt(
     scheduleConversationPersist();
     render();
   } catch (error) {
+    promptSubmissionBootstrapInFlight = false;
     if (cancelledPromptRequestIds.delete(clientRequestId)) {
       removePendingImageWorkflowMessage(clientRequestId);
       scheduleConversationPersist();

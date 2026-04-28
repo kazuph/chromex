@@ -9,6 +9,8 @@ Chromex is a Chrome MV3 side-panel assistant that connects Chrome to Codex throu
 
 Published by **GenexisAI CHOI**.
 
+![Chromex browser side-panel assistant](./assets/chromex-hero.png)
+
 ## What It Does
 
 - Chat with the current webpage, selected open tabs, screenshots, uploaded files, PDFs, Office files, images, and browser history when requested.
@@ -143,6 +145,10 @@ This writes two artifacts under `output/public-release/`:
 
 - `chromex-*-public-source-*.zip`: source archive for GitHub publication.
 - `chromex-*-unpacked-extension-*.zip`: ready-to-unzip Chrome Developer Mode package. After unzip, select the `chromex-extension` folder in **Load unpacked**.
+
+## Release Management
+
+Chromex uses normal open-source release history from `0.1.1` onward. Versioning, pull request flow, and release checklist are documented in [RELEASE.md](./RELEASE.md).
 
 ## Troubleshooting
 

@@ -1,0 +1,146 @@
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+
+import { afterEach, describe, expect, test } from "vitest";
+
+import { BridgeHarnessRuntime, createHookProcessEnv } from "../src/index.js";
+
+const tempDirs: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(tempDirs.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+});
+
+describe("BridgeHarnessRuntime", () => {
+  test("loads hierarchical settings, markdown rules, and workspace shortcuts", async () => {
+    const workspaceRoot = await createTempDir("workspace");
+    const userRoot = await createTempDir("user");
+
+    await mkdir(join(workspaceRoot, ".codex/hooks"), { recursive: true });
+    await mkdir(join(workspaceRoot, ".codex/rules"), { recursive: true });
+    await mkdir(join(workspaceRoot, ".codex/skills/review-page"), { recursive: true });
+    await mkdir(join(workspaceRoot, ".codex/commands"), { recursive: true });
+    await mkdir(join(workspaceRoot, "docs"), { recursive: true });
+
+    await writeFile(
+      join(workspaceRoot, ".codex/settings.json"),
+      JSON.stringify({
+        permissions: {
+          defaultMode: "plan",
+          allow: ["prompt.send"],
+          ask: ["context.history.read"],
+        },
+        hooks: {
+          UserPromptSubmit: [
+            {
+              matcher: "profile:*",
+              hooks: [
+                {
+                  type: "command",
+                  command: "node ./.codex/hooks/append-user-prompt.mjs",
+                },
+              ],
+            },
+          ],
+          PromptSubmit: [
+            {
+              matcher: "profile:*",
+              hooks: [
+                {
+                  type: "command",
+                  command: "node ./.codex/hooks/append-prompt.mjs",
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    );
+    await writeFile(join(workspaceRoot, "docs/usage.md"), "Use `npm run build` before release.\n");
+    await writeFile(join(workspaceRoot, "CODEX.md"), "# Project Memory\n@docs/usage.md\n");
+    await writeFile(
+      join(workspaceRoot, ".codex/rules/youtube.md"),
+      [
+        "---",
+        'domains: ["youtube.com", "youtu.be"]',
+        'profiles: ["youtube-summarizer"]',
+        "---",
+        "Always produce timestamped notes for videos.",
+        "",
+      ].join("\n"),
+    );
+    await writeFile(
+      join(workspaceRoot, ".codex/skills/review-page/SKILL.md"),
+      [
+        "---",
+        'description: Review the active page for UX and messaging quality',
+        "---",
+        "Review the current page for UX issues, messaging gaps, and conversion friction.",
+        "",
+      ].join("\n"),
+    );
+    await writeFile(
+      join(workspaceRoot, ".codex/commands/fact-check.md"),
+      "Verify the attached context against trustworthy public sources and call out uncertainty.\n",
+    );
+    await writeFile(
+      join(workspaceRoot, ".codex/hooks/append-prompt.mjs"),
+      "process.stdout.write(JSON.stringify({ appendPrompt: 'Hook note: keep the answer concise.' }));\n",
+    );
+    await writeFile(
+      join(workspaceRoot, ".codex/hooks/append-user-prompt.mjs"),
+      "process.stdout.write(JSON.stringify({ appendPrompt: 'Hook note: answer in the user language.' }));\n",
+    );
+
+    const runtime = new BridgeHarnessRuntime({ workspaceRoot, userRoot });
+    const snapshot = await runtime.readSnapshot();
+    const promptInstructions = await runtime.resolvePromptInstructions({
+      profileId: "youtube-summarizer",
+      domains: ["youtube.com"],
+    });
+    const hookResult = await runtime.runHooks("PromptSubmit", "profile:youtube-summarizer", {
+      message: "Summarize this video.",
+    });
+
+    expect(snapshot.workspaceRoot).toBe(workspaceRoot);
+    expect(snapshot.configSources).toEqual([join(workspaceRoot, ".codex/settings.json")]);
+    expect(snapshot.permissions.defaultMode).toBe("plan");
+    expect(snapshot.shortcuts.map((shortcut) => shortcut.name)).toEqual(["Fact Check", "review-page"]);
+    expect(snapshot.instructionSources).toHaveLength(2);
+    expect(promptInstructions.text).toContain("Use `npm run build` before release.");
+    expect(promptInstructions.text).toContain("Always produce timestamped notes for videos.");
+    expect(hookResult.appendPrompt).toEqual([
+      "Hook note: keep the answer concise.",
+      "Hook note: answer in the user language.",
+    ]);
+  });
+
+  test("sanitizes hook environments before running workspace commands", async () => {
+    const env = createHookProcessEnv(
+      {
+        PATH: "/usr/bin",
+        HOME: "/Users/example",
+        HTTPS_PROXY: "http://proxy.internal:8080",
+        OPENAI_API_KEY: "test-openai-key",
+      },
+      {
+        CODEX_SIDEPANEL_WORKSPACE_ROOT: "/workspace",
+        CODEX_SIDEPANEL_HOME: "/home/user/.codex-sidepanel",
+      },
+    );
+
+    expect(env.PATH).toBe("/usr/bin");
+    expect(env.HOME).toBe("/Users/example");
+    expect(env.HTTPS_PROXY).toBe("http://proxy.internal:8080");
+    expect(env.CODEX_SIDEPANEL_WORKSPACE_ROOT).toBe("/workspace");
+    expect(env.CODEX_SIDEPANEL_HOME).toBe("/home/user/.codex-sidepanel");
+    expect(env.OPENAI_API_KEY).toBeUndefined();
+  });
+});
+
+async function createTempDir(prefix: string): Promise<string> {
+  const path = await mkdtemp(join(tmpdir(), `codex-sidepanel-${prefix}-`));
+  tempDirs.push(path);
+  return path;
+}

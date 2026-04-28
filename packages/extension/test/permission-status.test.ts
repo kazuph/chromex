@@ -1,0 +1,29 @@
+import { describe, expect, test } from "vitest";
+
+import { shouldShowPermissionStatusBanner } from "../src/sidepanel/permission-status.js";
+
+describe("permission status display", () => {
+  test("does not show persistent banners for site access prompts", () => {
+    expect(
+      shouldShowPermissionStatusBanner({
+        origins: ["https://example.org/*"],
+        rationale: "Allow Codex to read the current site when your request needs page context.",
+      }),
+    ).toBe(false);
+  });
+
+  test("does not show persistent banners for browser API permission prompts", () => {
+    expect(
+      shouldShowPermissionStatusBanner({
+        permissions: ["tabs"],
+        rationale: "Allow Codex to list your open tabs only when you ask for cross-tab context.",
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowPermissionStatusBanner({
+        permissions: ["history"],
+        rationale: "Allow Codex to search your browser history only when you ask for it.",
+      }),
+    ).toBe(false);
+  });
+});

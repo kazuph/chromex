@@ -5,9 +5,11 @@ import { describe, expect, test } from "vitest";
 
 import { createOnlineImagePromptExtractionPrompt } from "../src/sidepanel/online-image-prompt.js";
 
-const contentSource = readFileSync(resolve(process.cwd(), "src/content/index.ts"), "utf8");
-const backgroundSource = readFileSync(resolve(process.cwd(), "src/background/index.ts"), "utf8");
-const sidepanelSource = readFileSync(resolve(process.cwd(), "src/sidepanel/index.ts"), "utf8");
+const readSource = (path: string) => readFileSync(resolve(process.cwd(), path), "utf8").replace(/\r\n/gu, "\n");
+
+const contentSource = readSource("src/content/index.ts");
+const backgroundSource = readSource("src/background/index.ts");
+const sidepanelSource = readSource("src/sidepanel/index.ts");
 const manifest = JSON.parse(readFileSync(resolve(process.cwd(), "public/manifest.json"), "utf8")) as {
   content_scripts?: Array<{
     matches?: string[];

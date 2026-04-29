@@ -125,6 +125,7 @@ describe("online image prompt extraction", () => {
       ]),
     );
     expect(contentSource).toContain("\ninstallImagePromptHover();\n");
+    expect(manifest.permissions).toContain("offscreen");
   });
 
   test("removes stale hover buttons from the page instead of leaving hidden DOM behind", () => {
@@ -535,5 +536,43 @@ describe("online image prompt extraction", () => {
       "extraction.attachment ?? (isHttpUrl(extraction.imageUrl) ? createRemoteImageAttachment(extraction.imageUrl) : null)",
     );
     expect(sidepanelHandler).toContain("if (!attachment)");
+  });
+
+  test("surfaces a visible failure when the hovered image cannot be materialized into an attachment", () => {
+    const backgroundHandler = getFunctionSource(backgroundSource, "handlePageImagePromptExtraction");
+    const sidepanelMessageHandler = sidepanelSource.slice(
+      sidepanelSource.indexOf("chrome.runtime.onMessage.addListener"),
+      sidepanelSource.indexOf('if (message.type !== "bridge.event")'),
+    );
+    const pendingErrorTaker = getFunctionSource(sidepanelSource, "takePendingOnlineImagePromptError");
+    const sidepanelHandler = getFunctionSource(sidepanelSource, "handleOnlineImagePromptExtraction");
+
+    expect(backgroundHandler).toContain("pendingImagePromptError");
+    expect(backgroundHandler).toContain('type: "ui.image-prompt.error"');
+    expect(backgroundHandler).toContain("buildOnlineImagePromptAttachmentError");
+    expect(sidepanelMessageHandler).toContain('message.type === "ui.image-prompt.error"');
+    expect(sidepanelMessageHandler).toContain("void handleOnlineImagePromptError(message.error)");
+    expect(pendingErrorTaker).toContain('type: "image.prompt.error.pending.take"');
+    expect(sidepanelHandler).not.toContain("if (!attachment) {\n    return;\n  }");
+    expect(sidepanelHandler).toContain("await handleOnlineImagePromptError(");
+  });
+
+  test("falls back to an offscreen document crop path when worker canvas APIs are unavailable", () => {
+    const cropInput = getFunctionSource(backgroundSource, "cropVisibleTabToImageCandidate");
+    const cropDataUrl = getFunctionSource(backgroundSource, "cropVisibleTabDataUrlToImageCandidate");
+    const offscreenEnsure = getFunctionSource(backgroundSource, "ensureOffscreenDocumentForImageProcessing");
+    const offscreenCrop = getFunctionSource(backgroundSource, "cropVisibleTabDataUrlToImageCandidateViaOffscreenDocument");
+    const offscreenSource = readFileSync(resolve(process.cwd(), "src/offscreen/index.ts"), "utf8");
+
+    expect(cropInput).toContain("return cropVisibleTabDataUrlToImageCandidate(dataUrl, candidate);");
+    expect(cropDataUrl).toContain("cropVisibleTabDataUrlToImageCandidateViaOffscreenDocument");
+    expect(cropDataUrl).toContain("typeof createImageBitmap !== \"function\" || typeof OffscreenCanvas === \"undefined\"");
+    expect(offscreenEnsure).toContain("chrome.offscreen");
+    expect(offscreenEnsure).toContain(".createDocument({");
+    expect(backgroundSource).toContain('const OFFSCREEN_DOCUMENT_PATH = "offscreen.html"');
+    expect(backgroundSource).toContain('const OFFSCREEN_IMAGE_CROP_MESSAGE_TYPE = "offscreen.image.crop"');
+    expect(offscreenCrop).toContain("type: OFFSCREEN_IMAGE_CROP_MESSAGE_TYPE");
+    expect(offscreenSource).toContain('message.type !== "offscreen.image.crop"');
+    expect(offscreenSource).toContain("canvas.toBlob");
   });
 });

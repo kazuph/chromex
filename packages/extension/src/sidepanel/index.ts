@@ -934,6 +934,11 @@ chrome.runtime.onMessage.addListener((message) => {
     return;
   }
 
+  if (message.type === "ui.image-prompt.error") {
+    void handleOnlineImagePromptError(message.error);
+    return;
+  }
+
   if (message.type === "ui.image-attachment.pending") {
     void takePendingContextMenuImageAttachment();
     return;
@@ -1432,6 +1437,15 @@ async function takePendingOnlineImagePromptExtraction(): Promise<void> {
   }
 }
 
+async function takePendingOnlineImagePromptError(): Promise<void> {
+  const result = await sendRuntimeMessage<{ error?: unknown }>({
+    type: "image.prompt.error.pending.take",
+  }).catch(() => null);
+  if (result?.error) {
+    await handleOnlineImagePromptError(result.error);
+  }
+}
+
 async function takePendingContextMenuImageAttachment(): Promise<void> {
   const result = await sendRuntimeMessage<{ attachment?: unknown }>({
     type: "image.attachment.pending.take",
@@ -1592,6 +1606,10 @@ async function handleOnlineImagePromptExtraction(value: unknown): Promise<void> 
   });
   const attachment = extraction.attachment ?? (isHttpUrl(extraction.imageUrl) ? createRemoteImageAttachment(extraction.imageUrl) : null);
   if (!attachment) {
+    await handleOnlineImagePromptError({
+      code: "attachment-unavailable",
+      imageUrl: extraction.imageUrl,
+    });
     return;
   }
   await startNewChat();
@@ -1607,6 +1625,47 @@ async function handleOnlineImagePromptExtraction(value: unknown): Promise<void> 
   state.activeView = "chat";
   render();
   await sendPrompt(prompt);
+}
+
+async function handleOnlineImagePromptError(value: unknown): Promise<void> {
+  const error = normalizeOnlineImagePromptError(value);
+  if (!error) {
+    return;
+  }
+  state.activeView = "chat";
+  state.actionStatus = describeOnlineImagePromptError(error);
+  render();
+}
+
+function normalizeOnlineImagePromptError(
+  value: unknown,
+): { code: "attachment-unavailable"; imageUrl: string } | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const input = value as Record<string, unknown>;
+  if (input.code !== "attachment-unavailable") {
+    return null;
+  }
+  const imageUrl = typeof input.imageUrl === "string" ? input.imageUrl.trim() : "";
+  if (!imageUrl) {
+    return null;
+  }
+  return {
+    code: "attachment-unavailable",
+    imageUrl,
+  };
+}
+
+function describeOnlineImagePromptError(error: { code: "attachment-unavailable"; imageUrl: string }): string {
+  if (error.code !== "attachment-unavailable") {
+    return stringsForState().status.fileAttachFailed;
+  }
+  const locale = state.uiLocale || getBrowserUiLanguage();
+  if (locale.startsWith("ko")) {
+    return "이 웹사이트의 이미지를 읽어 첨부하지 못했습니다. 사이트 차단이나 캔버스 보안 제한 때문에 프롬프트 추출을 진행할 수 없습니다.";
+  }
+  return "Chromex could not attach this page image. The site may be blocking image access or canvas export, so prompt extraction could not continue.";
 }
 
 async function initialize(options: { forceCatalog?: boolean } = {}): Promise<void> {
@@ -1683,6 +1742,7 @@ async function initialize(options: { forceCatalog?: boolean } = {}): Promise<voi
     sanitizeUnavailableCurrentPageState();
     renderSync();
     void installActiveTabImagePromptExtractor();
+    void takePendingOnlineImagePromptError();
     void takePendingOnlineImagePromptExtraction();
     void takePendingContextMenuImageAttachment();
     void takePendingContextMenuAction();

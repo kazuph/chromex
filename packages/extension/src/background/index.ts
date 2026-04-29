@@ -178,6 +178,9 @@ const UI_CONTEXT_TIMEOUT_MS = 2500;
 const PLAYWRIGHT_RUNTIME_INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
 const throttleVisibleTabCapture = createVisibleTabCaptureThrottle();
 const cancelledPromptClientRequestIds = new Set<string>();
+const OFFSCREEN_DOCUMENT_PATH = "offscreen.html";
+const OFFSCREEN_IMAGE_CROP_MESSAGE_TYPE = "offscreen.image.crop";
+let offscreenDocumentPromise: Promise<void> | null = null;
 const conversationRuntime = new ConversationRuntimeRegistry();
 type ReadableBrowserTab = chrome.tabs.Tab & { id: number; url: string; windowId: number };
 type PromptStatusEmitter = (phase: PromptActivityPhase, workflow?: PromptImageWorkflowKind) => void;
@@ -403,6 +406,10 @@ function resolvePendingContextMenuAction(menuItemId: unknown): PendingContextMen
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.target === "offscreen") {
+    return false;
+  }
+
   if (message.type === "page.image-prompt.extract") {
     void handlePageImagePromptExtraction(message, sender.tab)
       .then(sendResponse)
@@ -635,6 +642,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           return;
         case "image.prompt.pending.take":
           sendResponse(await takePendingImagePromptExtraction());
+          return;
+        case "image.prompt.error.pending.take":
+          sendResponse(await takePendingImagePromptError());
           return;
         case "image.attachment.pending.take":
           sendResponse(await takePendingImageAttachment());
@@ -2932,6 +2942,18 @@ async function handlePageImagePromptExtraction(
   }
   const attachmentPromise = createOnlineImagePromptAttachment(extraction, tab);
   const attachment = await attachmentPromise;
+  if (!attachment && !isHttpUrl(extraction.imageUrl)) {
+    const error = buildOnlineImagePromptAttachmentError(extraction);
+    await chrome.storage.session.set({ pendingImagePromptError: error });
+    await sidePanelOpenPromise;
+    await chrome.runtime
+      .sendMessage({
+        type: "ui.image-prompt.error",
+        error,
+      })
+      .catch(() => undefined);
+    return { error: "Chromex could not read this page image for prompt extraction." };
+  }
   const pendingExtraction = attachment ? { ...extraction, attachment } : extraction;
   await chrome.storage.session.set({ pendingImagePromptExtraction: pendingExtraction });
   await sidePanelOpenPromise;
@@ -2942,6 +2964,15 @@ async function handlePageImagePromptExtraction(
     })
     .catch(() => undefined);
   return { ok: true };
+}
+
+function buildOnlineImagePromptAttachmentError(
+  extraction: PendingImagePromptExtraction,
+): { code: "attachment-unavailable"; imageUrl: string } {
+  return {
+    code: "attachment-unavailable",
+    imageUrl: extraction.imageUrl,
+  };
 }
 
 async function createOnlineImagePromptAttachment(
@@ -3015,6 +3046,33 @@ async function takePendingImagePromptExtraction(): Promise<{ extraction?: Pendin
   }
   const extraction = normalizePendingImagePromptExtraction(value as Record<string, unknown>);
   return extraction ? { extraction } : {};
+}
+
+async function takePendingImagePromptError(): Promise<{ error?: { code: "attachment-unavailable"; imageUrl: string } }> {
+  const stored = await chrome.storage.session.get("pendingImagePromptError");
+  await chrome.storage.session.remove("pendingImagePromptError");
+  const error = normalizePendingImagePromptError(stored.pendingImagePromptError);
+  return error ? { error } : {};
+}
+
+function normalizePendingImagePromptError(
+  value: unknown,
+): { code: "attachment-unavailable"; imageUrl: string } | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const input = value as Record<string, unknown>;
+  if (input.code !== "attachment-unavailable") {
+    return null;
+  }
+  const imageUrl = typeof input.imageUrl === "string" ? input.imageUrl.trim() : "";
+  if (!imageUrl) {
+    return null;
+  }
+  return {
+    code: "attachment-unavailable",
+    imageUrl,
+  };
 }
 
 async function takePendingImageAttachment(): Promise<{ attachment?: PendingImageAttachment }> {
@@ -3267,10 +3325,6 @@ async function cropVisibleTabToImageCandidate(
   if (!candidate.viewportRect || !candidate.viewportWidth || !candidate.viewportHeight) {
     return null;
   }
-  if (typeof createImageBitmap !== "function" || typeof OffscreenCanvas === "undefined") {
-    return null;
-  }
-
   const dataUrl = await captureVisibleTab(activeTab);
   return cropVisibleTabDataUrlToImageCandidate(dataUrl, candidate);
 }
@@ -3283,7 +3337,7 @@ async function cropVisibleTabDataUrlToImageCandidate(
     return null;
   }
   if (typeof createImageBitmap !== "function" || typeof OffscreenCanvas === "undefined") {
-    return null;
+    return cropVisibleTabDataUrlToImageCandidateViaOffscreenDocument(dataUrl, candidate);
   }
 
   const sourceBlob = await (await fetch(dataUrl)).blob();
@@ -3310,6 +3364,85 @@ async function cropVisibleTabDataUrlToImageCandidate(
     mimeType: "image/jpeg",
     filename: "visible-page-image.jpg",
   };
+}
+
+async function cropVisibleTabDataUrlToImageCandidateViaOffscreenDocument(
+  dataUrl: string,
+  candidate: EditablePageImageCandidate,
+): Promise<{ base64: string; mimeType: string; filename: string } | null> {
+  const ensured = await ensureOffscreenDocumentForImageProcessing();
+  if (!ensured) {
+    return null;
+  }
+  const response = await chrome.runtime.sendMessage({
+    target: "offscreen",
+    type: OFFSCREEN_IMAGE_CROP_MESSAGE_TYPE,
+    dataUrl,
+    candidate,
+  });
+  if (!response || typeof response !== "object") {
+    return null;
+  }
+  const output = response as Record<string, unknown>;
+  const base64 = typeof output.base64 === "string" ? output.base64.trim() : "";
+  const mimeType = typeof output.mimeType === "string" ? output.mimeType.trim() : "";
+  const filename = typeof output.filename === "string" ? output.filename.trim() : "";
+  if (!base64 || !mimeType || !filename) {
+    return null;
+  }
+  return {
+    base64,
+    mimeType,
+    filename,
+  };
+}
+
+async function ensureOffscreenDocumentForImageProcessing(): Promise<boolean> {
+  if (!chrome.offscreen?.createDocument) {
+    return false;
+  }
+  const offscreenUrl = chrome.runtime.getURL(OFFSCREEN_DOCUMENT_PATH);
+  const runtimeWithContexts = chrome.runtime as typeof chrome.runtime & {
+    getContexts?: (filter: {
+      contextTypes?: string[];
+      documentUrls?: string[];
+    }) => Promise<Array<Record<string, unknown>>>;
+  };
+  if (typeof runtimeWithContexts.getContexts === "function") {
+    const contexts = await runtimeWithContexts
+      .getContexts({
+        contextTypes: ["OFFSCREEN_DOCUMENT"],
+        documentUrls: [offscreenUrl],
+      })
+      .catch(() => []);
+    if (contexts.length) {
+      return true;
+    }
+  }
+  if (offscreenDocumentPromise) {
+    await offscreenDocumentPromise;
+    return true;
+  }
+  offscreenDocumentPromise = chrome.offscreen
+    .createDocument({
+      url: OFFSCREEN_DOCUMENT_PATH,
+      reasons: [chrome.offscreen.Reason.BLOBS],
+      justification: "Crop captured tab images for prompt extraction compatibility.",
+    })
+    .catch((error) => {
+      if (!isOffscreenDocumentAlreadyExistsError(error)) {
+        throw error;
+      }
+    })
+    .finally(() => {
+      offscreenDocumentPromise = null;
+    });
+  await offscreenDocumentPromise;
+  return true;
+}
+
+function isOffscreenDocumentAlreadyExistsError(error: unknown): boolean {
+  return toErrorMessage(error).toLowerCase().includes("single offscreen document");
 }
 
 async function recordDiagnostic(event: string, details: Record<string, unknown> = {}): Promise<void> {

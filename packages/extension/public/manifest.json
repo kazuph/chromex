@@ -13,6 +13,7 @@
     "128": "icons/codex-128.png"
   },
   "permissions": [
+    "offscreen",
     "sidePanel",
     "activeTab",
     "scripting",

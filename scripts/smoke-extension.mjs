@@ -686,7 +686,6 @@ try {
   if (dismissedAppMenuState.menu) {
     throw new Error(`Smoke test failed: app menu did not close on outside click (${JSON.stringify(dismissedAppMenuState)}).`);
   }
-
   const composerControls = await page.evaluate(() => ({
     modelMenuTrigger: Boolean(document.querySelector("#composer-model-menu-trigger")),
     nativeModelSelect: Boolean(document.querySelector("#composer-model-select")),

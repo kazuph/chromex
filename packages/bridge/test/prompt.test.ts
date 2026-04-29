@@ -50,6 +50,8 @@ describe("createCodexTurnInput", () => {
     expect(result).toContain("PRIVATE INSTRUCTION PROFILE");
     expect(result).toContain("PRIVATE ASSISTANT BEHAVIOR");
     expect(result).toContain("Do not narrate internal setup");
+    expect(result).toContain("When the user asks to convert attached images into a PDF");
+    expect(result).toContain("renderable preview");
     expect(result).toContain("parallel");
     expect(result).toContain("Do not parallelize image edits");
     expect(result).toContain("PRIVATE PROFILE QUESTION TOOL - DO NOT MENTION");

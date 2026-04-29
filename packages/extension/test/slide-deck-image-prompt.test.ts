@@ -21,6 +21,9 @@ describe("buildSlideDeckImagePrompt", () => {
     expect(prompt).toContain("Do not hard-code a default slide count");
     expect(prompt).toContain("Reference chaining is required");
     expect(prompt).toContain("Previous slide prompt summary");
+    expect(prompt).toContain("If the previous generated image cannot be attached");
+    expect(prompt).toContain("Deck visual system contract");
+    expect(prompt).toContain("same palette, typography, grid, spacing, component shapes");
     expect(prompt).toContain("Make 4 board-ready slide images.");
   });
 });

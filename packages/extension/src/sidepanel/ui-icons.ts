@@ -15,6 +15,7 @@ import {
   FileText,
   Globe,
   Hand,
+  Image,
   List,
   Menu,
   MessageCircle,
@@ -32,6 +33,7 @@ import {
   ShieldAlert,
   ShieldCheck,
   Square,
+  Trash2,
   Video,
   X,
   Zap,
@@ -56,6 +58,7 @@ export type UiIconName =
   | "file-text"
   | "globe"
   | "hand"
+  | "image"
   | "list"
   | "menu"
   | "message"
@@ -74,6 +77,8 @@ export type UiIconName =
   | "shield-alert"
   | "shield-check"
   | "stop"
+  | "stop-filled"
+  | "trash"
   | "video"
   | "x"
   | "zap";
@@ -94,6 +99,7 @@ const UI_ICON_NODES: Record<UiIconName, IconNode> = {
   "file-text": FileText,
   globe: Globe,
   hand: Hand,
+  image: Image,
   list: List,
   menu: Menu,
   message: MessageCircle,
@@ -112,6 +118,8 @@ const UI_ICON_NODES: Record<UiIconName, IconNode> = {
   "shield-alert": ShieldAlert,
   "shield-check": ShieldCheck,
   stop: Square,
+  "stop-filled": Square,
+  trash: Trash2,
   video: Video,
   x: X,
   zap: Zap,
@@ -119,13 +127,14 @@ const UI_ICON_NODES: Record<UiIconName, IconNode> = {
 
 export function renderUiIcon(icon: UiIconName, className = "ui-lucide-icon"): string {
   const node = UI_ICON_NODES[icon];
+  const fill = icon === "stop-filled" ? "currentColor" : "none";
   return `
     <svg
       class="lucide ${escapeAttribute(className)} ${escapeAttribute(icon)}"
       data-ui-icon="${escapeAttribute(icon)}"
       viewBox="0 0 24 24"
       aria-hidden="true"
-      fill="none"
+      fill="${fill}"
       stroke="currentColor"
       stroke-width="2"
       stroke-linecap="round"

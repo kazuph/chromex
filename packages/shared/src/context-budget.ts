@@ -160,19 +160,20 @@ function isDenseTokenScript(char: string): boolean {
 
 function trimToNaturalBoundary(text: string): string {
   const hardTrimmed = text.trimEnd();
-  const boundary = Math.max(
-    hardTrimmed.lastIndexOf("\n\n"),
-    hardTrimmed.lastIndexOf(". "),
-    hardTrimmed.lastIndexOf("。"),
-    hardTrimmed.lastIndexOf("다. "),
-    hardTrimmed.lastIndexOf("요. "),
-    hardTrimmed.lastIndexOf("! "),
-    hardTrimmed.lastIndexOf("? "),
-  );
+  const boundary = Math.max(hardTrimmed.lastIndexOf("\n\n"), findLastSentenceBoundary(hardTrimmed));
   if (boundary > Math.floor(hardTrimmed.length * 0.72)) {
     return hardTrimmed.slice(0, boundary + 1).trimEnd();
   }
   return hardTrimmed;
+}
+
+function findLastSentenceBoundary(text: string): number {
+  let lastBoundary = -1;
+  const sentenceBoundaryPattern = /[.!?。！？](?=\s|$)/gu;
+  for (const match of text.matchAll(sentenceBoundaryPattern)) {
+    lastBoundary = match.index ?? lastBoundary;
+  }
+  return lastBoundary;
 }
 
 function clampInteger(value: number, min: number, max: number): number {

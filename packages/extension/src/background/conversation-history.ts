@@ -24,3 +24,18 @@ export function clearConversationHistoryState(): {
     currentConversationId: null,
   };
 }
+
+export function resolveVisibleCurrentConversation(input: {
+  conversations: SavedConversation[];
+  currentConversationId: string | null | undefined;
+  draftConversation?: SavedConversation | null;
+}): SavedConversation | null {
+  const currentConversationId = input.currentConversationId?.trim();
+  if (!currentConversationId) {
+    return null;
+  }
+  return (
+    input.conversations.find((conversation) => conversation.id === currentConversationId) ??
+    (input.draftConversation?.id === currentConversationId ? input.draftConversation : null)
+  );
+}

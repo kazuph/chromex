@@ -1,6 +1,7 @@
 import type {
   CodexActiveTurn,
   CodexAppOption,
+  CodexMcpServerOption,
   CodexModelOption,
   CodexModelReroute,
   CodexPluginOption,
@@ -44,13 +45,15 @@ export interface BridgeResponse<TResult = unknown> {
 }
 
 export type BridgeEvent =
-  | { type: "message.delta"; itemId: string; delta: string }
-  | { type: "message.completed"; itemId: string; text: string }
+  | { type: "message.delta"; itemId: string; delta: string; threadId?: string; turnId?: string }
+  | { type: "message.completed"; itemId: string; text: string; threadId?: string; turnId?: string }
   | {
       type: "message.image";
       itemId: string;
       previewRef: string;
       alt: string;
+      threadId?: string;
+      turnId?: string;
       clientRequestId?: string;
       workflow?: "infographic" | "slide-images" | "generated-image";
       imageIndex?: number;
@@ -77,7 +80,8 @@ export type BridgeEvent =
   | { type: "account.updated"; authMode: "chatgpt" | "apikey" | null; planType: string | null }
   | { type: "account.rate_limits.updated"; rateLimits: CodexRateLimits | null }
   | { type: "model.rerouted"; reroute: CodexModelReroute }
-  | { type: "catalog.updated"; kind: "skills" | "apps" }
+  | { type: "catalog.updated"; kind: "skills" | "apps" | "mcp" }
+  | { type: "mcp.oauth.login.completed"; serverName: string; success: boolean; error: string | null }
   | { type: "route.started"; clientRequestId: string | null }
   | { type: "route.plan.created"; plan: AgenticRoutePlan }
   | { type: "browser.action.plan.started"; clientRequestId: string | null }
@@ -92,6 +96,7 @@ export type BridgeEvent =
   | { type: "voice.sdp"; threadId: string; sdp: string }
   | { type: "voice.transcript.delta"; threadId: string; role: string; delta: string }
   | { type: "voice.transcript.done"; threadId: string; role: string; text: string }
+  | { type: "voice.item_added"; threadId: string; item: Record<string, unknown> }
   | { type: "voice.output_audio.delta"; threadId: string; audio: Record<string, unknown> }
   | { type: "voice.error"; threadId: string; message: string };
 
@@ -108,6 +113,8 @@ export interface AccountStatus {
   codexAuthenticated: boolean;
   multimodalAvailable: boolean;
   openAiApiKeyConfigured: boolean;
+  email?: string | null;
+  planType?: string | null;
 }
 
 export interface LoginParams {
@@ -158,7 +165,7 @@ export interface ImageEditParams {
     mimeType: string;
     filename?: string;
   }>;
-  size?: "1024x1024" | "1536x1024" | "1024x1536";
+  size?: "auto" | "1024x1024" | "1536x1024" | "1024x1536";
 }
 
 export interface ImageGenerateParams {
@@ -167,6 +174,7 @@ export interface ImageGenerateParams {
   fileAttachments?: UserFileAttachment[];
   conversationContext?: string;
   clientRequestId?: string;
+  conversationId?: string;
   workflow?: "infographic" | "slide-images" | "generated-image";
   model?: string;
   quality?: "low" | "medium" | "high" | "auto";
@@ -246,6 +254,16 @@ export interface BridgeCodexPlane {
   listSkills(params: { cwd?: string; forceReload?: boolean; extraUserRoots?: string[] }): Promise<CodexSkillOption[]>;
   listApps(params: { threadId?: string; forceRefetch?: boolean }): Promise<CodexAppOption[]>;
   listPlugins(params: { cwd?: string }): Promise<CodexPluginOption[]>;
+  listMcpServers(params?: { cursor?: string; limit?: number; detail?: "full" | "toolsAndAuthOnly" }): Promise<CodexMcpServerOption[]>;
+  startMcpOauthLogin(params: { name: string; scopes?: string[]; timeoutSecs?: number }): Promise<{ authorizationUrl: string }>;
+  callMcpTool(params: {
+    threadId: string;
+    server: string;
+    tool: string;
+    arguments?: Record<string, unknown>;
+    _meta?: Record<string, unknown>;
+  }): Promise<{ content: unknown[]; structuredContent?: unknown; isError?: boolean; meta?: unknown }>;
+  reloadMcpServers(): Promise<{ ok: true }>;
   readRateLimits(): Promise<CodexRateLimits | null>;
   openSession(params: SessionParams): Promise<{ threadId: string }>;
   resumeSession(params: { threadId: string }): Promise<{ threadId: string }>;
@@ -295,7 +313,7 @@ export interface BridgeRoutePlane {
 
 export interface BridgeBrowserActionPlane {
   plan(
-    params: { message: string; snapshot: BrowserDomSnapshot; locale?: string },
+    params: { message: string; snapshot: BrowserDomSnapshot; locale?: string; generatedText?: string },
     emit: (event: BridgeEvent) => void,
   ): Promise<BrowserDomActionPlan>;
 }

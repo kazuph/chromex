@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 
 import {
@@ -5,6 +6,7 @@ import {
   getSuggestionCardSource,
   mergeProfileAndSiteSuggestionCards,
 } from "../src/sidepanel/profile-suggestions.js";
+import { getUiStrings } from "../src/sidepanel/i18n.js";
 
 const marketingProfile = {
   id: "marketing-strategist",
@@ -49,9 +51,29 @@ describe("profile suggestions", () => {
       locale: "ko",
     });
 
-    expect(cards.map((card) => card.title)).toContain("콘텐츠 훅 뽑기");
+    expect(cards.map((card) => card.title)).toContain(
+      getUiStrings("ko").actionCards["profile-marketing-strategist-hooks"],
+    );
     expect(cards[0]?.prompt).toContain("Launch Lessons");
-    expect(cards[0]?.prompt).toContain("마케팅");
+    expect(cards[0]?.prompt).toContain("marketing");
+    expect(cards[0]?.prompt).toContain("Answer in Korean");
+  });
+
+  test("localizes built-in profile suggestions from the UI string catalog", () => {
+    const cards = createProfileSuggestionCards({
+      profile: marketingProfile,
+      currentTab: {
+        tabId: 8,
+        title: "Launch Lessons - YouTube",
+        url: "https://www.youtube.com/watch?v=demo",
+        pinned: false,
+        audible: false,
+      },
+      locale: "ja",
+    });
+
+    expect(cards[0]?.title).toBe(getUiStrings("ja").actionCards["profile-marketing-strategist-hooks"]);
+    expect(cards[0]?.title).not.toBe(getUiStrings("en").actionCards["profile-marketing-strategist-hooks"]);
   });
 
   test("prioritizes profile examples while preserving site suggestions", () => {
@@ -59,7 +81,7 @@ describe("profile suggestions", () => {
       [
         {
           id: "profile-marketing-strategist-primary",
-          title: "콘텐츠 훅 뽑기",
+          title: "Find content hooks",
           description: "profile",
           kind: "prompt",
           prompt: "profile prompt",
@@ -68,7 +90,7 @@ describe("profile suggestions", () => {
       [
         {
           id: "youtube-summary-question",
-          title: "영상 핵심 요약",
+          title: "Summarize video",
           description: "site",
           kind: "prompt",
           prompt: "site prompt",
@@ -104,7 +126,7 @@ describe("profile suggestions", () => {
     });
 
     expect(cards).toHaveLength(3);
-    expect(cards[0]?.prompt).toBe("Analyze Pricing Page on example.com");
+    expect(cards[0]?.prompt).toBe("Analyze Pricing Page on example.com Answer in English.");
   });
 
   test("creates three built-in examples for expanded professional profiles", () => {
@@ -125,9 +147,9 @@ describe("profile suggestions", () => {
     });
 
     expect(cards.map((card) => card.title)).toEqual([
-      "Draft PRD",
-      "Assess opportunity",
-      "Roadmap decision",
+      getUiStrings("en").actionCards["profile-product-manager-prd"],
+      getUiStrings("en").actionCards["profile-product-manager-opportunity"],
+      getUiStrings("en").actionCards["profile-product-manager-roadmap"],
     ]);
   });
 
@@ -163,10 +185,14 @@ describe("profile suggestions", () => {
       locale: "ko",
     });
 
-    expect(roastCards.map((card) => card.title)).toContain("날카롭게 까줘");
-    expect(roastCards.some((card) => card.prompt?.includes("공격이 아니라 개선 포인트"))).toBe(true);
-    expect(harshCards.map((card) => card.title)).toContain("악플 시뮬레이션");
-    expect(harshCards[0]?.prompt).toContain("진짜 우려");
+    expect(roastCards.map((card) => card.title)).toContain(
+      getUiStrings("ko").actionCards["profile-roast-coach-roast"],
+    );
+    expect(roastCards.some((card) => card.prompt?.includes("actionable improvements"))).toBe(true);
+    expect(harshCards.map((card) => card.title)).toContain(
+      getUiStrings("ko").actionCards["profile-harsh-comment-simulator-comments"],
+    );
+    expect(harshCards[0]?.prompt).toContain("legitimate concern");
   });
 
   test("creates slide-making examples that request sequential same-turn images", () => {
@@ -187,9 +213,9 @@ describe("profile suggestions", () => {
     });
 
     expect(cards.map((card) => card.title)).toEqual([
-      "Create slide images",
-      "Storyboard deck",
-      "Turn into executive slides",
+      getUiStrings("en").actionCards["profile-slide-maker-images"],
+      getUiStrings("en").actionCards["profile-slide-maker-storyboard"],
+      getUiStrings("en").actionCards["profile-slide-maker-executive"],
     ]);
     expect(cards[0]?.prompt).toContain("sequentially in this same Codex turn");
     expect(cards[0]?.prompt).toContain("meaningful parts");
@@ -202,5 +228,19 @@ describe("profile suggestions", () => {
     expect(cards[2]?.prompt).toContain("source-part storyboard");
     expect(cards[2]?.prompt).toContain("previous slide prompt summary");
     expect(cards[2]?.prompt).toContain("Do not stop at an outline");
+  });
+
+  test("does not keep locale-specific hardcoded profile prompt packs", () => {
+    const source = readFileSync(new URL("../src/sidepanel/profile-suggestions.ts", import.meta.url), "utf8");
+    const disallowedKoreanPack = ["PROFILE", "PROMPTS", "KO"].join("_");
+    const disallowedEnglishPack = ["PROFILE", "PROMPTS", "EN"].join("_");
+    const disallowedLocalePack = ["PROFILE", "PROMPTS", "BY", "LOCALE"].join("_");
+    const disallowedPackGetter = ["get", "Profile", "Prompt", "Pack"].join("");
+
+    expect(source).not.toContain(disallowedKoreanPack);
+    expect(source).not.toContain(disallowedEnglishPack);
+    expect(source).not.toContain(disallowedLocalePack);
+    expect(source).not.toContain(disallowedPackGetter);
+    expect(source).not.toMatch(/[가-힣]/u);
   });
 });

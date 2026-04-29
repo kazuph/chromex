@@ -3,6 +3,7 @@ import type {
   BrowserActionPermissionMode,
   CodexActiveTurn,
   CodexAppOption,
+  CodexMcpServerOption,
   CodexModelOption,
   CodexModelReroute,
   CodexPluginOption,
@@ -80,6 +81,8 @@ export interface UiInitPayload {
     codexAuthenticated: boolean;
     multimodalAvailable: boolean;
     openAiApiKeyConfigured: boolean;
+    email?: string | null;
+    planType?: string | null;
   };
   currentPageSupport: {
     available: boolean;
@@ -106,6 +109,7 @@ export interface UiInitPayload {
   appServerSkills: CodexSkillOption[];
   connectedApps: CodexAppOption[];
   appServerPlugins: CodexPluginOption[];
+  mcpServers: CodexMcpServerOption[];
   recentChats: ConversationSummary[];
   serverThreads: CodexThreadSummary[];
   currentConversation: SavedConversation | null;
@@ -132,6 +136,7 @@ export interface RuntimeConfigSnapshot {
 }
 
 export interface PromptRequestPayload {
+  conversationId?: string;
   message: string;
   contextHint?: string;
   profileId: string;
@@ -213,6 +218,15 @@ export interface ConversationMessageProfile {
   icon?: string;
 }
 
+export interface ConversationMessageStructuredInput {
+  id: string;
+  type: "mention" | "skill";
+  name: string;
+  path: string;
+  description?: string;
+  iconUrl?: string;
+}
+
 export interface ConversationMessageTraceItem {
   id: string;
   kind: "reasoning" | "web" | "file" | "command" | "tool" | "browser" | "image" | "response";
@@ -238,6 +252,7 @@ export interface ConversationMessage {
   };
   images?: ConversationMessageImage[];
   attachments?: ConversationMessageAttachment[];
+  structuredInputs?: ConversationMessageStructuredInput[];
   profile?: ConversationMessageProfile;
   trace?: ConversationMessageTraceItem[];
 }

@@ -122,7 +122,7 @@ describe("BridgeHarnessRuntime", () => {
         PATH: "/usr/bin",
         HOME: "/Users/example",
         HTTPS_PROXY: "http://proxy.internal:8080",
-        OPENAI_API_KEY: "sk-test",
+        OPENAI_API_KEY: "test-openai-key",
       },
       {
         CODEX_SIDEPANEL_WORKSPACE_ROOT: "/workspace",

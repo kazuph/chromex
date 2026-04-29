@@ -38,6 +38,32 @@ const input: AgenticRouteInput = {
 };
 
 describe("agentic route plan normalization", () => {
+  test("preserves an explicitly selected non-default profile when the router returns default", () => {
+    const plan = normalizeAgenticRoutePlan(
+      {
+        source: "llm",
+        task: "general",
+        contextRequests: [],
+        selectedProfileId: "default",
+        intent: {
+          summary: "Plan the profile-specific response.",
+          action: "answer",
+          target: "conversation",
+          constraints: [],
+          needsClarification: false,
+        },
+        imageEdit: {
+          shouldEdit: false,
+          target: "none",
+          reason: "No image workflow.",
+        },
+      },
+      input,
+    );
+
+    expect(plan.selectedProfileId).toBe("research-assistant");
+  });
+
   test("keeps model-requested visual context without relying on keyword inference", () => {
     const plan = normalizeAgenticRoutePlan(
       {
@@ -236,6 +262,303 @@ describe("agentic route plan normalization", () => {
       reason: "The user asked to generate a new image, not edit an existing image.",
     });
     expect(plan.requiresVision).toBe(false);
+  });
+
+  test("keeps current-page browser actions on the DOM executor even when the planner asks for playwright", () => {
+    const plan = normalizeAgenticRoutePlan(
+      {
+        source: "llm",
+        task: "general",
+        contextRequests: [
+          {
+            source: "current-page",
+            readStrategy: "dom",
+            required: true,
+            reason: "The active page contains the target control.",
+          },
+        ],
+        intent: {
+          summary: "Click the visible follow button on the current page.",
+          action: "navigate",
+          target: "current-page",
+          constraints: [],
+          needsClarification: false,
+        },
+        browserControl: {
+          shouldControl: true,
+          mode: "playwright",
+          fallbackMode: "dom",
+          reason: "The planner requested browser automation.",
+        },
+        confidence: 0.8,
+      },
+      {
+        ...input,
+        message: "현재 페이지에서 팔로우 버튼 눌러줘",
+        browserAutomationCapabilities: {
+          dom: true,
+          playwright: true,
+          "computer-use": false,
+        },
+        activeTab: {
+          title: "Profile",
+          url: "https://example.org/profile",
+          restricted: false,
+        },
+      },
+    );
+
+    expect(plan.browserControl).toMatchObject({
+      shouldControl: true,
+      mode: "dom",
+    });
+  });
+
+  test("does not inspect user text to defer browser control without planner preconditions", () => {
+    const plan = normalizeAgenticRoutePlan(
+      {
+        source: "llm",
+        task: "general",
+        contextRequests: [
+          {
+            source: "current-page",
+            readStrategy: "dom",
+            required: true,
+            reason: "The user wants the active X page used after drafting.",
+          },
+        ],
+        intent: {
+          summary: "Research recent AI news and enter an X draft without publishing.",
+          action: "navigate",
+          target: "current-page",
+          constraints: ["Do not publish."],
+          needsClarification: false,
+        },
+        browserControl: {
+          shouldControl: true,
+          mode: "dom",
+          reason: "The current page contains the draft composer.",
+        },
+        confidence: 0.78,
+      },
+      {
+        ...input,
+        message: "Use Playwright to research recent AI news and enter a draft post about it on X, but do not publish it.",
+        browserAutomationCapabilities: {
+          dom: true,
+          playwright: true,
+          "computer-use": false,
+        },
+        activeTab: {
+          title: "X",
+          url: "https://x.com/home",
+          restricted: false,
+        },
+      },
+    );
+
+    expect(plan.browserControl).toMatchObject({
+      shouldControl: true,
+      mode: "dom",
+    });
+  });
+
+  test("defers browser control from planner-authored workflow preconditions", () => {
+    const plan = normalizeAgenticRoutePlan(
+      {
+        source: "llm",
+        task: "general",
+        contextRequests: [
+          {
+            source: "current-page",
+            readStrategy: "dom",
+            required: true,
+            reason: "The user wants the active X page used after drafting.",
+          },
+        ],
+        intent: {
+          summary: "Research recent AI news and enter an X draft without publishing.",
+          action: "navigate",
+          target: "current-page",
+          constraints: ["Do not publish."],
+          needsClarification: false,
+        },
+        browserControl: {
+          shouldControl: true,
+          mode: "dom",
+          preconditions: ["external-research", "content-generation"],
+          reason: "The current page contains the draft composer after upstream work completes.",
+        },
+        confidence: 0.78,
+      },
+      {
+        ...input,
+        message: "Use Playwright to research recent AI news and enter a draft post about it on X, but do not publish it.",
+        browserAutomationCapabilities: {
+          dom: true,
+          playwright: true,
+          "computer-use": false,
+        },
+        activeTab: {
+          title: "X",
+          url: "https://x.com/home",
+          restricted: false,
+        },
+      },
+    );
+
+    expect(plan.browserControl.shouldControl).toBe(false);
+    expect(plan.browserControl).toMatchObject({
+      preconditions: ["external-research", "content-generation"],
+      reason: "Browser control is deferred until the agentic workflow completes upstream preconditions.",
+    });
+  });
+
+  test("keeps deferred current-page browser actions on the DOM executor even when the planner mentions Playwright", () => {
+    const plan = normalizeAgenticRoutePlan(
+      {
+        source: "llm",
+        task: "general",
+        contextRequests: [
+          {
+            source: "current-page",
+            readStrategy: "dom",
+            required: true,
+            reason: "The user wants the active X page used after drafting.",
+          },
+        ],
+        intent: {
+          summary: "Research recent AI news and enter an X draft without publishing.",
+          action: "navigate",
+          target: "current-page",
+          constraints: ["Do not publish."],
+          needsClarification: false,
+        },
+        browserControl: {
+          shouldControl: true,
+          mode: "playwright",
+          fallbackMode: "dom",
+          preconditions: ["external-research", "content-generation"],
+          reason: "The planner requested Playwright for research before editing the current page.",
+        },
+        confidence: 0.78,
+      },
+      {
+        ...input,
+        message: "Use Playwright to research recent AI news and enter a draft post about it on X, but do not publish it.",
+        browserAutomationCapabilities: {
+          dom: true,
+          playwright: true,
+          "computer-use": false,
+        },
+        activeTab: {
+          title: "X",
+          url: "https://x.com/home",
+          restricted: false,
+        },
+      },
+    );
+
+    expect(plan.browserControl).toMatchObject({
+      shouldControl: false,
+      mode: "dom",
+      surface: "active-tab",
+      preconditions: ["external-research", "content-generation"],
+      reason: "Browser control is deferred until the agentic workflow completes upstream preconditions.",
+    });
+  });
+
+  test("preserves an explicit new-tab Playwright route instead of forcing DOM handoff", () => {
+    const plan = normalizeAgenticRoutePlan(
+      {
+        source: "llm",
+        task: "general",
+        contextRequests: [],
+        intent: {
+          summary: "Open a separate browser workflow and draft on X there.",
+          action: "navigate",
+          target: "current-page",
+          constraints: ["Do not publish."],
+          needsClarification: false,
+        },
+        browserControl: {
+          shouldControl: true,
+          mode: "playwright",
+          surface: "new-tab",
+          preconditions: ["external-research", "content-generation"],
+          reason: "The user wants a separate Playwright browser workflow.",
+        },
+        confidence: 0.78,
+      },
+      {
+        ...input,
+        message: "Use Playwright in a new browser tab to research recent AI news and enter a draft post about it on X, but do not publish it.",
+        browserAutomationCapabilities: {
+          dom: true,
+          playwright: true,
+          "computer-use": false,
+        },
+      },
+    );
+
+    expect(plan.browserControl).toMatchObject({
+      shouldControl: false,
+      mode: "playwright",
+      surface: "new-tab",
+      preconditions: ["external-research", "content-generation"],
+      reason: "Browser control is deferred until the agentic workflow completes upstream preconditions.",
+    });
+  });
+
+  test("does not normalize contradictory page-summary plans into image generation", () => {
+    const plan = normalizeAgenticRoutePlan(
+      {
+        source: "llm",
+        task: "image-generate",
+        contextRequests: [
+          {
+            source: "current-page",
+            readStrategy: "dom",
+            required: true,
+            reason: "The current page is the requested summary target.",
+          },
+        ],
+        requiresVision: false,
+        intent: {
+          summary: "Summarize the current page.",
+          action: "summarize",
+          target: "current-page",
+          constraints: [],
+          needsClarification: false,
+        },
+        imageEdit: {
+          shouldEdit: false,
+          target: "none",
+          reason: "Current request is text summary.",
+        },
+        confidence: 0.4,
+      },
+      {
+        ...input,
+        message: "Summarize the current page.",
+        activeTab: {
+          title: "Article",
+          url: "https://example.org/article",
+          restricted: false,
+        },
+      },
+    );
+
+    expect(plan.task).toBe("document-analysis");
+    expect(plan.intent.action).toBe("summarize");
+    expect(plan.intent.target).toBe("current-page");
+    expect(plan.imageEdit.shouldEdit).toBe(false);
+    expect(plan.contextRequests).toEqual([
+      expect.objectContaining({
+        source: "current-page",
+        readStrategy: "dom",
+      }),
+    ]);
   });
 
   test("does not keyword-route image generation when the agentic planner is unavailable", () => {
@@ -469,11 +792,12 @@ describe("agentic route plan normalization", () => {
     expect(plan.browserControl).toEqual({
       shouldControl: true,
       mode: "dom",
+      surface: "active-tab",
       reason: "Resolved as a browser control request for the current page.",
     });
   });
 
-  test("normalizes explicit Playwright or Computer Use browser control routing", () => {
+  test("keeps explicit Playwright or Computer Use current-page routing on the active tab DOM executor", () => {
     const plan = normalizeAgenticRoutePlan(
       {
         source: "llm",
@@ -505,9 +829,9 @@ describe("agentic route plan normalization", () => {
 
     expect(plan.browserControl).toEqual({
       shouldControl: true,
-      mode: "playwright",
-      fallbackMode: "computer-use",
-      reason: "The request needs a multi-step browser automation harness.",
+      mode: "dom",
+      surface: "active-tab",
+      reason: "Current-page browser actions run on the active tab through DOM control.",
     });
   });
 
@@ -549,7 +873,8 @@ describe("agentic route plan normalization", () => {
     expect(plan.browserControl).toEqual({
       shouldControl: true,
       mode: "dom",
-      reason: "The request needs a multi-step browser automation harness.",
+      surface: "active-tab",
+      reason: "Current-page browser actions run on the active tab through DOM control.",
     });
   });
 
@@ -768,6 +1093,62 @@ describe("agentic route plan normalization", () => {
     expect(plan.notes.join(" ")).toContain("explicitly attached");
   });
 
+  test("keeps only planner-selected available structured app, plugin, or MCP inputs", () => {
+    const plan = normalizeAgenticRoutePlan(
+      {
+        source: "llm",
+        task: "general",
+        contextRequests: [],
+        structuredInputIds: ["gmail", "unknown-input", "mcp:google-calendar", "gmail"],
+        intent: {
+          summary: "Check Gmail and Calendar through connected tools.",
+          action: "answer",
+          target: "conversation",
+          constraints: [],
+          needsClarification: false,
+        },
+        imageEdit: {
+          shouldEdit: false,
+          target: "none",
+          reason: "No image workflow.",
+        },
+        browserControl: {
+          shouldControl: true,
+          mode: "playwright",
+          surface: "new-tab",
+          reason: "The service has a web UI.",
+        },
+        confidence: 0.9,
+      },
+      {
+        ...input,
+        availableStructuredInputs: [
+          {
+            id: "gmail",
+            type: "mention",
+            name: "Gmail",
+            path: "app://gmail",
+            token: "$gmail",
+          },
+          {
+            id: "mcp:google-calendar",
+            type: "mention",
+            name: "Google Calendar",
+            path: "mcp://google-calendar",
+            token: "$google-calendar",
+          },
+        ],
+      },
+    );
+
+    expect(plan.structuredInputIds).toEqual(["gmail", "mcp:google-calendar"]);
+    expect(plan.browserControl).toMatchObject({
+      shouldControl: false,
+      mode: "dom",
+      surface: "active-tab",
+    });
+  });
+
   test("maps agentic plans to the legacy prompt routing contract", () => {
     const agenticPlan = normalizeAgenticRoutePlan(
       {
@@ -802,6 +1183,12 @@ describe("agentic route plan normalization", () => {
         target: "visible-image",
         constraints: [],
         needsClarification: false,
+      },
+      browserControl: {
+        shouldControl: false,
+        mode: "dom",
+        surface: "active-tab",
+        reason: "No browser control required.",
       },
       notes: ["Vision requested by router."],
       reroutedProfile: false,

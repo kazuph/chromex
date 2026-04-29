@@ -53,6 +53,30 @@ describe("renderMessageContentHtml", () => {
     expect(html).toContain("<blockquote><p>인용문</p></blockquote>");
   });
 
+  test("preserves ordered list numbering when markdown list items are separated by blank lines", () => {
+    const html = renderMessageContentHtml(
+      [
+        "1. 첫 번째",
+        "",
+        "2. 두 번째",
+        "",
+        "3. 세 번째",
+        "",
+        "4. 네 번째",
+      ].join("\n"),
+    );
+
+    expect(html).toBe(
+      '<ol><li>첫 번째</li></ol><ol start="2"><li>두 번째</li></ol><ol start="3"><li>세 번째</li></ol><ol start="4"><li>네 번째</li></ol>',
+    );
+  });
+
+  test("preserves ordered list start numbers that do not begin at one", () => {
+    const html = renderMessageContentHtml("3. 세 번째\n4. 네 번째");
+
+    expect(html).toBe('<ol start="3"><li>세 번째</li><li>네 번째</li></ol>');
+  });
+
   test("renders GitHub-style markdown tables in chat messages", () => {
     const html = renderMessageContentHtml(
       [
@@ -90,6 +114,13 @@ describe("renderMessageContentHtml", () => {
     expect(html).toContain(
       '<a href="https://arxiv.org/abs/2409.07429" target="_blank" rel="noreferrer noopener">https://arxiv.org/abs/2409.07429</a>',
     );
+  });
+
+  test("renders local PDF markdown links so generated files can be opened from chat", () => {
+    const html = renderMessageContentHtml("PDF: [slides.pdf](/Users/test/Generated Images/slides.pdf)");
+
+    expect(html).toContain('href="file:///Users/test/Generated%20Images/slides.pdf"');
+    expect(html).toContain(">slides.pdf</a>");
   });
 
   test("keeps trailing sentence punctuation outside autolinked URLs", () => {

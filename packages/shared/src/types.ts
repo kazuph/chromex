@@ -199,6 +199,7 @@ export interface CodexAppOption {
   isAccessible: boolean;
   isEnabled: boolean;
   installUrl?: string;
+  iconUrl?: string;
 }
 
 export interface CodexPluginOption {
@@ -210,7 +211,30 @@ export interface CodexPluginOption {
   token: string;
   installed: boolean;
   enabled: boolean;
+  iconUrl?: string;
   capabilities: string[];
+}
+
+export type CodexMcpAuthStatus = "unsupported" | "notLoggedIn" | "bearerToken" | "oauth" | string;
+
+export interface CodexMcpToolOption {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown> | null;
+}
+
+export interface CodexMcpServerOption {
+  id: string;
+  name: string;
+  description: string;
+  path: string;
+  token: string;
+  authStatus: CodexMcpAuthStatus;
+  isAuthenticated: boolean;
+  toolCount: number;
+  tools: CodexMcpToolOption[];
+  resourceCount: number;
+  resourceTemplateCount: number;
 }
 
 export type CodexStructuredInput =
@@ -229,6 +253,7 @@ export type CodexStructuredInput =
       path: string;
       description?: string;
       token: string;
+      iconUrl?: string;
     };
 
 export interface CodexThreadSummary {
@@ -389,6 +414,7 @@ export interface PromptRoutingPlan {
   requiresVision: boolean;
   pageReadStrategy: ReadStrategy | "auto";
   intent?: AgenticIntentPlan;
+  browserControl?: AgenticBrowserControlRouting;
   selectedProfileId: string;
   selectedModel: string;
   notes: string[];
@@ -417,6 +443,14 @@ export interface AgenticImageEditRouting {
 
 export type BrowserAutomationMode = "dom" | "playwright" | "computer-use";
 
+export type BrowserControlSurface = "active-tab" | "new-tab";
+
+export type AgenticBrowserControlPrecondition =
+  | "external-research"
+  | "content-generation"
+  | "context-collection"
+  | "user-confirmation";
+
 export interface PlaywrightRuntimeCapability {
   available: boolean;
   packageName: "playwright" | "playwright-core" | null;
@@ -435,7 +469,9 @@ export interface RuntimeCapabilitySnapshot {
 export interface AgenticBrowserControlRouting {
   shouldControl: boolean;
   mode: BrowserAutomationMode;
+  surface: BrowserControlSurface;
   fallbackMode?: BrowserAutomationMode;
+  preconditions?: AgenticBrowserControlPrecondition[];
   reason: string;
 }
 
@@ -445,6 +481,7 @@ export interface AgenticRoutePlan {
   task: PromptRoutingTask;
   contextMode: PromptRoutingContextMode;
   contextRequests: AgenticContextRequest[];
+  structuredInputIds: string[];
   historyQuery: string;
   requiresVision: boolean;
   pageReadStrategy: ReadStrategy | "auto";
@@ -470,6 +507,7 @@ export interface AgenticRouteInput {
   selectedTabIds?: number[];
   historyQuery?: string;
   locale?: string;
+  availableStructuredInputs?: CodexStructuredInput[];
   activeTab?: {
     title?: string;
     url?: string;
@@ -478,7 +516,7 @@ export interface AgenticRouteInput {
   browserAutomationCapabilities?: Partial<Record<BrowserAutomationMode, boolean>>;
 }
 
-export type BrowserDomActionKind = "click" | "fill" | "select" | "scroll" | "focus" | "submit";
+export type BrowserDomActionKind = "click" | "fill" | "select" | "scroll" | "focus" | "submit" | "navigate";
 
 export interface BrowserDomElementSnapshot {
   ref: string;
@@ -523,6 +561,7 @@ export interface BrowserDomActionStep {
   selector?: string;
   label?: string;
   value?: string;
+  url?: string;
   direction?: "up" | "down" | "left" | "right" | "top" | "bottom";
   amountPx?: number;
   reason: string;

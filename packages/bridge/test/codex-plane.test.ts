@@ -25,6 +25,12 @@ class FakeCodexClient {
       imageGenerationItems?: Array<Record<string, unknown>>;
       turnCompletedItems?: Array<Record<string, unknown>>;
       turnStartFailures?: string[];
+      appListPages?: Array<{ data?: Array<Record<string, unknown>>; nextCursor?: string | null }>;
+      accountReadResult?: {
+        account?: { type?: string; email?: string | null; planType?: string | null } | null;
+        planType?: string | null;
+        requiresOpenaiAuth?: boolean;
+      };
     } = {
       emitImageBeforeTurnCompleted: true,
     },
@@ -38,10 +44,15 @@ class FakeCodexClient {
   async request(method: string, params?: Record<string, unknown>): Promise<unknown> {
     this.calls.push({ method, params });
     if (method === "account/read") {
-      return { account: { type: "chatgpt" } };
+      return this.options.accountReadResult ?? { account: { type: "chatgpt" } };
     }
     if (method === "skills/list") {
       return { data: [] };
+    }
+    if (method === "app/list") {
+      const pages = this.options.appListPages ?? [{ data: [] }];
+      const pageIndex = params?.cursor ? Number(params.cursor) : 0;
+      return pages[Number.isFinite(pageIndex) ? pageIndex : 0] ?? { data: [] };
     }
     if (method === "thread/start") {
       return { thread: { id: "thread-1" } };
@@ -178,6 +189,76 @@ class FakeCodexClient {
   }
 }
 
+class ManualConcurrentCodexClient {
+  readonly handlers = new Set<(notification: NotificationPayload) => void>();
+  readonly calls: Array<{ method: string; params?: Record<string, unknown> }> = [];
+  readonly turnStarts = new Map<
+    string,
+    {
+      resolve: (value: unknown) => void;
+      reject: (error: Error) => void;
+      promise: Promise<unknown>;
+    }
+  >();
+  readonly turnStartWaiters = new Map<string, Array<() => void>>();
+
+  onNotification(handler: (notification: NotificationPayload) => void): () => void {
+    this.handlers.add(handler);
+    return () => this.handlers.delete(handler);
+  }
+
+  async request(method: string, params?: Record<string, unknown>): Promise<unknown> {
+    this.calls.push({ method, params });
+    if (method === "thread/read") {
+      return {
+        thread: {
+          id: String(params?.threadId ?? ""),
+          turns: [],
+        },
+      };
+    }
+    if (method === "turn/start") {
+      const threadId = String(params?.threadId ?? "");
+      const promise = new Promise<unknown>((resolve, reject) => {
+        this.turnStarts.set(threadId, { resolve, reject, promise: Promise.resolve() });
+      });
+      const pending = this.turnStarts.get(threadId);
+      if (pending) {
+        pending.promise = promise;
+      }
+      for (const waiter of this.turnStartWaiters.get(threadId) ?? []) {
+        waiter();
+      }
+      this.turnStartWaiters.delete(threadId);
+      return promise;
+    }
+    return {};
+  }
+
+  async waitForTurnStart(threadId: string): Promise<void> {
+    if (this.turnStarts.has(threadId)) {
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      this.turnStartWaiters.set(threadId, [...(this.turnStartWaiters.get(threadId) ?? []), resolve]);
+    });
+  }
+
+  resolveTurnStart(threadId: string, turnId: string): void {
+    const pending = this.turnStarts.get(threadId);
+    if (!pending) {
+      throw new Error(`No pending turn/start for ${threadId}`);
+    }
+    pending.resolve({ turn: { id: turnId } });
+  }
+
+  emit(notification: NotificationPayload): void {
+    for (const handler of this.handlers) {
+      handler(notification);
+    }
+  }
+}
+
 const profile: ProfileTemplate = {
   id: "research-assistant",
   name: "Research Assistant",
@@ -203,7 +284,254 @@ const promptParams: PromptSendParams = {
   contexts: [],
 };
 
+async function flushAsyncWork(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 describe("AppServerCodexPlane", () => {
+  test("starts API-key login through the app-server and stores the key only in bridge secrets", async () => {
+    const secretDir = await mkdtemp(join(tmpdir(), "chromex-api-key-test-"));
+    const secrets = new InMemoryBridgeSecrets({
+      secretPath: join(secretDir, "secrets.json"),
+      initialOpenAiApiKey: null,
+    });
+    const client = new FakeCodexClient();
+    const plane = new AppServerCodexPlane({
+      client: client as never,
+      harness: harness as never,
+      secrets,
+    });
+
+    await plane.login({ type: "apiKey", apiKey: "sk-test" });
+
+    expect(secrets.getOpenAiApiKey()).toBe("sk-test");
+    expect(client.calls.find((call) => call.method === "account/login/start")).toMatchObject({
+      params: {
+        type: "apiKey",
+        apiKey: "sk-test",
+      },
+    });
+  });
+
+  test("switches to an already configured API key without requiring Chrome to resend the key", async () => {
+    const secretDir = await mkdtemp(join(tmpdir(), "chromex-api-key-reuse-test-"));
+    const client = new FakeCodexClient();
+    const plane = new AppServerCodexPlane({
+      client: client as never,
+      harness: harness as never,
+      secrets: new InMemoryBridgeSecrets({
+        secretPath: join(secretDir, "secrets.json"),
+        initialOpenAiApiKey: "sk-stored",
+      }),
+    });
+
+    await plane.login({ type: "apiKey" });
+
+    expect(client.calls.find((call) => call.method === "account/login/start")).toMatchObject({
+      params: {
+        type: "apiKey",
+        apiKey: "sk-stored",
+      },
+    });
+  });
+
+  test("enables app and plugin runtime features before loading the app catalog", async () => {
+    const client = new FakeCodexClient({
+      appListPages: [
+        {
+          data: [
+            {
+              id: "connector_2128aebfecb84f64a069897515042a44",
+              name: "Gmail",
+              description: "Read Gmail",
+              isAccessible: true,
+              isEnabled: true,
+            },
+          ],
+        },
+      ],
+    });
+    const plane = new AppServerCodexPlane({
+      client: client as never,
+      harness: harness as never,
+      secrets: new InMemoryBridgeSecrets(),
+    });
+
+    await plane.listApps({ threadId: "stale-thread" });
+
+    expect(client.calls[0]).toEqual({
+      method: "experimentalFeature/enablement/set",
+      params: { enablement: { apps: true, plugins: true } },
+    });
+    expect(client.calls[1]).toEqual({
+      method: "app/list",
+      params: { limit: 100 },
+    });
+  });
+
+  test("expands plugin mentions to connected app mentions before starting a turn", async () => {
+    const client = new FakeCodexClient({
+      emitImageBeforeTurnCompleted: false,
+      agentText: "Done",
+      appListPages: [
+        {
+          data: [
+            {
+              id: "connector_2128aebfecb84f64a069897515042a44",
+              name: "Gmail",
+              description: "Read Gmail",
+              isAccessible: true,
+              isEnabled: true,
+            },
+          ],
+        },
+      ],
+    });
+    const plane = new AppServerCodexPlane({
+      client: client as never,
+      harness: harness as never,
+      secrets: new InMemoryBridgeSecrets(),
+    });
+
+    await plane.sendPrompt(
+      {
+        ...promptParams,
+        threadId: "thread-1",
+        structuredInputs: [
+          {
+            id: "gmail@openai-curated",
+            type: "mention",
+            name: "Gmail",
+            path: "plugin://gmail@openai-curated",
+            token: "$gmail",
+          },
+        ],
+      },
+      () => undefined,
+    );
+
+    const turnStartInput = client.calls.find((call) => call.method === "turn/start")?.params?.input as
+      | Array<{ type: string; path?: string }>
+      | undefined;
+    expect(client.calls.find((call) => call.method === "app/list")?.params).toMatchObject({
+      forceRefetch: true,
+    });
+    expect(turnStartInput?.filter((item) => item.type === "mention").map((item) => item.path)).toEqual([
+      "app://connector_2128aebfecb84f64a069897515042a44",
+      "plugin://gmail@openai-curated",
+    ]);
+  });
+
+  test("allows app-server approval flow when a turn uses explicit app or plugin mentions", async () => {
+    const client = new FakeCodexClient({
+      emitImageBeforeTurnCompleted: false,
+      agentText: "Done",
+      appListPages: [
+        {
+          data: [
+            {
+              id: "connector_google_calendar",
+              name: "Google Calendar",
+              description: "Manage events",
+              isAccessible: true,
+              isEnabled: true,
+            },
+          ],
+        },
+      ],
+    });
+    const plane = new AppServerCodexPlane({
+      client: client as never,
+      harness: harness as never,
+      secrets: new InMemoryBridgeSecrets(),
+    });
+
+    await plane.sendPrompt(
+      {
+        ...promptParams,
+        threadId: "thread-1",
+        structuredInputs: [
+          {
+            id: "google-calendar@openai-curated",
+            type: "mention",
+            name: "google-calendar",
+            path: "plugin://google-calendar@openai-curated",
+            token: "$google_calendar",
+          },
+        ],
+      },
+      () => undefined,
+    );
+
+    const turnStartParams = client.calls.find((call) => call.method === "turn/start")?.params;
+    const turnStartInput = turnStartParams?.input as Array<{ type: string; path?: string }> | undefined;
+    expect(turnStartParams?.approvalPolicy).not.toBe("never");
+    expect(turnStartParams?.approvalsReviewer).toBe("auto_review");
+    expect(turnStartInput?.filter((item) => item.type === "mention").map((item) => item.path)).toEqual([
+      "app://connector_google_calendar",
+      "plugin://google-calendar@openai-curated",
+    ]);
+  });
+
+  test("reports API-key app-server accounts as authenticated multimodal-capable sessions", async () => {
+    const client = new FakeCodexClient({
+      accountReadResult: {
+        account: { type: "apiKey" },
+      },
+    });
+    const plane = new AppServerCodexPlane({
+      client: client as never,
+      harness: harness as never,
+      secrets: new InMemoryBridgeSecrets({ initialOpenAiApiKey: "sk-test" }),
+    });
+
+    await expect(plane.accountStatus()).resolves.toMatchObject({
+      authMode: "apikey",
+      codexAuthenticated: true,
+      multimodalAvailable: true,
+      openAiApiKeyConfigured: true,
+    });
+  });
+
+  test("does not infer account plan type from non-account fields", async () => {
+    const client = new FakeCodexClient({
+      accountReadResult: {
+        account: { type: "apiKey" },
+        planType: "free",
+      },
+    });
+    const plane = new AppServerCodexPlane({
+      client: client as never,
+      harness: harness as never,
+      secrets: new InMemoryBridgeSecrets({ initialOpenAiApiKey: "sk-test" }),
+    });
+
+    await expect(plane.accountStatus()).resolves.toMatchObject({
+      authMode: "apikey",
+      codexAuthenticated: true,
+      planType: null,
+    });
+  });
+
+  test("reports Codex account plan type when app-server exposes it", async () => {
+    const client = new FakeCodexClient({
+      accountReadResult: {
+        account: { type: "chatgpt", email: "codex@example.com", planType: "plus" },
+      },
+    });
+    const plane = new AppServerCodexPlane({
+      client: client as never,
+      harness: harness as never,
+      secrets: new InMemoryBridgeSecrets(),
+    });
+
+    await expect(plane.accountStatus()).resolves.toMatchObject({
+      authMode: "chatgpt",
+      email: "codex@example.com",
+      planType: "plus",
+    });
+  });
+
   test("resumes sessions without eagerly loading full turn history", async () => {
     const client = new FakeCodexClient();
     const plane = new AppServerCodexPlane({
@@ -446,11 +774,136 @@ describe("AppServerCodexPlane", () => {
 
     await plane.sendPrompt(promptParams, (event) => events.push(event));
 
-    expect(events).toContainEqual({
+    expect(events).toContainEqual(expect.objectContaining({
       type: "message.completed",
       itemId: "agent-nested",
       text: "Recovered from nested turn payload.",
+    }));
+  });
+
+  test("does not retry a completed prompt when post-completion hooks fail", async () => {
+    const client = new FakeCodexClient({
+      emitImageBeforeTurnCompleted: false,
+      agentText: "Final answer before hook failure.",
     });
+    const plane = new AppServerCodexPlane({
+      client: client as never,
+      harness: {
+        ...harness,
+        runHooks: async (hook: string) => {
+          if (hook === "PromptComplete") {
+            throw new Error("app-server exited after prompt completion");
+          }
+          return { appendPrompt: [] };
+        },
+      } as never,
+      secrets: new InMemoryBridgeSecrets(),
+    });
+    const events: BridgeEvent[] = [];
+
+    await expect(plane.sendPrompt(promptParams, (event) => events.push(event))).resolves.toEqual({
+      threadId: "thread-1",
+      turnId: "turn-1",
+    });
+
+    expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    expect(events.filter((event) => event.type === "message.completed")).toEqual([
+      expect.objectContaining({
+        type: "message.completed",
+        itemId: "agent-1",
+        text: "Final answer before hook failure.",
+      }),
+    ]);
+  });
+
+  test("routes concurrent prompt message events by thread before every turn id is known", async () => {
+    const client = new ManualConcurrentCodexClient();
+    const plane = new AppServerCodexPlane({
+      client: client as never,
+      harness: harness as never,
+      secrets: new InMemoryBridgeSecrets(),
+    });
+    const eventsA: BridgeEvent[] = [];
+    const eventsB: BridgeEvent[] = [];
+
+    const sendA = plane.sendPrompt(
+      { ...promptParams, threadId: "thread-a", message: "Answer in chat A." },
+      (event) => eventsA.push(event),
+    );
+    await client.waitForTurnStart("thread-a");
+    client.resolveTurnStart("thread-a", "turn-a");
+    await flushAsyncWork();
+
+    const sendB = plane.sendPrompt(
+      { ...promptParams, threadId: "thread-b", message: "Answer in chat B." },
+      (event) => eventsB.push(event),
+    );
+    await client.waitForTurnStart("thread-b");
+
+    client.emit({
+      method: "item/completed",
+      params: {
+        threadId: "thread-a",
+        turnId: "turn-a",
+        item: {
+          id: "agent-a",
+          type: "agentMessage",
+          text: "A response.",
+        },
+      },
+    });
+    client.emit({
+      method: "turn/completed",
+      params: {
+        threadId: "thread-a",
+        turn: { id: "turn-a", items: [] },
+      },
+    });
+    await sendA;
+
+    expect(eventsA.filter((event) => event.type === "message.completed")).toEqual([
+      expect.objectContaining({
+        type: "message.completed",
+        itemId: "agent-a",
+        text: "A response.",
+        threadId: "thread-a",
+        turnId: "turn-a",
+      }),
+    ]);
+    expect(eventsB.filter((event) => event.type === "message.completed")).toEqual([]);
+
+    client.resolveTurnStart("thread-b", "turn-b");
+    await flushAsyncWork();
+    client.emit({
+      method: "item/completed",
+      params: {
+        threadId: "thread-b",
+        turnId: "turn-b",
+        item: {
+          id: "agent-b",
+          type: "agentMessage",
+          text: "B response.",
+        },
+      },
+    });
+    client.emit({
+      method: "turn/completed",
+      params: {
+        threadId: "thread-b",
+        turn: { id: "turn-b", items: [] },
+      },
+    });
+    await sendB;
+
+    expect(eventsB.filter((event) => event.type === "message.completed")).toEqual([
+      expect.objectContaining({
+        type: "message.completed",
+        itemId: "agent-b",
+        text: "B response.",
+        threadId: "thread-b",
+        turnId: "turn-b",
+      }),
+    ]);
   });
 
   test("passes app-server model controls using current field names", async () => {
@@ -592,11 +1045,11 @@ describe("AppServerCodexPlane", () => {
 
     await plane.sendPrompt(promptParams, (event) => events.push(event));
 
-    expect(events).toContainEqual({
+    expect(events).toContainEqual(expect.objectContaining({
       type: "message.completed",
       itemId: "agent-from-thread",
       text: "Recovered final answer.",
-    });
+    }));
   });
 
   test("recovers final assistant text when item completion has no text payload", async () => {
@@ -621,11 +1074,11 @@ describe("AppServerCodexPlane", () => {
     await plane.sendPrompt(promptParams, (event) => events.push(event));
 
     expect(events.filter((event) => event.type === "message.completed")).toEqual([
-      {
+      expect.objectContaining({
         type: "message.completed",
         itemId: "agent-from-thread",
         text: "Recovered from empty completion.",
-      },
+      }),
     ]);
   });
 
@@ -690,11 +1143,11 @@ describe("AppServerCodexPlane", () => {
         reason: "HTTP error: 503",
       },
     ]);
-    expect(events).toContainEqual({
+    expect(events).toContainEqual(expect.objectContaining({
       type: "message.completed",
       itemId: "agent-1",
       text: "Recovered after reconnect.",
-    });
+    }));
   });
 
   test("starts a replacement thread when the saved Codex thread is missing", async () => {
@@ -732,11 +1185,11 @@ describe("AppServerCodexPlane", () => {
       reason: `thread not found: ${staleThreadId}`,
     });
     expect(result.threadId).toBe("thread-1");
-    expect(events).toContainEqual({
+    expect(events).toContainEqual(expect.objectContaining({
       type: "message.completed",
       itemId: "agent-1",
       text: "Recovered on a fresh thread.",
-    });
+    }));
   });
 
   test("does not send reasoning summary to gpt-5.3-codex-spark", async () => {
@@ -792,11 +1245,11 @@ describe("AppServerCodexPlane", () => {
     expect(turnStarts[1]?.params).toMatchObject({ model: "gpt-next" });
     expect(turnStarts[1]?.params).not.toHaveProperty("summary");
     expect(events.filter((event) => event.type === "prompt.retrying")).toEqual([]);
-    expect(events).toContainEqual({
+    expect(events).toContainEqual(expect.objectContaining({
       type: "message.completed",
       itemId: "agent-1",
       text: "Retried without summary.",
-    });
+    }));
   });
 
   test("stops retrying prompt failures after five reconnect attempts", async () => {
@@ -923,7 +1376,7 @@ describe("CodexImagePlane", () => {
     );
 
     await plane.startGenerate({
-      prompt: "Create a high quality infographic from the current page.",
+      prompt: "Create an infographic from the current page.",
       contexts: [
         {
           metadata: {
@@ -943,8 +1396,6 @@ describe("CodexImagePlane", () => {
       ],
       workflow: "infographic",
       model: "gpt-image-2",
-      quality: "high",
-      size: "1024x1536",
     });
 
     const turnStart = client.calls.find((call) => call.method === "turn/start");
@@ -960,15 +1411,249 @@ describe("CodexImagePlane", () => {
       (item) => typeof item === "object" && item !== null && (item as { type?: unknown }).type === "localImage",
     );
 
-    expect(textItem?.text).toContain("Generate a new infographic image");
+    expect(textItem?.text).toContain("Generate a new visual explainer image");
     expect(textItem?.text).toContain("gpt-image-2");
-    expect(textItem?.text).toContain("Use case: infographic-diagram");
+    expect(textItem?.text).toContain("Use case: current-page-visual-explainer");
+    expect(textItem?.text).not.toContain("Render target:");
+    expect(textItem?.text).not.toContain("legible on mobile");
+    expect(textItem?.text).not.toContain("vertical");
+    expect(textItem?.text).not.toContain("portrait");
+    expect(textItem?.text).not.toContain("aspect ratio");
+    expect(textItem?.text).not.toContain("1024x1536");
     expect(textItem?.text).toContain("PRIVATE PAGE CONTEXT");
     expect(textItem?.text).toContain("Do not invent metrics");
     expect(textItem?.text).toContain("use reference chaining");
     expect(textItem?.text).toContain("Input images or Reference images");
     expect(textItem?.text).toContain("Previous image prompt summary");
     expect(localImageItems).toEqual([]);
+  });
+
+  test("uses the same app-server image generation path for API-key accounts", async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "codex-image-generate-apikey-"));
+    const imageAssets = new BridgeImageAssetStore({
+      outputDir: () => join(workspaceRoot, ".codex-sidepanel", "generated-images"),
+    });
+    const client = new FakeCodexClient({
+      imageEditMode: true,
+      accountReadResult: {
+        account: { type: "apiKey" },
+      },
+    });
+    const plane = new CodexImagePlane(
+      {
+        runHooks: async () => ({ appendPrompt: [] }),
+        resolvePromptInstructions: async () => ({ text: "", sources: [] }),
+        getWorkspaceRoot: async () => workspaceRoot,
+      } as never,
+      { client: client as never, imageAssets },
+    );
+
+    const result = await plane.startGenerate({
+      prompt: "Generate a product concept image.",
+      contexts: [],
+      model: "gpt-image-2",
+    });
+
+    expect(result.previewRef).toMatch(/^codex-asset:/);
+    expect(client.calls.find((call) => call.method === "account/read")?.params).toMatchObject({
+      refreshToken: false,
+    });
+    expect(client.calls.find((call) => call.method === "turn/start")).toBeTruthy();
+  });
+
+  test("ignores explicit image render parameters for ChatGPT OAuth accounts", async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "codex-image-generate-chatgpt-params-"));
+    const imageAssets = new BridgeImageAssetStore({
+      outputDir: () => join(workspaceRoot, ".codex-sidepanel", "generated-images"),
+    });
+    const hookPayloads: Array<Record<string, unknown>> = [];
+    const client = new FakeCodexClient({
+      imageEditMode: true,
+      accountReadResult: {
+        account: { type: "chatgpt" },
+      },
+    });
+    const plane = new CodexImagePlane(
+      {
+        runHooks: async (_event: string, _scope: string, payload?: Record<string, unknown>) => {
+          if (payload) {
+            hookPayloads.push(payload);
+          }
+          return { appendPrompt: [] };
+        },
+        resolvePromptInstructions: async () => ({ text: "", sources: [] }),
+        getWorkspaceRoot: async () => workspaceRoot,
+      } as never,
+      { client: client as never, imageAssets },
+    );
+
+    await plane.startGenerate({
+      prompt: "Generate a product concept image.",
+      contexts: [],
+      model: "gpt-image-2",
+      quality: "high",
+      size: "1024x1024",
+    });
+
+    const turnStart = client.calls.find((call) => call.method === "turn/start");
+    const inputItems = Array.isArray(turnStart?.params?.input) ? turnStart.params.input : [];
+    const textItem = inputItems.find(
+      (item): item is { type: "text"; text: string } =>
+        typeof item === "object" &&
+        item !== null &&
+        (item as { type?: unknown }).type === "text" &&
+        typeof (item as { text?: unknown }).text === "string",
+    );
+
+    expect(textItem?.text).not.toContain("Render target:");
+    expect(hookPayloads.find((payload) => payload.mode === "generate")).toMatchObject({
+      quality: null,
+      size: null,
+    });
+  });
+
+  test("preserves explicit image render parameters only for API-key accounts", async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "codex-image-generate-apikey-params-"));
+    const imageAssets = new BridgeImageAssetStore({
+      outputDir: () => join(workspaceRoot, ".codex-sidepanel", "generated-images"),
+    });
+    const hookPayloads: Array<Record<string, unknown>> = [];
+    const client = new FakeCodexClient({
+      imageEditMode: true,
+      accountReadResult: {
+        account: { type: "apiKey" },
+      },
+    });
+    const plane = new CodexImagePlane(
+      {
+        runHooks: async (_event: string, _scope: string, payload?: Record<string, unknown>) => {
+          if (payload) {
+            hookPayloads.push(payload);
+          }
+          return { appendPrompt: [] };
+        },
+        resolvePromptInstructions: async () => ({ text: "", sources: [] }),
+        getWorkspaceRoot: async () => workspaceRoot,
+      } as never,
+      { client: client as never, imageAssets },
+    );
+
+    await plane.startGenerate({
+      prompt: "Generate a product concept image.",
+      contexts: [],
+      model: "gpt-image-2",
+      quality: "high",
+      size: "1024x1024",
+    });
+
+    const turnStart = client.calls.find((call) => call.method === "turn/start");
+    const inputItems = Array.isArray(turnStart?.params?.input) ? turnStart.params.input : [];
+    const textItem = inputItems.find(
+      (item): item is { type: "text"; text: string } =>
+        typeof item === "object" &&
+        item !== null &&
+        (item as { type?: unknown }).type === "text" &&
+        typeof (item as { text?: unknown }).text === "string",
+    );
+
+    expect(textItem?.text).toContain("Render target: 1024x1024, high quality.");
+    expect(hookPayloads.find((payload) => payload.mode === "generate")).toMatchObject({
+      quality: "high",
+      size: "1024x1024",
+    });
+  });
+
+  test("fails image generation early with a clear message for free ChatGPT accounts", async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "codex-image-generate-free-"));
+    const imageAssets = new BridgeImageAssetStore({
+      outputDir: () => join(workspaceRoot, ".codex-sidepanel", "generated-images"),
+    });
+    const client = new FakeCodexClient({
+      accountReadResult: {
+        account: { type: "chatgpt", planType: "free" },
+      },
+    });
+    const plane = new CodexImagePlane(
+      {
+        runHooks: async () => ({ appendPrompt: [] }),
+        resolvePromptInstructions: async () => ({ text: "", sources: [] }),
+        getWorkspaceRoot: async () => workspaceRoot,
+      } as never,
+      { client: client as never, imageAssets },
+    );
+
+    await expect(
+      plane.startGenerate({
+        prompt: "Generate a product concept image.",
+        contexts: [],
+        model: "gpt-image-2",
+      }),
+    ).rejects.toThrow("Image generation is not available on free ChatGPT accounts");
+    expect(client.calls.find((call) => call.method === "turn/start")).toBeUndefined();
+  });
+
+  test("does not block image generation from non-ChatGPT accounts with unrelated plan fields", async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "codex-image-generate-apikey-plan-field-"));
+    const imageAssets = new BridgeImageAssetStore({
+      outputDir: () => join(workspaceRoot, ".codex-sidepanel", "generated-images"),
+    });
+    const client = new FakeCodexClient({
+      imageEditMode: true,
+      accountReadResult: {
+        account: { type: "apiKey" },
+        planType: "free",
+      },
+    });
+    const plane = new CodexImagePlane(
+      {
+        runHooks: async () => ({ appendPrompt: [] }),
+        resolvePromptInstructions: async () => ({ text: "", sources: [] }),
+        getWorkspaceRoot: async () => workspaceRoot,
+      } as never,
+      { client: client as never, imageAssets },
+    );
+
+    const result = await plane.startGenerate({
+      prompt: "Generate a product concept image.",
+      contexts: [],
+      model: "gpt-image-2",
+    });
+
+    expect(result.previewRef).toMatch(/^codex-asset:/);
+    expect(client.calls.find((call) => call.method === "turn/start")).toBeTruthy();
+  });
+
+  test("preserves app-server image generation failures without inferring the account plan from text", async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "codex-image-generate-app-error-"));
+    const imageAssets = new BridgeImageAssetStore({
+      outputDir: () => join(workspaceRoot, ".codex-sidepanel", "generated-images"),
+    });
+    const appServerMessage = "Image_gen tool is not available for free accounts.";
+    const client = new FakeCodexClient({
+      turnStartFailures: [appServerMessage],
+    });
+    const plane = new CodexImagePlane(
+      {
+        runHooks: async () => ({ appendPrompt: [] }),
+        resolvePromptInstructions: async () => ({ text: "", sources: [] }),
+        getWorkspaceRoot: async () => workspaceRoot,
+      } as never,
+      { client: client as never, imageAssets },
+    );
+
+    let thrownMessage = "";
+    try {
+      await plane.startGenerate({
+        prompt: "Generate a product concept image.",
+        contexts: [],
+        model: "gpt-image-2",
+      });
+    } catch (error) {
+      thrownMessage = error instanceof Error ? error.message : String(error);
+    }
+
+    expect(thrownMessage).toBe(appServerMessage);
+    expect(thrownMessage).not.toContain("Image generation is not available on free ChatGPT accounts");
   });
 
   test("materializes visible-screen context for infographic generation", async () => {
@@ -1012,8 +1697,6 @@ describe("CodexImagePlane", () => {
       ],
       workflow: "infographic",
       model: "gpt-image-2",
-      quality: "high",
-      size: "1024x1536",
     });
 
     const turnStart = client.calls.find((call) => call.method === "turn/start");
@@ -1049,8 +1732,6 @@ describe("CodexImagePlane", () => {
       prompt: "프롬프트: blue cloud-shaped coding app icon, glossy 3D. 이 프롬프트로 이미지 생성해줘.",
       workflow: "generated-image",
       model: "gpt-image-2",
-      quality: "high",
-      size: "1024x1024",
     });
 
     const turnStart = client.calls.find((call) => call.method === "turn/start");
@@ -1065,7 +1746,10 @@ describe("CodexImagePlane", () => {
 
     expect(textItem?.text).toContain("Generate a new image from the user's request");
     expect(textItem?.text).toContain("Use case: general-image-generation");
+    expect(textItem?.text).not.toContain("Render target:");
     expect(textItem?.text).toContain("execute that prompt as the visual brief");
+    expect(textItem?.text).toContain("Reference image unavailable");
+    expect(textItem?.text).toContain("repeated design contract");
     expect(textItem?.text).toContain("이 프롬프트로 이미지 생성해줘");
   });
 
@@ -1116,8 +1800,6 @@ describe("CodexImagePlane", () => {
         },
       ],
       model: "gpt-image-2",
-      quality: "high",
-      size: "1024x1536",
     });
 
     const turnStart = client.calls.find((call) => call.method === "turn/start");
@@ -1173,8 +1855,6 @@ describe("CodexImagePlane", () => {
         clientRequestId: "slide-req-1",
         workflow: "slide-images",
         model: "gpt-image-2",
-        quality: "high",
-        size: "1536x1024",
       },
       (event) => events.push(event),
     );

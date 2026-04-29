@@ -1,6 +1,10 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { describe, expect, test } from "vitest";
 
 import {
+  createImageAttachmentPreviewSrc,
   createRemoteImageAttachment,
   createFileChipLabel,
   extractWebImageUrlsFromDropData,
@@ -9,6 +13,20 @@ import {
   MAX_FILE_ATTACHMENT_BYTES,
   MAX_TOTAL_FILE_ATTACHMENT_BYTES,
 } from "../src/sidepanel/file-attachments.js";
+
+const sidepanelSource = readFileSync(resolve(process.cwd(), "src/sidepanel/index.ts"), "utf8");
+const backgroundSource = readFileSync(resolve(process.cwd(), "src/background/index.ts"), "utf8");
+
+function getFunctionSource(source: string, name: string): string {
+  const startMatch = new RegExp(`(?:async\\s+)?function\\s+${name}\\b`, "u").exec(source);
+  const start = startMatch?.index ?? -1;
+  if (start < 0) {
+    return "";
+  }
+  const rest = source.slice(start + 1);
+  const nextMatch = /\n(?:async\s+)?function\s+/u.exec(rest);
+  return nextMatch ? source.slice(start, start + 1 + nextMatch.index) : source.slice(start);
+}
 
 describe("file attachment policy", () => {
   test("accepts supported files until limits are reached", () => {
@@ -125,5 +143,118 @@ describe("file attachment policy", () => {
       kind: "image",
       sourceUrl: "https://cdn.example.com/mockup.png?token=redacted",
     });
+  });
+
+  test("uses source urls as composer previews for remote image attachments", () => {
+    const attachment = createRemoteImageAttachment("https://cdn.example.com/gallery/mockup.png?token=redacted", 1);
+
+    expect(createImageAttachmentPreviewSrc(attachment)).toBe("https://cdn.example.com/gallery/mockup.png?token=redacted");
+  });
+
+  test("installs local file drop handlers on the side panel root", () => {
+    expect(sidepanelSource).toContain("function installComposerDropHandlers");
+    expect(sidepanelSource).toContain('root.addEventListener("dragover"');
+    expect(sidepanelSource).toContain('root.addEventListener("drop"');
+    expect(sidepanelSource).toContain("const droppedFiles = getDroppedFiles(dataTransfer)");
+    expect(sidepanelSource).toContain("await ingestSelectedFiles(droppedFiles)");
+  });
+
+  test("adds context-menu images to the composer as attachments without launching image edit", () => {
+    const contextMenuHandler = backgroundSource.slice(backgroundSource.indexOf("chrome.contextMenus.onClicked.addListener"));
+    const sidepanelTaker = getFunctionSource(sidepanelSource, "takePendingContextMenuImageAttachment");
+    const renderFileAttachmentChip = getFunctionSource(sidepanelSource, "renderFileAttachmentChip");
+
+    expect(contextMenuHandler).toContain('info.menuItemId === "edit-codex-image"');
+    expect(contextMenuHandler).toContain("const sidePanelOpenPromise = openSidePanelForContextMenu(tab)");
+    expect(contextMenuHandler.indexOf("const sidePanelOpenPromise = openSidePanelForContextMenu(tab)")).toBeLessThan(
+      contextMenuHandler.indexOf("chrome.storage.session.set"),
+    );
+    expect(contextMenuHandler).toContain("pendingImageAttachment");
+    expect(contextMenuHandler).toContain("imageUrl: info.srcUrl");
+    expect(contextMenuHandler).toContain("await sidePanelOpenPromise");
+    expect(backgroundSource).toContain("function openSidePanelForContextMenu");
+    expect(backgroundSource).toContain("chrome.windows.WINDOW_ID_CURRENT");
+    expect(backgroundSource).toContain("chrome.sidePanel.open({ tabId: tab.id })");
+    expect(contextMenuHandler).toContain('type: "ui.image-attachment.pending"');
+    expect(contextMenuHandler).not.toContain('? "edit-image"');
+    expect(contextMenuHandler).not.toContain("if (!tab?.windowId)");
+    expect(backgroundSource).not.toContain("lastImageSourceUrl");
+    expect(backgroundSource).not.toContain("isFreshClickedImageSource");
+    expect(backgroundSource).not.toContain("CLICKED_IMAGE_SOURCE_TTL_MS");
+    expect(backgroundSource).toContain('case "image.attachment.pending.take"');
+    expect(backgroundSource).toContain("function takePendingImageAttachment");
+
+    expect(sidepanelSource).toContain('message.type === "ui.image-attachment.pending"');
+    expect(sidepanelSource).toContain("void takePendingContextMenuImageAttachment();");
+    expect(sidepanelSource).toContain("createRemoteImageAttachment");
+    expect(sidepanelTaker).toContain('type: "image.attachment.pending.take"');
+    expect(sidepanelTaker).toContain("createContextMenuImageAttachment");
+    expect(sidepanelTaker).toContain('state.activeView = "chat"');
+    expect(sidepanelTaker).toContain("state.fileAttachments =");
+    expect(sidepanelTaker).not.toContain("sendPrompt");
+    expect(sidepanelTaker).not.toContain("image.edit.start");
+    expect(renderFileAttachmentChip).toContain("createImageAttachmentPreviewSrc(attachment)");
+    expect(renderFileAttachmentChip).toContain("file-chip-preview static");
+  });
+
+  test("queues page context-menu actions until the side panel is open and initialized", () => {
+    const contextMenuHandler = backgroundSource.slice(backgroundSource.indexOf("chrome.contextMenus.onClicked.addListener"));
+    const actionTaker = getFunctionSource(sidepanelSource, "takePendingContextMenuAction");
+    const initialize = getFunctionSource(sidepanelSource, "initialize");
+
+    expect(contextMenuHandler).toContain("const sidePanelOpenPromise = openSidePanelForContextMenu(tab)");
+    expect(contextMenuHandler.indexOf("const sidePanelOpenPromise = openSidePanelForContextMenu(tab)")).toBeLessThan(
+      contextMenuHandler.indexOf("chrome.storage.session.set"),
+    );
+    expect(contextMenuHandler).toContain("pendingAction:");
+    expect(contextMenuHandler).toContain("await sidePanelOpenPromise");
+    expect(contextMenuHandler).toContain('type: "ui.context-menu-action.pending"');
+    expect(backgroundSource).toContain('case "context.menu.pending.take"');
+    expect(backgroundSource).toContain("function takePendingContextMenuAction");
+
+    expect(sidepanelSource).toContain('message.type === "ui.context-menu-action.pending"');
+    expect(sidepanelSource).toContain("void takePendingContextMenuAction();");
+    expect(initialize).toContain("void takePendingContextMenuAction();");
+    expect(actionTaker).toContain('type: "context.menu.pending.take"');
+    expect(actionTaker).toContain("handleActionCard(action)");
+  });
+
+  test("clears composer file attachments immediately after creating the submitted request snapshot", () => {
+    const sendPromptSource = getFunctionSource(sidepanelSource, "sendPrompt");
+
+    expect(sendPromptSource).toContain("createSubmittedComposerFileAttachmentState");
+    expect(sendPromptSource).toContain("submittedComposerFileAttachments = submittedFileAttachmentState.messageFileAttachments");
+    expect(sendPromptSource).toContain("state.fileAttachments = submittedFileAttachmentState.composerFileAttachments");
+    expect(sendPromptSource.indexOf("state.fileAttachments = submittedFileAttachmentState.composerFileAttachments")).toBeLessThan(
+      sendPromptSource.indexOf("await createGeneratedImageFileAttachmentsForPrompt"),
+    );
+    expect(sendPromptSource.indexOf("state.fileAttachments = submittedFileAttachmentState.composerFileAttachments")).toBeLessThan(
+      sendPromptSource.indexOf("state.messages.push"),
+    );
+    expect(sendPromptSource).toContain("state.fileAttachments = submittedComposerFileAttachments");
+  });
+
+  test("flushes the submitted user message before awaiting generated-image follow-up routing", () => {
+    const sendPromptSource = getFunctionSource(sidepanelSource, "sendPrompt");
+    const userMessagePushIndex = sendPromptSource.indexOf("state.messages.push({");
+    const generatedImageRoutingIndex = sendPromptSource.indexOf("await createGeneratedImageFileAttachmentsForPrompt");
+
+    expect(userMessagePushIndex).toBeGreaterThanOrEqual(0);
+    expect(generatedImageRoutingIndex).toBeGreaterThanOrEqual(0);
+    expect(userMessagePushIndex).toBeLessThan(generatedImageRoutingIndex);
+    const renderFlushIndex = sendPromptSource.indexOf("renderSync();", userMessagePushIndex);
+    expect(renderFlushIndex).toBeGreaterThanOrEqual(0);
+    expect(renderFlushIndex).toBeLessThan(generatedImageRoutingIndex);
+  });
+
+  test("skips generated-image follow-up routing for turn steering sends", () => {
+    const sendPromptSource = getFunctionSource(sidepanelSource, "sendPrompt");
+    const generatedImageRoutingIndex = sendPromptSource.indexOf("await createGeneratedImageFileAttachmentsForPrompt");
+
+    expect(generatedImageRoutingIndex).toBeGreaterThanOrEqual(0);
+    expect(sendPromptSource).toContain("const generatedImageAttachments = sendAsTurnSteer");
+    expect(sendPromptSource.indexOf("? []", sendPromptSource.indexOf("const generatedImageAttachments = sendAsTurnSteer"))).toBeLessThan(
+      generatedImageRoutingIndex,
+    );
   });
 });

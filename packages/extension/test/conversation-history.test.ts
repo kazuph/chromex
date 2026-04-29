@@ -3,10 +3,12 @@ import { describe, expect, test } from "vitest";
 import {
   clearConversationHistoryState,
   deleteConversationHistoryEntry,
+  resolveVisibleCurrentConversation,
 } from "../src/background/conversation-history.js";
 import {
   prepareConversationsForStorage,
   sanitizeConversationForStorage,
+  shouldPersistConversationInHistory,
 } from "../src/background/storage.js";
 import type { SavedConversation } from "../src/types.js";
 
@@ -26,6 +28,18 @@ function makeConversation(id: string): SavedConversation {
 }
 
 describe("conversation history helpers", () => {
+  test("does not persist empty draft conversations in recent chat history", () => {
+    expect(shouldPersistConversationInHistory(makeConversation("empty-draft"))).toBe(false);
+
+    const conversation = makeConversation("started-chat");
+    conversation.messages = [{ id: "user-1", role: "user", text: "Hello" }];
+
+    expect(shouldPersistConversationInHistory(conversation)).toBe(true);
+    expect(prepareConversationsForStorage([makeConversation("empty-draft"), conversation]).map((item) => item.id)).toEqual([
+      "started-chat",
+    ]);
+  });
+
   test("deletes one conversation without changing another active conversation", () => {
     const result = deleteConversationHistoryEntry({
       conversations: [makeConversation("a"), makeConversation("b")],
@@ -53,6 +67,28 @@ describe("conversation history helpers", () => {
       conversations: [],
       currentConversationId: null,
     });
+  });
+
+  test("uses the active unsaved draft instead of falling back to an older stored chat", () => {
+    const stored = makeConversation("old-chat");
+    const draft = makeConversation("new-chat");
+
+    expect(
+      resolveVisibleCurrentConversation({
+        conversations: [stored],
+        currentConversationId: "new-chat",
+        draftConversation: draft,
+      })?.id,
+    ).toBe("new-chat");
+  });
+
+  test("does not return a stored chat that is no longer active", () => {
+    expect(
+      resolveVisibleCurrentConversation({
+        conversations: [makeConversation("old-chat")],
+        currentConversationId: "new-chat",
+      }),
+    ).toBeNull();
   });
 
   test("strips bridge-backed generated image data before writing history", () => {

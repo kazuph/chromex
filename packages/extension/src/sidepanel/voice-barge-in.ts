@@ -4,11 +4,6 @@ const FILLER_TRANSCRIPTS = new Set([
   "mhm",
   "mm",
   "hmm",
-  "음",
-  "어",
-  "아",
-  "응",
-  "음음",
 ]);
 
 export function shouldInterruptVoiceOutputForTranscript(input: {
@@ -30,7 +25,16 @@ export function shouldInterruptVoiceOutputForTranscript(input: {
     return false;
   }
 
+  if (isShortRepeatedUtterance(compact)) {
+    return false;
+  }
+
   return true;
+}
+
+function isShortRepeatedUtterance(value: string): boolean {
+  const chars = Array.from(value);
+  return chars.length <= 3 && new Set(chars).size === 1;
 }
 
 function normalizeTranscript(value: string): string {

@@ -3,7 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  type CodexAppOption,
+  type CodexStructuredInput,
   fitTextToTokenBudget,
+  type CodexMcpServerOption,
   normalizeCodexRealtimeVoice,
   type PageContextEnvelope,
   type ProfileTemplate,
@@ -13,6 +16,7 @@ import {
 
 import {
   mapApps,
+  mapMcpServerStatusResponse,
   mapModels,
   mapPlugins,
   mapRateLimits,
@@ -73,13 +77,18 @@ type AgentMessageItem = {
   value?: unknown;
 };
 
+type ThreadScopedEventContext = {
+  threadId: string;
+  turnId: string;
+};
+
 type ContextCompactionItem = {
   id?: string;
   type?: string;
 };
 
 type AccountReadResult = {
-  account?: { type?: string } | null;
+  account?: { type?: string; email?: string | null; planType?: string | null } | null;
   requiresOpenaiAuth?: boolean;
 };
 
@@ -120,6 +129,52 @@ const MAX_PROMPT_RECONNECT_DELAY_MS = 8_000;
 
 function hasAuthenticatedCodexAccount(result: AccountReadResult): boolean {
   return Boolean(result.account) || result.requiresOpenaiAuth === false;
+}
+
+function getCodexAccountPlanType(result: AccountReadResult): string | null {
+  if (result.account?.type !== "chatgpt") {
+    return null;
+  }
+  const planType = result.account.planType ?? null;
+  return typeof planType === "string" && planType.trim() ? planType.trim().toLowerCase() : null;
+}
+
+function getCodexAccountEmail(result: AccountReadResult): string | null {
+  const email = result.account?.email;
+  return typeof email === "string" && email.trim() ? email.trim() : null;
+}
+
+function isFreeCodexAccount(result: AccountReadResult): boolean {
+  return getCodexAccountPlanType(result) === "free";
+}
+
+function isApiKeyCodexAccount(result: AccountReadResult): boolean {
+  return result.account?.type === "apiKey";
+}
+
+function normalizeImageEditParamsForAccount(params: ImageEditParams, account: AccountReadResult): ImageEditParams {
+  if (isApiKeyCodexAccount(account)) {
+    return params;
+  }
+  const { size: _size, ...rest } = params;
+  return rest;
+}
+
+function normalizeImageGenerateParamsForAccount(params: ImageGenerateParams, account: AccountReadResult): ImageGenerateParams {
+  if (isApiKeyCodexAccount(account)) {
+    return params;
+  }
+  const { quality: _quality, size: _size, ...rest } = params;
+  return rest;
+}
+
+function createImageGenerationUnavailableForPlanMessage(planType: string | null): string {
+  const planLabel = planType === "free" ? "free ChatGPT accounts" : "this Codex account plan";
+  return `Image generation is not available on ${planLabel}. The Codex app-server image_gen tool may require a paid ChatGPT plan or API-key mode with image generation access.`;
+}
+
+function toImageGenerationError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
 }
 
 function isImageGenerationItem(value: unknown): value is ImageGenerationItem {
@@ -184,6 +239,50 @@ function extractTextContent(value: unknown, depth = 0): string {
   }
 
   return "";
+}
+
+function getNotificationThreadId(notification: NotificationPayload): string {
+  return String(notification.params?.threadId ?? "").trim();
+}
+
+function getNotificationTurnId(notification: NotificationPayload): string {
+  const turn = notification.params?.turn as { id?: string } | undefined;
+  return String(notification.params?.turnId ?? turn?.id ?? "").trim();
+}
+
+function notificationBelongsToPrompt(
+  notification: NotificationPayload,
+  prompt: {
+    threadId: string;
+    turnId: string;
+  },
+): boolean {
+  const notificationThreadId = getNotificationThreadId(notification);
+  if (notificationThreadId && prompt.threadId && notificationThreadId !== prompt.threadId) {
+    return false;
+  }
+
+  const notificationTurnId = getNotificationTurnId(notification);
+  if (prompt.turnId && notificationTurnId && notificationTurnId !== prompt.turnId) {
+    return false;
+  }
+
+  if (!prompt.turnId && notificationTurnId) {
+    return Boolean(notificationThreadId && prompt.threadId && notificationThreadId === prompt.threadId);
+  }
+
+  if (!prompt.turnId && prompt.threadId) {
+    return notificationThreadId === prompt.threadId;
+  }
+
+  return true;
+}
+
+function createThreadScopedEventContext(threadId: string, turnId: string): ThreadScopedEventContext {
+  return {
+    threadId,
+    turnId,
+  };
 }
 
 function createTurnActivityEvent(input: {
@@ -486,6 +585,108 @@ function delay(delayMs: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, delayMs));
 }
 
+function expandPluginStructuredInputsWithConnectedApps(
+  inputs: CodexStructuredInput[] | undefined,
+  apps: CodexAppOption[],
+): CodexStructuredInput[] | undefined {
+  const sourceInputs = inputs ?? [];
+  const usableApps = apps.filter((app) => app.isAccessible && app.isEnabled);
+  if (sourceInputs.length === 0 || usableApps.length === 0 || !sourceInputs.some(isPluginStructuredInput)) {
+    return inputs;
+  }
+
+  const expanded: CodexStructuredInput[] = [];
+  const seenIds = new Set<string>();
+  const seenPaths = new Set<string>();
+  const append = (input: CodexStructuredInput): void => {
+    if (!input.id.trim() || seenIds.has(input.id) || seenPaths.has(input.path)) {
+      return;
+    }
+    expanded.push(input);
+    seenIds.add(input.id);
+    seenPaths.add(input.path);
+  };
+
+  for (const input of sourceInputs) {
+    const app = isPluginStructuredInput(input) ? findConnectedAppForPluginMention(input, usableApps) : null;
+    if (app) {
+      append({
+        id: app.id,
+        type: "mention",
+        name: app.name,
+        path: app.path,
+        description: app.description,
+        token: app.token,
+      });
+    }
+    append(input);
+  }
+
+  return expanded;
+}
+
+function createTurnApprovalParamsForStructuredInputs(
+  inputs: PromptSendParams["structuredInputs"],
+): { approvalPolicy: "never" | "on-request"; approvalsReviewer?: "auto_review" } {
+  if (!hasExplicitExternalToolMention(inputs)) {
+    return { approvalPolicy: "never" };
+  }
+
+  return {
+    approvalPolicy: "on-request",
+    approvalsReviewer: "auto_review",
+  };
+}
+
+function hasExplicitExternalToolMention(inputs: PromptSendParams["structuredInputs"]): boolean {
+  return (
+    inputs?.some(
+      (input) => input.type === "mention" && /^(?:app|plugin|mcp):\/\//iu.test(input.path.trim()),
+    ) ?? false
+  );
+}
+
+function isPluginStructuredInput(input: CodexStructuredInput): input is CodexStructuredInput & { type: "mention" } {
+  return input.type === "mention" && /^plugin:\/\//iu.test(input.path.trim());
+}
+
+function findConnectedAppForPluginMention(
+  input: CodexStructuredInput & { type: "mention" },
+  apps: CodexAppOption[],
+): CodexAppOption | null {
+  const pluginSlug = pluginSlugFromPath(input.path);
+  const pluginTokens = new Set(
+    [input.id, input.name, input.token, pluginSlug]
+      .map(normalizeStructuredInputMatchValue)
+      .filter(Boolean),
+  );
+  return (
+    apps.find((app) =>
+      [app.id, app.name, app.token, app.path]
+        .map(normalizeStructuredInputMatchValue)
+        .some((value) => value && pluginTokens.has(value)),
+    ) ?? null
+  );
+}
+
+function pluginSlugFromPath(path: string): string {
+  return /^plugin:\/\/([^@/?#\s]+)/iu.exec(path.trim())?.[1] ?? "";
+}
+
+function normalizeStructuredInputMatchValue(value: string): string {
+  return (
+    value
+      .trim()
+      .replace(/^\$/u, "")
+      .replace(/^app:\/\//iu, "")
+      .replace(/^plugin:\/\//iu, "")
+      .split("@")[0]
+      ?.trim()
+      .replace(/[\s_-]+/gu, "")
+      .toLowerCase() ?? ""
+  );
+}
+
 export class AppServerCodexPlane implements BridgeCodexPlane {
   readonly #client: CodexAppServerClient;
   readonly #harness: BridgeHarnessRuntime;
@@ -497,6 +698,7 @@ export class AppServerCodexPlane implements BridgeCodexPlane {
   readonly #retryDelayImpl: RetryDelayImpl;
   #threadId: string | undefined = undefined;
   #activeTurnId: string | null = null;
+  #runtimeFeatureEnablementPromise: Promise<void> | null = null;
 
   constructor(options: {
     client: CodexAppServerClient;
@@ -535,18 +737,21 @@ export class AppServerCodexPlane implements BridgeCodexPlane {
       codexAuthenticated: hasAuthenticatedCodexAccount(result),
       multimodalAvailable: hasAuthenticatedCodexAccount(result),
       openAiApiKeyConfigured: this.#secrets.hasOpenAiApiKey(),
+      email: getCodexAccountEmail(result),
+      planType: getCodexAccountPlanType(result),
     };
   }
 
   async login(params: LoginParams): Promise<unknown> {
     if (params.type === "apiKey") {
-      if (!params.apiKey) {
-        throw new Error("API key login requires params.apiKey");
+      const apiKey = params.apiKey ?? this.#secrets.getOpenAiApiKey();
+      if (!apiKey) {
+        throw new Error("API key login requires params.apiKey or a configured bridge API key");
       }
-      this.#secrets.setOpenAiApiKey(params.apiKey);
+      this.#secrets.setOpenAiApiKey(apiKey);
       return this.#client.request("account/login/start", {
         type: "apiKey",
-        apiKey: params.apiKey,
+        apiKey,
       });
     }
 
@@ -623,20 +828,91 @@ export class AppServerCodexPlane implements BridgeCodexPlane {
   }
 
   async listApps(params: { threadId?: string; forceRefetch?: boolean }) {
-    const result = (await this.#client.request("app/list", {
-      limit: 24,
-      ...(params.threadId ? { threadId: params.threadId } : {}),
-      ...(params.forceRefetch ? { forceRefetch: true } : {}),
-    })) as { data?: Array<Record<string, unknown>> };
-    return mapApps((result.data ?? []) as never);
+    await this.#ensureAppAndPluginRuntimeFeatures();
+    const apps: Array<Record<string, unknown>> = [];
+    let cursor: string | undefined;
+    do {
+      const result = (await this.#client.request("app/list", {
+        limit: 100,
+        ...(cursor ? { cursor } : {}),
+        ...(params.forceRefetch ? { forceRefetch: true } : {}),
+      })) as { data?: Array<Record<string, unknown>>; nextCursor?: string | null; next_cursor?: string | null };
+      apps.push(...(result.data ?? []));
+      cursor = result.nextCursor ?? result.next_cursor ?? undefined;
+    } while (cursor);
+    return mapApps(apps as never);
   }
 
   async listPlugins(params: { cwd?: string }) {
+    await this.#ensureAppAndPluginRuntimeFeatures();
     const cwd = await this.#resolveCwd(params.cwd);
     const result = (await this.#client.request("plugin/list", {
       ...(cwd ? { cwds: [cwd] } : {}),
     })) as Record<string, unknown>;
     return mapPlugins(result as never);
+  }
+
+  async listMcpServers(params: { cursor?: string; limit?: number; detail?: "full" | "toolsAndAuthOnly" } = {}) {
+    const servers: CodexMcpServerOption[] = [];
+    let cursor = params.cursor ?? null;
+
+    do {
+      const result = (await this.#client.request("mcpServerStatus/list", {
+        limit: params.limit ?? 100,
+        detail: params.detail ?? "toolsAndAuthOnly",
+        ...(cursor ? { cursor } : {}),
+      })) as Record<string, unknown>;
+      const page = mapMcpServerStatusResponse(result as never);
+      servers.push(...page.servers);
+      cursor = page.nextCursor;
+    } while (cursor);
+
+    return servers;
+  }
+
+  async startMcpOauthLogin(params: { name: string; scopes?: string[]; timeoutSecs?: number }) {
+    const result = (await this.#client.request("mcpServer/oauth/login", {
+      name: params.name,
+      ...(params.scopes?.length ? { scopes: params.scopes } : {}),
+      ...(params.timeoutSecs ? { timeoutSecs: params.timeoutSecs } : {}),
+    })) as { authorizationUrl?: string; authorization_url?: string };
+    return {
+      authorizationUrl: result.authorizationUrl ?? result.authorization_url ?? "",
+    };
+  }
+
+  async callMcpTool(params: {
+    threadId: string;
+    server: string;
+    tool: string;
+    arguments?: Record<string, unknown>;
+    _meta?: Record<string, unknown>;
+  }) {
+    const result = (await this.#client.request("mcpServer/tool/call", {
+      threadId: params.threadId,
+      server: params.server,
+      tool: params.tool,
+      ...(params.arguments ? { arguments: params.arguments } : {}),
+      ...(params._meta ? { _meta: params._meta } : {}),
+    })) as {
+      content?: unknown[];
+      structuredContent?: unknown;
+      structured_content?: unknown;
+      isError?: boolean;
+      is_error?: boolean;
+      _meta?: unknown;
+    };
+    return {
+      content: Array.isArray(result.content) ? result.content : [],
+      structuredContent: result.structuredContent ?? result.structured_content,
+      isError: Boolean(result.isError ?? result.is_error),
+      meta: result._meta,
+    };
+  }
+
+  async reloadMcpServers(): Promise<{ ok: true }> {
+    await this.#client.request("config/mcpServer/reload");
+    return { ok: true };
   }
 
   async readRateLimits() {
@@ -648,6 +924,7 @@ export class AppServerCodexPlane implements BridgeCodexPlane {
   }
 
   async openSession(params: SessionParams): Promise<{ threadId: string }> {
+    await this.#ensureAppAndPluginRuntimeFeatures();
     const cwd = await this.#resolveCwd(params.cwd);
     const result = (await this.#client.request("thread/start", {
       ...(cwd ? { cwd } : {}),
@@ -667,6 +944,7 @@ export class AppServerCodexPlane implements BridgeCodexPlane {
   }
 
   async resumeSession(params: { threadId: string }): Promise<{ threadId: string }> {
+    await this.#ensureAppAndPluginRuntimeFeatures();
     const cwd = await this.#resolveCwd();
     const result = (await this.#client.request("thread/resume", {
       threadId: params.threadId,
@@ -686,6 +964,7 @@ export class AppServerCodexPlane implements BridgeCodexPlane {
     params: PromptSendParams,
     emit: (event: BridgeEvent) => void,
   ): Promise<{ threadId: string; turnId: string }> {
+    await this.#ensureAppAndPluginRuntimeFeatures();
     const cwd = await this.#resolveCwd(params.cwd);
     const tempPaths: string[] = [];
     let threadId = params.threadId ?? this.#threadId ?? "";
@@ -705,17 +984,18 @@ export class AppServerCodexPlane implements BridgeCodexPlane {
           const completed = new Promise<void>((resolve, reject) => {
             unsubscribe = this.#client.onNotification((notification) => {
               try {
-                const notificationTurn = notification.params?.turn as { id?: string } | undefined;
-                const notificationTurnId = String(notification.params?.turnId ?? notificationTurn?.id ?? "");
-                if (turnId && notificationTurnId && notificationTurnId !== turnId) {
+                if (!notificationBelongsToPrompt(notification, { threadId, turnId })) {
                   return;
                 }
+                const notificationTurnId = getNotificationTurnId(notification);
+                const eventContext = createThreadScopedEventContext(threadId, notificationTurnId || turnId);
 
                 if (notification.method === "item/agentMessage/delta") {
                   emit({
                     type: "message.delta",
                     itemId: String(notification.params?.itemId ?? "agent-message"),
                     delta: String(notification.params?.delta ?? ""),
+                    ...eventContext,
                   });
                   return;
                 }
@@ -734,30 +1014,38 @@ export class AppServerCodexPlane implements BridgeCodexPlane {
                       type: "message.completed",
                       itemId,
                       text,
+                      ...eventContext,
                     });
-                    this.#queueGeneratedImagePreviewsFromText(itemId, text, emit, outputTasks, emittedImageItemIds);
+                    this.#queueGeneratedImagePreviewsFromText(
+                      itemId,
+                      text,
+                      emit,
+                      outputTasks,
+                      emittedImageItemIds,
+                      eventContext,
+                    );
                     return;
                   }
                   if (item?.type === "imageGeneration") {
-                    this.#queueGeneratedImagePreview(item, emit, outputTasks, emittedImageItemIds);
+                    this.#queueGeneratedImagePreview(item, emit, outputTasks, emittedImageItemIds, eventContext);
                   }
                   return;
                 }
 
                 if (notification.method === "turn/completed") {
-                  const completedTurnId = String(
-                    (notification.params?.turn as { id?: string; error?: { message?: string } } | undefined)?.id ?? "",
-                  );
-                  if (turnId && completedTurnId && completedTurnId !== turnId) {
-                    return;
-                  }
+                  const completedTurnId = notificationTurnId;
                   const turn = notification.params?.turn as { error?: { message?: string }; items?: unknown[] } | undefined;
                   unsubscribe();
                   if (turn?.error?.message) {
                     reject(new Error(turn.error.message));
                     return;
                   }
-                  this.#emitAgentMessagesFromItems(turn?.items ?? [], emit, emittedAgentMessageItemIds);
+                  this.#emitAgentMessagesFromItems(
+                    turn?.items ?? [],
+                    emit,
+                    emittedAgentMessageItemIds,
+                    createThreadScopedEventContext(threadId, completedTurnId || turnId),
+                  );
                   void Promise.allSettled(outputTasks)
                     .then(() =>
                       this.#emitMissingAgentMessagesFromThread(
@@ -789,7 +1077,7 @@ export class AppServerCodexPlane implements BridgeCodexPlane {
               ...(params.model ? { model: params.model } : {}),
               ...(params.serviceTier ? { serviceTier: params.serviceTier } : {}),
               ...(params.reasoningEffort ? { effort: params.reasoningEffort } : {}),
-              approvalPolicy: "never",
+              ...createTurnApprovalParamsForStructuredInputs(params.structuredInputs),
               personality: "pragmatic",
             },
           );
@@ -798,15 +1086,33 @@ export class AppServerCodexPlane implements BridgeCodexPlane {
           this.#activeTurnId = turnId;
 
           await completed;
-          await this.#harness.runHooks("PromptComplete", `profile:${params.profile.id}`, {
-            profileId: params.profile.id,
-            threadId,
-            turnId,
-            cwd: cwd ?? "",
-          });
+          await this.#harness
+            .runHooks("PromptComplete", `profile:${params.profile.id}`, {
+              profileId: params.profile.id,
+              threadId,
+              turnId,
+              cwd: cwd ?? "",
+            })
+            .catch((error) =>
+              this.#record("prompt.complete.hook_failed", {
+                profileId: params.profile.id,
+                threadId,
+                turnId,
+                error: getErrorMessage(error),
+              }),
+            );
           return { threadId, turnId };
         } catch (error) {
           unsubscribe();
+          if (emittedAgentMessageItemIds.size > 0 && threadId && turnId) {
+            await this.#record("prompt.post_completion_error", {
+              threadId,
+              turnId,
+              emittedAgentMessageCount: emittedAgentMessageItemIds.size,
+              error: getErrorMessage(error),
+            });
+            return { threadId, turnId };
+          }
           if (!shouldRetryPromptFailure(error, failedAttempts)) {
             throw error;
           }
@@ -962,6 +1268,7 @@ export class AppServerCodexPlane implements BridgeCodexPlane {
     emit: (event: BridgeEvent) => void,
     outputTasks: Promise<void>[],
     emittedImageItemIds: Set<string>,
+    context: ThreadScopedEventContext,
   ): void {
     const itemId = String(item.id ?? "generated-image");
     if (emittedImageItemIds.has(itemId)) {
@@ -981,6 +1288,7 @@ export class AppServerCodexPlane implements BridgeCodexPlane {
           itemId,
           previewRef,
           alt: "Generated image",
+          ...context,
         });
       })
       .catch((error) => {
@@ -999,6 +1307,7 @@ export class AppServerCodexPlane implements BridgeCodexPlane {
     emit: (event: BridgeEvent) => void,
     outputTasks: Promise<void>[],
     emittedImageItemIds: Set<string>,
+    context: ThreadScopedEventContext,
   ): void {
     const task = resolveGeneratedImagePreviewsFromText(text, this.#imageAssets)
       .then((previewRefs) => {
@@ -1017,6 +1326,7 @@ export class AppServerCodexPlane implements BridgeCodexPlane {
             itemId,
             previewRef,
             alt: "Generated image",
+            ...context,
           });
         }
       })
@@ -1054,6 +1364,8 @@ export class AppServerCodexPlane implements BridgeCodexPlane {
         itemId,
         previewRef,
         alt: "Generated image",
+        threadId,
+        turnId,
       });
     }
   }
@@ -1065,13 +1377,19 @@ export class AppServerCodexPlane implements BridgeCodexPlane {
     emittedAgentMessageItemIds: Set<string>,
   ): Promise<void> {
     const items = await this.#readAgentMessageItemsFromThread(threadId, turnId).catch(() => []);
-    this.#emitAgentMessagesFromItems(items, emit, emittedAgentMessageItemIds);
+    this.#emitAgentMessagesFromItems(
+      items,
+      emit,
+      emittedAgentMessageItemIds,
+      createThreadScopedEventContext(threadId, turnId),
+    );
   }
 
   #emitAgentMessagesFromItems(
     items: unknown[],
     emit: (event: BridgeEvent) => void,
     emittedAgentMessageItemIds: Set<string>,
+    context: ThreadScopedEventContext,
   ): void {
     for (const item of items) {
       if (!isAgentMessageItem(item)) {
@@ -1091,6 +1409,7 @@ export class AppServerCodexPlane implements BridgeCodexPlane {
         type: "message.completed",
         itemId,
         text,
+        ...context,
       });
     }
   }
@@ -1132,6 +1451,7 @@ export class AppServerCodexPlane implements BridgeCodexPlane {
   }
 
   async steerTurn(params: PromptSendParams & { expectedTurnId: string }): Promise<{ threadId: string; turnId: string }> {
+    await this.#ensureAppAndPluginRuntimeFeatures();
     const cwd = await this.#resolveCwd(params.cwd);
     const threadId = params.threadId ?? this.#threadId;
     if (!threadId) {
@@ -1252,6 +1572,27 @@ export class AppServerCodexPlane implements BridgeCodexPlane {
       return;
     }
 
+    if (notification.method === "item/mcpToolCall/progress") {
+      const threadId = String(notification.params?.threadId ?? this.#threadId ?? "");
+      const turnId = String(notification.params?.turnId ?? this.#activeTurnId ?? "");
+      const itemId = String(notification.params?.itemId ?? "mcp-tool");
+      if (!threadId || !turnId) {
+        return;
+      }
+      this.#emitEvent?.({
+        type: "turn.activity",
+        threadId,
+        turnId,
+        itemId,
+        kind: "tool",
+        title: "Using MCP tool",
+        detail: summarizeString(String(notification.params?.message ?? "MCP tool progress")),
+        status: "running",
+        timestampMs: Date.now(),
+      });
+      return;
+    }
+
     if (notification.method === "thread/compacted") {
       const threadId = String(notification.params?.threadId ?? this.#threadId ?? "");
       const turnId = String(notification.params?.turnId ?? this.#activeTurnId ?? "");
@@ -1335,6 +1676,28 @@ export class AppServerCodexPlane implements BridgeCodexPlane {
         type: "catalog.updated",
         kind: "apps",
       });
+      return;
+    }
+
+    if (notification.method === "mcpServer/oauthLogin/completed") {
+      this.#emitEvent?.({
+        type: "mcp.oauth.login.completed",
+        serverName: String(notification.params?.name ?? ""),
+        success: Boolean(notification.params?.success),
+        error: notification.params?.error ? String(notification.params.error) : null,
+      });
+      this.#emitEvent?.({
+        type: "catalog.updated",
+        kind: "mcp",
+      });
+      return;
+    }
+
+    if (notification.method === "mcpServer/startupStatus/updated") {
+      this.#emitEvent?.({
+        type: "catalog.updated",
+        kind: "mcp",
+      });
     }
   }
 
@@ -1364,10 +1727,12 @@ export class AppServerCodexPlane implements BridgeCodexPlane {
       tempDir: await this.#tempDirPromise,
     });
     tempPaths.push(...contextPreparation.tempPaths);
+    const structuredInputs = await this.#expandStructuredInputsWithConnectedApps(params.structuredInputs);
 
     return createCodexTurnInputItems(
       {
         ...params,
+        ...(structuredInputs ? { structuredInputs } : {}),
         contexts: contextPreparation.contexts,
       },
       async (ref, contextIndex, assetIndex) => {
@@ -1382,6 +1747,20 @@ export class AppServerCodexPlane implements BridgeCodexPlane {
         uploadedImages: preparedFiles.uploadedImages,
       },
     );
+  }
+
+  async #expandStructuredInputsWithConnectedApps(
+    structuredInputs: PromptSendParams["structuredInputs"],
+  ): Promise<PromptSendParams["structuredInputs"]> {
+    if (!structuredInputs?.some((input) => input.type === "mention" && /^plugin:\/\//iu.test(input.path.trim()))) {
+      return structuredInputs;
+    }
+
+    const apps = await this.listApps({ forceRefetch: true }).catch((error) => {
+      void this.#record("structured_inputs.app_expansion_failed", { error: getErrorMessage(error) });
+      return [];
+    });
+    return expandPluginStructuredInputsWithConnectedApps(structuredInputs, apps);
   }
 
   async #materializeInlineImage(dataUrl: string, contextIndex: number, assetIndex: number): Promise<string> {
@@ -1402,6 +1781,27 @@ export class AppServerCodexPlane implements BridgeCodexPlane {
   async #resolveCwd(explicitCwd?: string): Promise<string | undefined> {
     const value = explicitCwd?.trim() ? explicitCwd.trim() : await this.#harness.getWorkspaceRoot();
     return value?.trim() ? value.trim() : undefined;
+  }
+
+  async #ensureAppAndPluginRuntimeFeatures(): Promise<void> {
+    if (!this.#runtimeFeatureEnablementPromise) {
+      this.#runtimeFeatureEnablementPromise = this.#client
+        .request("experimentalFeature/enablement/set", {
+          enablement: {
+            apps: true,
+            plugins: true,
+          },
+        })
+        .then(() => undefined)
+        .catch((error) => {
+          this.#runtimeFeatureEnablementPromise = null;
+          void this.#record("runtime_features.enablement_failed", {
+            features: ["apps", "plugins"],
+            error: getErrorMessage(error),
+          });
+        });
+    }
+    await this.#runtimeFeatureEnablementPromise;
   }
 
   async #record(event: string, details: Record<string, unknown>): Promise<void> {
@@ -1643,6 +2043,13 @@ export class CodexVoicePlane implements BridgeVoicePlane {
           text: String(notification.params?.text ?? ""),
         });
         return;
+      case "thread/realtime/itemAdded":
+        this.#emitEvent?.({
+          type: "voice.item_added",
+          threadId,
+          item: asRecord(notification.params?.item) ?? {},
+        });
+        return;
       case "thread/realtime/outputAudio/delta":
         this.#emitEvent?.({
           type: "voice.output_audio.delta",
@@ -1761,22 +2168,26 @@ export class CodexImagePlane implements BridgeImagePlane {
       if (!hasAuthenticatedCodexAccount(account)) {
         throw new Error("Image editing requires signing in to Codex. ChatGPT login is enough; an API key is only a fallback.");
       }
+      if (isFreeCodexAccount(account)) {
+        throw new Error(createImageGenerationUnavailableForPlanMessage(getCodexAccountPlanType(account)));
+      }
+      const accountParams = normalizeImageEditParamsForAccount(params, account);
 
       await this.#harness.runHooks("ImageEditStart", "image.edit", {
-        prompt: params.prompt,
-        mimeType: params.image.mimeType,
-        filename: params.image.filename ?? null,
-        size: params.size ?? "1024x1024",
+        prompt: accountParams.prompt,
+        mimeType: accountParams.image.mimeType,
+        filename: accountParams.image.filename ?? null,
+        size: accountParams.size ?? null,
       });
 
-      const inputImagePath = await this.#writeInputImage(params.image);
-      const referenceImagePaths = await Promise.all((params.referenceImages ?? []).map((image) => this.#writeInputImage(image)));
+      const inputImagePath = await this.#writeInputImage(accountParams.image);
+      const referenceImagePaths = await Promise.all((accountParams.referenceImages ?? []).map((image) => this.#writeInputImage(image)));
       await this.#record("image.edit.input.ready", {
         jobId,
         inputImagePath,
         referenceImageCount: referenceImagePaths.length,
       });
-      const previewRef = await this.#runCodexImageEdit(params, inputImagePath, referenceImagePaths, jobId);
+      const previewRef = await this.#runCodexImageEdit(accountParams, inputImagePath, referenceImagePaths, jobId);
       this.#jobs.set(jobId, { previewRef, previewRefs: [previewRef] });
       await this.#harness.runHooks("ImageEditComplete", "image.edit", {
         jobId,
@@ -1785,11 +2196,12 @@ export class CodexImagePlane implements BridgeImagePlane {
       await this.#record("image.edit.completed", { jobId, previewRef });
       return { jobId, previewRef };
     } catch (error) {
+      const imageError = toImageGenerationError(error);
       await this.#record("image.edit.failed", {
         jobId,
-        error: error instanceof Error ? error.message : String(error),
+        error: imageError.message,
       });
-      throw error;
+      throw imageError;
     }
   }
 
@@ -1806,8 +2218,8 @@ export class CodexImagePlane implements BridgeImagePlane {
       promptLength: params.prompt.length,
       contextCount: params.contexts?.length ?? 0,
       model: params.model ?? "gpt-image-2",
-      quality: params.quality ?? "high",
-      size: params.size ?? "1024x1536",
+      quality: params.quality ?? null,
+      size: params.size ?? null,
     });
 
     try {
@@ -1823,16 +2235,20 @@ export class CodexImagePlane implements BridgeImagePlane {
       if (!hasAuthenticatedCodexAccount(account)) {
         throw new Error("Image generation requires signing in to Codex. ChatGPT login is enough; an API key is only a fallback.");
       }
+      if (isFreeCodexAccount(account)) {
+        throw new Error(createImageGenerationUnavailableForPlanMessage(getCodexAccountPlanType(account)));
+      }
+      const accountParams = normalizeImageGenerateParamsForAccount(params, account);
 
       await this.#harness.runHooks("ImageEditStart", "image.edit", {
-        prompt: params.prompt,
+        prompt: accountParams.prompt,
         mode: "generate",
-        model: params.model ?? "gpt-image-2",
-        quality: params.quality ?? "high",
-        size: params.size ?? "1024x1536",
+        model: accountParams.model ?? "gpt-image-2",
+        quality: accountParams.quality ?? null,
+        size: accountParams.size ?? null,
       });
 
-      const previewRefs = await this.#runCodexImageGenerate(params, jobId, emit);
+      const previewRefs = await this.#runCodexImageGenerate(accountParams, jobId, emit);
       const previewRef = previewRefs[0];
       if (!previewRef) {
         throw new Error("Codex completed image generation without returning a generated image preview.");
@@ -1847,11 +2263,12 @@ export class CodexImagePlane implements BridgeImagePlane {
       await this.#record("image.generate.completed", { jobId, previewRef, previewCount: previewRefs.length });
       return { jobId, previewRef, previewRefs };
     } catch (error) {
+      const imageError = toImageGenerationError(error);
       await this.#record("image.generate.failed", {
         jobId,
-        error: error instanceof Error ? error.message : String(error),
+        error: imageError.message,
       });
-      throw error;
+      throw imageError;
     }
   }
 
@@ -2111,9 +2528,8 @@ export class CodexImagePlane implements BridgeImagePlane {
     });
     const imagegenSkill = await this.#findImagegenSkill(cwd ?? "");
     const model = params.model ?? "gpt-image-2";
-    const quality = params.quality ?? "high";
-    const size = params.size ?? "1024x1536";
     const workflow = params.workflow ?? "generated-image";
+    const renderTarget = createImageGenerateRenderTarget(params);
     const preparedFiles = await prepareUserFileAttachments(params.fileAttachments ?? []);
     const conversationContext = params.conversationContext?.trim().slice(0, 8_000) ?? "";
     const tempPaths: string[] = [];
@@ -2136,18 +2552,20 @@ export class CodexImagePlane implements BridgeImagePlane {
             "Requirements:",
             "- Generate a new image, not an edit of a missing input image.",
             `- Image model target: ${model}.`,
-            `- Render target: ${size}, ${quality} quality.`,
+            renderTarget ? `- Render target: ${renderTarget}.` : "",
             `- Use case: ${createImageGenerateUseCase(workflow)}.`,
             "- Treat all attached page data as PRIVATE PAGE CONTEXT and use it only as source material.",
             "- If the generation request contains or references a user-provided prompt, execute that prompt as the visual brief. Do not rewrite it unless the user explicitly asks for prompt text instead of an image.",
             "- Do not invent metrics, quotes, dates, citations, charts, logos, or facts that are not present in the page context.",
             "- If exact numbers are unavailable, use qualitative callouts instead of fake numbers.",
-            "- Prioritize readable typography, concise section labels, clear hierarchy, high contrast, and generous whitespace.",
-            "- Keep in-image text crisp, correctly spelled, and legible on mobile.",
+            "- Prioritize readable typography, concise labels, clear hierarchy, high contrast, and generous whitespace.",
+            "- Keep in-image text crisp, correctly spelled, and easy to read.",
             "- For a normal single-image request, produce exactly one final image.",
             "- If the user explicitly asks for a slide deck or multiple slide images, generate the slide images sequentially in this same Codex turn, one image-generation tool call per slide, in slide order.",
             "- For slide decks or any ordered multi-image set, use reference chaining: before generating image 2 and every later image, inspect the previous generated image result, keep its saved local path or preview reference, and carry forward the exact previous image prompt summary.",
             "- Every image 2+ generation prompt must include an Input images or Reference images line naming the previous generated image as a visual continuity reference, plus a Previous image prompt summary and the reusable visual system to preserve.",
+            "- If the previous generated image cannot be attached as an actual image input, make the fallback explicit in the image prompt. Include: Reference image unavailable; preserve the same visual system as the previous image using the repeated design contract.",
+            "- For slide/profile workflows, define a concrete visual system before image 1, then repeat that contract in every later image request: palette, typography, grid, spacing, component shapes, icon style, chart style, illustration style, lighting, depth, and overall presentation identity.",
             "- Use the previous image reference for consistent palette, typography, grid, spacing, components, lighting, and illustration/chart style. Do not duplicate the previous image's content unless the user explicitly asks for repeated content.",
             "- Save the final image and mention the saved path in the response.",
           ].join("\n"),
@@ -2463,6 +2881,7 @@ function createImageGeneratePreviewEvent(input: {
   imageIndex: number;
 }): BridgeEvent {
   const clientRequestId = input.params.clientRequestId?.trim();
+  const conversationId = input.params.conversationId?.trim();
   const workflow = input.params.workflow;
   return {
     type: "message.image",
@@ -2472,6 +2891,7 @@ function createImageGeneratePreviewEvent(input: {
     previewRef: input.previewRef,
     alt: createImageGeneratePreviewAlt(workflow, input.imageIndex),
     ...(clientRequestId ? { clientRequestId } : {}),
+    ...(conversationId ? { conversationId } : {}),
     ...(workflow ? { workflow } : {}),
     imageIndex: input.imageIndex,
   };
@@ -2489,7 +2909,7 @@ function createImageGeneratePreviewAlt(workflow: ImageGenerateParams["workflow"]
 
 function createImageGenerateWorkflowInstruction(workflow: ImageGenerateParams["workflow"]): string {
   if (workflow === "infographic") {
-    return "$imagegen Generate a new infographic image from the attached private page context.";
+    return "$imagegen Generate a new visual explainer image from the attached private page context.";
   }
   if (workflow === "slide-images") {
     return "$imagegen Generate ordered presentation slide images from the request and attached private context.";
@@ -2499,12 +2919,19 @@ function createImageGenerateWorkflowInstruction(workflow: ImageGenerateParams["w
 
 function createImageGenerateUseCase(workflow: ImageGenerateParams["workflow"]): string {
   if (workflow === "infographic") {
-    return "infographic-diagram";
+    return "current-page-visual-explainer";
   }
   if (workflow === "slide-images") {
     return "presentation-slide-images";
   }
   return "general-image-generation";
+}
+
+function createImageGenerateRenderTarget(params: ImageGenerateParams): string {
+  return [
+    params.size,
+    params.quality ? `${params.quality} quality` : "",
+  ].filter(Boolean).join(", ");
 }
 
 function extractImageReferencesFromText(text: string): string[] {

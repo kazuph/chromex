@@ -143,6 +143,14 @@ export class BridgeRpcRouter {
           return { id: request.id, result: await this.#dependencies.codex.listApps(request.params as never) };
         case "plugins.list":
           return { id: request.id, result: await this.#dependencies.codex.listPlugins(request.params as never) };
+        case "mcp.servers.list":
+          return { id: request.id, result: await this.#dependencies.codex.listMcpServers(request.params as never) };
+        case "mcp.oauth.login.start":
+          return { id: request.id, result: await this.#dependencies.codex.startMcpOauthLogin(request.params as never) };
+        case "mcp.tool.call":
+          return { id: request.id, result: await this.#dependencies.codex.callMcpTool(request.params as never) };
+        case "mcp.servers.reload":
+          return { id: request.id, result: await this.#dependencies.codex.reloadMcpServers() };
         case "workspace.harness.read":
           return {
             id: request.id,

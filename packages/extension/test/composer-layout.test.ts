@@ -44,6 +44,28 @@ describe("composer layout css", () => {
     expect(readFinalDeclaration(".composer-frame textarea", "overflow-y")).toBe("hidden");
   });
 
+  test("keeps attached image file chips fully visible in the composer", () => {
+    expect(readFinalDeclaration(".composer-context-summary", "max-height")).toBe("none");
+    expect(readFinalDeclaration(".composer-context-summary", "overflow-y")).toBe("visible");
+    expect(readFinalDeclaration(".composer-file-group", "min-height")).toBe("64px");
+    expect(readFinalDeclaration(".composer-file-list", "min-height")).toBe("56px");
+    expect(readFinalDeclaration(".composer-file-list", "align-items")).toBe("center");
+    expect(readFinalDeclaration(".image-file-chip", "height")).toBe("56px");
+    expect(readFinalDeclaration(".image-file-chip", "overflow")).toBe("visible");
+    expect(readFinalDeclaration(".file-chip-preview", "height")).toBe("52px");
+    expect(readFinalDeclaration(".file-chip-preview img", "width")).toBe("40px");
+    expect(readFinalDeclaration(".file-chip-preview img", "height")).toBe("40px");
+  });
+
+  test("keeps long file attachment names inside the composer chip bounds", () => {
+    expect(readFinalDeclaration(".file-chip", "min-width")).toBe("0");
+    expect(readFinalDeclaration(".composer-file-list .file-chip", "flex")).toBe("0 1 auto");
+    expect(readFinalDeclaration(".file-chip-label", "min-width")).toBe("0");
+    expect(readFinalDeclaration(".file-chip-label", "overflow")).toBe("hidden");
+    expect(readFinalDeclaration(".file-chip-label", "text-overflow")).toBe("ellipsis");
+    expect(readFinalDeclaration(".file-chip-label", "white-space")).toBe("nowrap");
+  });
+
   test("renders fenced code blocks as bordered cards with a header copy action", () => {
     expect(readFinalDeclaration(".message-code-block", "overflow")).toBe("hidden");
     expect(readFinalDeclaration(".message-code-header", "display")).toBe("flex");
@@ -72,6 +94,12 @@ describe("composer layout css", () => {
   test("highlights slash command keyboard selection like hover state", () => {
     expect(readFinalDeclaration(".command-popover .suggestion.keyboard-active", "background")).toBe("#3b3d3d");
     expect(readFinalDeclaration(".command-popover .suggestion.keyboard-active", "transform")).toBe("none");
+  });
+
+  test("highlights mention keyboard selection like hover state", () => {
+    expect(readFinalDeclaration(".tab-mention-row.keyboard-active", "background")).toBe("#3b3d3d");
+    expect(readFinalDeclaration(".tab-mention-action.keyboard-active", "background")).toBe("#3b3d3d");
+    expect(readFinalDeclaration(".tab-mention-row.keyboard-active", "transform")).toBe("none");
   });
 
   test("keeps assistant message actions below the response instead of beside it", () => {
@@ -146,10 +174,12 @@ describe("composer layout css", () => {
     expect(readFinalDeclaration(".scroll-to-bottom-button", "position")).toBe("absolute");
     expect(readFinalDeclaration(".scroll-to-bottom-button", "bottom")).toBe("calc(100% + 12px)");
     expect(readFinalDeclaration(".scroll-to-bottom-button", "left")).toBe("50%");
-    expect(readFinalDeclaration(".scroll-to-bottom-button", "width")).toBe("44px");
+    expect(readFinalDeclaration(".scroll-to-bottom-button", "width")).toBe("36px");
+    expect(readFinalDeclaration(".scroll-to-bottom-button", "height")).toBe("36px");
+    expect(readFinalDeclaration(".scroll-to-bottom-button", "padding")).toBe("0");
     expect(readFinalDeclaration(".scroll-to-bottom-button.visible", "opacity")).toBe("1");
-    expect(readFinalDeclaration(".scroll-to-bottom-icon", "font-size")).toBe("20px");
-    expect(readFinalDeclaration(".scroll-to-bottom-icon svg", "width")).toBe("20px");
+    expect(readFinalDeclaration(".scroll-to-bottom-icon", "font-size")).toBe("16px");
+    expect(readFinalDeclaration(".scroll-to-bottom-icon svg", "width")).toBe("16px");
   });
 
   test("styles native in-panel dialogs instead of browser input popups", () => {
@@ -207,13 +237,38 @@ describe("composer layout css", () => {
     expect(readFinalDeclaration(".image-annotation-followup textarea", "font-size")).toBe("15px");
     expect(readFinalDeclaration(".annotation-plus", "width")).toBe("36px");
     expect(readFinalDeclaration(".image-annotation-send", "width")).toBe("40px");
+    expect(readFinalDeclaration(".image-annotation-send", "height")).toBe("40px");
+    expect(readFinalDeclaration(".image-annotation-send", "padding")).toBe("0");
+    expect(readFinalDeclaration(".image-annotation-send", "place-items")).toBe("center");
   });
 
   test("centers the circular composer send icon visually", () => {
-    expect(readFinalDeclaration(".send-button", "display")).toBe("grid");
-    expect(readFinalDeclaration(".send-button", "place-items")).toBe("center");
-    expect(readFinalDeclaration('.send-button svg[data-ui-icon="send"]', "width")).toBe("19px");
-    expect(readFinalDeclaration('.send-button svg[data-ui-icon="send"]', "transform")).toBe("translateX(1px)");
+    expect(readFinalDeclaration(".composer-submit .send-button:not(.live-active)", "width")).toBe("40px");
+    expect(readFinalDeclaration(".composer-submit .send-button:not(.live-active)", "height")).toBe("40px");
+    expect(readFinalDeclaration(".composer-submit .send-button:not(.live-active)", "padding")).toBe("0");
+    expect(readFinalDeclaration(".composer-submit .send-button:not(.live-active)", "display")).toBe("grid");
+    expect(readFinalDeclaration(".composer-submit .send-button:not(.live-active)", "place-items")).toBe("center");
+    expect(readFinalDeclaration(".composer-submit .send-button:not(.live-active)", "align-items")).toBe("center");
+    expect(readFinalDeclaration(".composer-submit .send-button:not(.live-active)", "justify-items")).toBe("center");
+    expect(readFinalDeclaration(".composer-submit .send-button:not(.live-active)", "font-size")).toBe("0");
+    expect(readFinalDeclaration('.composer-submit .send-button:not(.live-active) svg[data-ui-icon="send"]', "width")).toBe(
+      "18px",
+    );
+    expect(readFinalDeclaration('.composer-submit .send-button:not(.live-active) svg[data-ui-icon="send"]', "margin")).toBe(
+      "0",
+    );
+    expect(readFinalDeclaration('.composer-submit .send-button:not(.live-active) svg[data-ui-icon="send"]', "transform")).toBe(
+      "none",
+    );
+  });
+
+  test("removes hover animation from composer and image editor send buttons", () => {
+    expect(readFinalDeclaration(".composer-submit .send-button:not(.live-active)", "transition")).toBe("none");
+    expect(readFinalDeclaration(".composer-submit .send-button:not(.live-active):hover", "transform")).toBe("none");
+    expect(readFinalDeclaration(".composer-submit .send-button:not(.live-active):hover", "transition")).toBe("none");
+    expect(readFinalDeclaration(".image-annotation-send", "transition")).toBe("none");
+    expect(readFinalDeclaration(".image-annotation-send:hover", "transform")).toBe("none");
+    expect(readFinalDeclaration(".image-annotation-send:hover", "transition")).toBe("none");
   });
 
   test("renders compact dictation waveform controls inside the composer", () => {

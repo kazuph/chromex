@@ -1,4 +1,4 @@
-import type { CodexSkillOption, CodexStructuredInput } from "@codex-sidepanel/shared";
+import type { CodexAppOption, CodexSkillOption, CodexStructuredInput } from "@codex-sidepanel/shared";
 import { describe, expect, test } from "vitest";
 
 import {
@@ -104,7 +104,7 @@ describe("Codex skill settings", () => {
     ]);
   });
 
-  test("drops disabled skill inputs but preserves non-skill structured inputs", () => {
+  test("preserves explicit skill inputs while adding enabled Codex skills", () => {
     const existing: CodexStructuredInput[] = [
       {
         id: "gmail",
@@ -124,6 +124,7 @@ describe("Codex skill settings", () => {
 
     expect(mergeStructuredInputsWithEnabledCodexSkills(existing, skills, [skills[1]!.id])).toEqual([
       existing[0],
+      existing[1],
       {
         id: skills[1]!.id,
         type: "skill",
@@ -131,6 +132,64 @@ describe("Codex skill settings", () => {
         path: "/tmp/skills/review/SKILL.md",
         description: "Review helper",
         token: "$review",
+      },
+    ]);
+  });
+
+  test("keeps runtime-gated explicit skills out until their local runtime is available", () => {
+    const existing: CodexStructuredInput[] = [
+      {
+        id: skills[2]!.id,
+        type: "skill",
+        name: "playwright",
+        path: "/tmp/skills/playwright/SKILL.md",
+        description: "Playwright browser automation",
+        token: "$playwright",
+      },
+    ];
+
+    expect(mergeStructuredInputsWithEnabledCodexSkills(existing, skills, [])).toEqual([]);
+    expect(mergeStructuredInputsWithEnabledCodexSkills(existing, skills, [], { playwrightAvailable: true })).toEqual(existing);
+  });
+
+  test("links enabled plugin skills to matching connected app mentions", () => {
+    const gmailSkill: CodexSkillOption = {
+      id: "/tmp/plugins/gmail/SKILL.md#gmail",
+      name: "gmail",
+      description: "Manage Gmail inbox",
+      path: "/tmp/plugins/gmail/SKILL.md",
+      scope: "user",
+      cwd: "/tmp/project",
+      token: "$gmail",
+    };
+    const apps: CodexAppOption[] = [
+      {
+        id: "gmail",
+        name: "Gmail",
+        description: "Read and manage Gmail",
+        path: "app://gmail",
+        token: "$gmail",
+        isAccessible: true,
+        isEnabled: true,
+      },
+    ];
+
+    expect(mergeStructuredInputsWithEnabledCodexSkills([], [gmailSkill], [gmailSkill.id], {}, apps)).toEqual([
+      {
+        id: "gmail",
+        type: "mention",
+        name: "Gmail",
+        path: "app://gmail",
+        description: "Read and manage Gmail",
+        token: "$gmail",
+      },
+      {
+        id: gmailSkill.id,
+        type: "skill",
+        name: "gmail",
+        path: "/tmp/plugins/gmail/SKILL.md",
+        description: "Manage Gmail inbox",
+        token: "$gmail",
       },
     ]);
   });

@@ -37,7 +37,34 @@ describe("browser action planner", () => {
 
     expect(prompt).toContain("Do not write JavaScript");
     expect(prompt).toContain('"ref": "dom-1"');
-    expect(prompt).toContain("click | fill | select | scroll | focus | submit");
+    expect(prompt).toContain("click | fill | select | scroll | focus | submit | navigate");
+  });
+
+  test("allows explicit same-tab URL navigation without an element target", () => {
+    const plan = normalizeBrowserDomActionPlan(
+      {
+        shouldAct: true,
+        summary: "Open the requested URL.",
+        steps: [
+          {
+            action: "navigate",
+            url: "openai.com/research",
+            reason: "User asked to move the current page to this address.",
+          },
+        ],
+        confidence: 0.9,
+      },
+      snapshot,
+    );
+
+    expect(plan.shouldAct).toBe(true);
+    expect(plan.steps).toEqual([
+      {
+        action: "navigate",
+        url: "https://openai.com/research",
+        reason: "User asked to move the current page to this address.",
+      },
+    ]);
   });
 
   test("only blocks payment and purchase flows instead of all site mutations", () => {
@@ -78,6 +105,19 @@ describe("browser action planner", () => {
     expect(prompt).toContain("runtime will resolve the newly visible editor");
     expect(prompt).toContain("isTextEntryCandidate");
     expect(prompt).toContain("opensEditableSurface");
+  });
+
+  test("passes generated content through as the exact fill value for deferred browser actions", () => {
+    const prompt = createBrowserDomActionPlanPrompt({
+      message: "Research recent AI news and enter a draft post about it on X, but do not publish it.",
+      snapshot,
+      locale: "en-US",
+      generatedText: "AI news draft\nDo not publish.",
+    });
+
+    expect(prompt).toContain("Generated content policy:");
+    expect(prompt).toContain("Use generatedText as the exact fill value");
+    expect(prompt).toContain('"generatedText": "AI news draft\\nDo not publish."');
   });
 
   test("drops unsafe or invented DOM targets from action plans", () => {

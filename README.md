@@ -1,28 +1,52 @@
 # Chromex
 
-![Chromex hero](./docs/assets/chromex-hero.png)
-
-Chromex is a Chrome MV3 side-panel agent that connects Chrome to Codex through a local native bridge. It is designed for public installs: browser code stays lightweight, credentials stay out of extension storage, and powerful capabilities such as page reading, history search, microphone access, screen capture, and browser control are requested only when the user asks for that workflow.
-
 [![CI](https://github.com/GENEXIS-AI/chromex/actions/workflows/ci.yml/badge.svg)](https://github.com/GENEXIS-AI/chromex/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/GENEXIS-AI/chromex?style=social)](https://github.com/GENEXIS-AI/chromex/stargazers)
+[![English](https://img.shields.io/badge/readme-English-111827.svg)](./README.md)
+[![한국어](https://img.shields.io/badge/readme-한국어-2563eb.svg)](./README.ko.md)
+[![日本語](https://img.shields.io/badge/readme-日本語-dc2626.svg)](./README.ja.md)
+[![简体中文](https://img.shields.io/badge/readme-简体中文-16a34a.svg)](./README.zh-CN.md)
+
+Chromex is a Chrome MV3 side-panel assistant that connects Chrome to Codex through a local native bridge. It helps users work with the current page, selected tabs, uploaded files, voice input, images, and browser workflows while keeping credentials out of extension storage.
+
+Published by **GenexisAI CHOI**.
+
+![Chromex browser side-panel assistant](./assets/chromex-hero.png)
+
+## Star History
+
+<a href="https://www.star-history.com/#GENEXIS-AI/chromex&Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=GENEXIS-AI/chromex&type=Date&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=GENEXIS-AI/chromex&type=Date" />
+    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=GENEXIS-AI/chromex&type=Date" />
+  </picture>
+</a>
 
 ## What It Does
 
-- Chat with the current page, selected tabs, uploaded files, screenshots, images, PDFs, Office files, and browser history.
-- Edit or generate images through the Codex image workflow while keeping outputs non-destructive and locally saved.
-- Use realtime voice, voice transcription, page-aware suggestions, custom profiles, Codex skills, and site adapters.
-- Summarize YouTube videos with timestamp context, work with news/research/PDF/arXiv pages, and route image/file/page requests automatically.
-- Run browser-control workflows through the extension/content-script boundary with visible in-page activity indicators.
+- Chat with the current webpage, selected open tabs, screenshots, uploaded files, PDFs, Office files, images, and browser history when requested.
+- Summarize and compare page content, YouTube videos, news articles, research pages, PDFs, and arXiv papers.
+- Edit or generate images through Codex image workflows with local output handling.
+- Use voice transcription, live voice mode, page-aware suggestions, custom profiles, and optional Codex skills.
+- Run browser-control workflows through Chrome content scripts with visible in-page activity indicators.
 
 ## Install In 5 Minutes
 
-Prerequisites:
+Fastest path for users:
 
-- Chrome or Chromium 116+
-- Node.js 20+ for local build/install scripts
-- A local `codex` binary available on `PATH` or in a common install location
-- ChatGPT/Codex login, or API-key fallback handled by the local app-server flow
+1. Open the [latest GitHub Release](https://github.com/GENEXIS-AI/chromex/releases/latest).
+2. Download [`chromex-unpacked-extension.zip`](https://github.com/GENEXIS-AI/chromex/releases/latest/download/chromex-unpacked-extension.zip) from the release assets.
+3. Unzip it.
+4. Open `chrome://extensions`.
+5. Enable **Developer mode**.
+6. Select **Load unpacked** and choose the unzipped `chromex-extension` folder.
+7. Open Chromex from the Chrome toolbar or side panel and follow onboarding.
+
+Release ZIP files are attached to GitHub Releases. They are not committed into the repository file tree. If the direct download link does not open, use the [latest release page](https://github.com/GENEXIS-AI/chromex/releases/latest) and download `chromex-unpacked-extension.zip` from **Assets**.
+
+Developer source install:
 
 ```bash
 git clone https://github.com/GENEXIS-AI/chromex.git
@@ -32,218 +56,123 @@ npm run build
 node scripts/install-native-host.mjs
 ```
 
-Then open `chrome://extensions`, enable Developer Mode, choose **Load unpacked**, and select:
+Then open `chrome://extensions`, enable **Developer mode**, select **Load unpacked**, and choose:
 
 ```text
 packages/extension/dist
 ```
 
-Open Chromex from the Chrome toolbar or side panel, sign in with ChatGPT/Codex, and use **Workspace > System check** if the native bridge or Codex binary needs diagnosis.
-
 ## Runtime Boundary
 
-![Chromex runtime boundary](./docs/assets/chromex-runtime-boundary.png)
+Chromex uses this boundary:
 
-## Architecture
+```text
+Chrome Extension -> Native Messaging Host -> Local Bridge -> codex app-server
+```
 
-`Chrome Extension -> Native Messaging Host -> Local Bridge -> codex app-server`
+The source tree is organized as:
 
-The runtime is split into four workspaces:
-
-- `packages/extension`: Chrome MV3 extension
-- `packages/bridge`: local bridge daemon for Codex App Server and multimodal planes
+- `packages/extension`: Chrome MV3 side-panel extension
+- `packages/bridge`: local bridge daemon for Codex app-server and multimodal workflows
 - `packages/native-host`: Chrome Native Messaging relay
-- `packages/shared`: shared contracts, policies, profiles, and helpers
+- `packages/shared`: shared types, policies, profiles, and helpers
 
-## Security-First Defaults
+## Language Support
 
-- No private signing key or developer-only extension secret is required in source control.
-- The extension keeps `history`, `tabs`, and screen/site access behind runtime permission prompts.
-- The extension does not store raw auth tokens or API keys in extension storage.
-- Codex OAuth/ChatGPT managed login through `codex app-server` is the default auth path.
-- The native-host installer does not copy `OPENAI_API_KEY` into a file during setup.
-- Conversation history is session-only by default. Persistent local chat history is opt-in in Workspace settings.
-- Native host child processes and workspace hooks run with a reduced environment allowlist instead of inheriting the full shell environment.
-- The side panel auto-detects the Codex binary from `PATH` and common install locations instead of requiring a manual path in the UI.
-- Release candidates can be checked with `npm run release:audit` before pushing.
+Chromex follows the browser language automatically by default. Users can also choose a language in **Settings > General > App UI language**.
 
-More detail is in [SECURITY.md](./SECURITY.md).
+The extension ships Chrome `_locales` entries for English, Korean, Japanese, Chinese, Arabic, French, German, Spanish, Portuguese, Hindi, Vietnamese, Thai, Turkish, Ukrainian, and many other Chrome-compatible locales. Model responses are instructed to follow the selected UI language unless the user asks for another language.
+
+## Security And Privacy Defaults
+
+- The extension does not store raw OpenAI API keys, OAuth tokens, or ChatGPT session tokens in Chrome extension storage.
+- Codex OAuth / ChatGPT login is handled through the local Codex app-server flow.
+- API-key login is an optional local fallback and is never used automatically without user confirmation.
+- Page content, tab data, screenshots, browser history, microphone input, and browser actions are used only for user-requested workflows.
+- `history`, `tabs`, screen capture, microphone, and site access are requested only when a feature needs them.
+- Conversation history is session-only by default. Persistent local chat history is opt-in.
+- Native-host child processes and workspace hooks run with a reduced environment allowlist.
+- Generated image originals, temporary uploads, and diagnostics are handled by the local bridge.
+
+Read [SECURITY.md](./SECURITY.md) and [PRIVACY.md](./PRIVACY.md) before publishing or deploying a modified build.
 
 ## Features
 
-- persistent MV3 side panel with chat-first UX
-- current-page, image, history, and file context routed automatically from user intent
-- `@open-tabs` picker for selecting one or more open tabs without leaving the composer
-- `/` profile picker with searchable professional profiles
-- chat attachment support for images, text, PDF, DOCX, CSV, TSV, XLSX, and XLSM
-- mixed routing for `current page + uploaded files` with automatic profile/model/read-strategy selection
-- optional workspace skills loaded from a user's local `.codex/skills/*/SKILL.md` and injected only when enabled in context settings
-- optional local command shortcuts loaded from `.codex/commands/*.md`
-- read strategy policy: `dom`, `vision`, `hybrid`, `adapter`
-- built-in profile templates for research, fact checking, strategy, product, marketing, sales, legal review, teaching, data analysis, UX, writing, support, HR, finance, communications, and critique workflows
-- YouTube adapter with current timestamp context and seek actions
-- YouTube-specific suggested questions generated from the current video title, channel, timestamp, and chapters
-- recent chats with local session persistence and optional device persistence
-- pop-out and dock-back chat window flow
-- live voice captions and page navigation commands
-- non-destructive image editing for the current image or visible tab
-- native-host bridge boundary so credentials do not live in extension storage
-- optional Codex workspace harness:
-  - `CODEX.md`
-  - `.codex/settings.json`
-  - `.codex/settings.local.json`
-  - `.codex/rules/**/*.md`
-  - `.codex/skills/*/SKILL.md`
-  - `.codex/commands/*.md`
+- Persistent MV3 side panel with chat-first UX.
+- Automatic routing for page, file, image, history, voice, and browser-control requests.
+- `@` picker for selecting one or more open tabs.
+- `/` picker for profile selection.
+- Attachments for images, text, PDF, DOCX, CSV, TSV, XLSX, and XLSM.
+- Read strategy policy for DOM, vision, hybrid, and site-adapter workflows.
+- Site-aware suggestions for YouTube, news, research, mail, collaboration, notes, task tools, shopping, travel, and Korean work services.
+- YouTube adapter with current timestamp context and seek actions.
+- Non-destructive image editing for uploaded images, page images, or visible screen captures.
+- Markdown rendering with code blocks, tables, links, and copy controls.
+- Optional Codex skills loaded from a user's local `.codex/skills/*/SKILL.md` only when enabled.
 
 ## Development
 
-1. `npm install`
-2. `npm run typecheck`
-3. `npm run test`
-4. `npm run build`
-5. `npm run release:audit`
-6. Optional browser smoke test:
-   - `npm run smoke`
-   - or install the browser once first with `npm run smoke:install-browser`
+```bash
+npm install
+npm run typecheck
+npm run test
+npm run build
+npm run release:audit
+```
 
-The built extension is emitted to `packages/extension/dist`.
+Optional browser smoke test:
 
-The current manifest sets `"minimum_chrome_version": "116"` because the extension uses `chrome.sidePanel.open()`.
+```bash
+npm run smoke
+```
 
-The smoke test launches the unpacked extension in an isolated persistent Chromium profile using Playwright's recommended MV3 flow. It prefers:
+If no compatible browser exists, install the Playwright Chromium runtime:
 
-- `PLAYWRIGHT_CHANNEL` when you want a specific Playwright browser channel
-- `BROWSER_EXECUTABLE_PATH` when you want a specific local browser binary
-- a Playwright-installed Chromium from the local `ms-playwright` cache
-- a system Chrome for Testing or Chromium install
+```bash
+npm run smoke:install-browser
+```
 
-If no compatible browser is present, `npm run smoke` can bootstrap Playwright Chromium automatically. Google Chrome and Microsoft Edge branded builds are intentionally excluded here because they no longer support this command-line side-loading workflow.
+The built extension is emitted to:
 
-Environment flags:
-
-- `SMOKE_INSTALL_BROWSER=0 npm run smoke` to skip the automatic browser install path
-- `SMOKE_HEADLESS=false npm run smoke` to run the smoke test with a visible browser window
-- `PLAYWRIGHT_CHANNEL=chromium npm run smoke` if you want Playwright to pick the bundled Chromium channel directly
-
-## Local Install
-
-1. Build everything with `npm run build`.
-2. In Chrome, open `chrome://extensions`.
-3. Enable Developer Mode.
-4. Load unpacked extension from `packages/extension/dist`.
-5. Install the native messaging host with `node scripts/install-native-host.mjs`.
-6. Open the extension side panel.
-7. Check `Workspace > System check` to confirm the native host and Codex binary were detected automatically.
-8. If the status looks stale, use `Reconnect`.
-
-After local code changes, run `npm run build`, then reload the unpacked extension in `chrome://extensions`. The build injects a fresh asset version into `sidepanel.html`, so a Chrome extension reload is enough to pick up the latest `sidepanel.js` and `sidepanel.css`. If changes still do not appear, run `npm run diagnose:extension` and confirm Chrome is loading `packages/extension/dist`, not an older copied folder. If Chrome is intentionally loading a copied unpacked folder, run `npm run sync:extension`, then reload the extension card in `chrome://extensions`.
-
-If model loading fails, check `Workspace > Connection` first. The panel now separates:
-
-- native host setup problems, such as missing installation or extension-id mismatch
-- Codex binary auto-detection problems
-- account or model-catalog problems after the local bridge is already connected
-
-The manifest includes a stable public key, so the installer can derive the unpacked extension ID automatically. If you need to override it manually, you can still run `node scripts/install-native-host.mjs <EXTENSION_ID>`.
+```text
+packages/extension/dist
+```
 
 ## Chrome Web Store Package
 
-Create an upload-ready extension zip from the repository root:
+Create an upload-ready extension zip:
 
 ```bash
 npm run package:webstore
 ```
 
-This command rebuilds the extension, stages `packages/extension/dist`, removes the public unpacked-install `manifest.key`, strips source maps and local build metadata, validates the zip contents, and writes the package to `output/chrome-web-store/`. Zip creation is implemented in Node so contributors do not need platform-specific `zip` or `unzip` binaries.
+The command rebuilds the extension, stages `packages/extension/dist`, removes the unpacked-install `manifest.key`, strips source maps and local build metadata, validates the zip, and writes the package to `output/chrome-web-store/`.
 
-Useful installer flags:
+## Public Source Release
 
-- `--browser=chrome,chrome-beta,chrome-dev,chrome-canary,chrome-for-testing,chromium`
-- `--profile-dir=/path/to/custom/profile`
-- `--include-legacy-extension-ids` to preserve access for older unpacked extension IDs during migration
+Create sanitized public release artifacts:
 
-Default install targets:
+```bash
+npm run package:public
+```
 
-- macOS: Google Chrome Stable/Beta/Dev/Canary, Chrome for Testing, and Chromium user-level native messaging directories
-- Linux: Google Chrome Stable/Beta/Unstable, Chrome for Testing, Chromium, and chromium-browser user-level native messaging directories
-- Windows: current-user Google Chrome Stable/Beta/Dev/Canary native messaging registry keys and manifests
+This writes two artifacts under `output/public-release/`:
 
-The installer validates the extension ID, uses official native messaging locations for the current OS, and never copies an API key into local files during setup. By default it allows only the current extension ID plus compatible IDs discovered from local Chrome profiles; legacy IDs require the explicit migration flag above.
+- `chromex-*-public-source-*.zip`: source archive for GitHub publication.
+- `chromex-*-unpacked-extension-*.zip`: ready-to-unzip Chrome Developer Mode package. After unzip, select the `chromex-extension` folder in **Load unpacked**.
+- `chromex-public-source.zip` and `chromex-unpacked-extension.zip`: stable asset names for GitHub Release direct-download links.
 
-Runtime files use per-user OS locations: macOS stores bridge data under `~/Library/Application Support/CodexSidepanel`, Windows under `%LOCALAPPDATA%\\CodexSidepanel`, and Linux under XDG config/data directories. Workspace-generated images stay under `<workspace>/.codex-sidepanel/generated-images` when a workspace is active.
+## Release Management
 
-## For Public Users
-
-Chromex is intentionally source-installable. A normal user should only need the commands in **Install In 5 Minutes**, one Chrome unpacked-extension load, and the native host installer.
-
-What is local:
-
-- ChatGPT/Codex OAuth state and API-key fallback are owned by `codex app-server` and the local bridge.
-- Generated image originals and temporary uploads are stored in local per-user/workspace folders.
-- Saved settings and optional chat history stay in Chrome local storage or session storage.
-
-What is not bundled:
-
-- No developer API key
-- No Chrome Web Store signing key
-- No generated native-host manifest
-- No private local Codex auth files
-- No generated images from the maintainer machine
-
-## Runtime Prerequisites
-
-- `codex` should be available on `PATH` or installed in a common system location so the side panel can detect it automatically.
-- Codex OAuth/ChatGPT login flows are handled through `codex app-server`.
-- ChatGPT login is enough for the default Codex image-edit flow.
-- API key login remains an optional fallback path.
-
-## Optional Workspace Harness
-
-The bridge supports a Codex workspace harness for repeatable project behavior. These files are user workspace configuration and are intentionally ignored by this repository unless a contributor explicitly documents a public example outside `.codex/`.
-
-- `CODEX.md`: project memory and persistent instructions
-- `.codex/settings.json`: shared permission mode and hook configuration
-- `.codex/settings.local.json`: local overrides that should stay uncommitted
-- `.codex/rules/**/*.md`: scoped rules loaded into prompt context
-- `.codex/skills/*/SKILL.md`: reusable slash shortcuts
-- `.codex/commands/*.md`: legacy command shortcuts that still appear in the slash menu
-
-This repository does not commit a `.codex/` seed. Create those files locally only when you want workspace-specific behavior.
-
-## Open-Source Hygiene
-
-- Do not commit native-host manifests, `__load_extension__*.pem`, `__load_extension__.crx`, `node_modules`, or build outputs.
-- Keep `.codex/` workspace configuration local-only unless it is a deliberately public sample outside the ignored `.codex/` path.
-- Run `npm run release:audit` before any public push.
-- Review [SECURITY.md](./SECURITY.md) before publishing or accepting outside contributions.
-- Follow the [open-source release checklist](./docs/open-source-release-checklist.md) for source backups, secret review, and verification.
-- CI is wired for `macos`, `ubuntu`, and `windows` with `typecheck`, `test`, `build`, `audit`, and unpacked-extension smoke coverage.
+Chromex uses normal open-source release history from `0.1.1` onward. Versioning, pull request flow, and release checklist are documented in [RELEASE.md](./RELEASE.md).
 
 ## Troubleshooting
 
-- **Native host missing or forbidden**: run `npm run build`, then `node scripts/install-native-host.mjs`, reload the extension in `chrome://extensions`, and check **Workspace > System check**.
-- **Model list does not load**: confirm the bridge is connected first, then sign in through the app-server-backed login flow.
-- **Page context is unavailable**: open Chromex from the target tab or approve the Chrome site permission prompt when the workflow requests page access.
-- **Chrome still shows old UI**: run `npm run build`, reload the extension card, and use `npm run diagnose:extension` to ensure Chrome is loading `packages/extension/dist`.
+- **Native host missing or forbidden**: run `npm run build`, then `node scripts/install-native-host.mjs`, reload the extension in `chrome://extensions`, and check Chromex onboarding/system status.
+- **Model list does not load**: confirm the native bridge is connected, then sign in through the app-server-backed login flow.
+- **Page context is unavailable**: open Chromex from the target tab or approve the Chrome site permission prompt when the workflow requests access.
+- **Chrome still shows old UI**: run `npm run build`, reload the extension card, and confirm Chrome is loading `packages/extension/dist`.
 - **Browser smoke test fails because no browser exists**: run `npm run smoke:install-browser`, then `npm run smoke`.
-
-## Notes
-
-- Voice UX uses a Codex app-server realtime session. The side panel owns the microphone/WebRTC offer, bounded reconnect, and transcript UI, while the bridge owns `thread/realtime/start`, SDP answer events, transcript events, and cleanup.
-- The bridge forwards screenshot/image context as actual Codex image inputs instead of flattening vision context into plain text.
-- Installed and enabled Codex plugins are exposed as `plugin://name@marketplace` structured mentions from the `@` picker.
-- Uploaded files are ephemeral in the side panel and are not persisted with saved conversations. Images are sent as multimodal inputs, while non-image files are parsed locally into compact prompt context.
-- Arbitrary write-back automation into third-party websites is intentionally out of scope for v1.
-
-## Design Docs
-
-- [docs/architecture.md](./docs/architecture.md)
-- [docs/browser-ai-parity.md](./docs/browser-ai-parity.md)
-- [docs/gemini-in-chrome-gap-analysis.md](./docs/gemini-in-chrome-gap-analysis.md)
-- [docs/codex-app-server-gap-analysis.md](./docs/codex-app-server-gap-analysis.md)
-- [docs/attachment-routing-architecture.md](./docs/attachment-routing-architecture.md)
-- [docs/open-source-release-checklist.md](./docs/open-source-release-checklist.md)
 
 ## License
 

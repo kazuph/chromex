@@ -18,7 +18,7 @@ type NotificationPayload = {
 };
 
 const BROWSER_ACTION_PLAN_TIMEOUT_MS = 25_000;
-const ACTIONS = new Set<BrowserDomActionKind>(["click", "fill", "select", "scroll", "focus", "submit"]);
+const ACTIONS = new Set<BrowserDomActionKind>(["click", "fill", "select", "scroll", "focus", "submit", "navigate"]);
 const DIRECTIONS = new Set(["up", "down", "left", "right", "top", "bottom"]);
 
 export class CodexBrowserActionPlane implements BridgeBrowserActionPlane {
@@ -30,7 +30,10 @@ export class CodexBrowserActionPlane implements BridgeBrowserActionPlane {
     this.#harness = options.harness;
   }
 
-  async plan(params: { message: string; snapshot: BrowserDomSnapshot; locale?: string }, emit: (event: BridgeEvent) => void): Promise<BrowserDomActionPlan> {
+  async plan(
+    params: { message: string; snapshot: BrowserDomSnapshot; locale?: string; generatedText?: string },
+    emit: (event: BridgeEvent) => void,
+  ): Promise<BrowserDomActionPlan> {
     emit({ type: "browser.action.plan.started", clientRequestId: null });
     try {
       const rawPlan = await this.#requestModelPlan(params);
@@ -50,7 +53,12 @@ export class CodexBrowserActionPlane implements BridgeBrowserActionPlane {
     }
   }
 
-  async #requestModelPlan(params: { message: string; snapshot: BrowserDomSnapshot; locale?: string }): Promise<unknown> {
+  async #requestModelPlan(params: {
+    message: string;
+    snapshot: BrowserDomSnapshot;
+    locale?: string;
+    generatedText?: string;
+  }): Promise<unknown> {
     const cwd = await this.#harness.getWorkspaceRoot();
     const thread = (await this.#client.request("thread/start", {
       ...(cwd ? { cwd } : {}),
@@ -138,7 +146,9 @@ export function createBrowserDomActionPlanPrompt(params: {
   message: string;
   snapshot: BrowserDomSnapshot;
   locale?: string;
+  generatedText?: string;
 }): string {
+  const generatedText = params.generatedText?.trim();
   return [
     "You are the DOM action planner for a Chrome side-panel assistant.",
     "Plan only. Do not answer the user. Do not write JavaScript. Do not invent elements.",
@@ -151,6 +161,7 @@ export function createBrowserDomActionPlanPrompt(params: {
     "- scroll: scroll the page or an element.",
     "- focus: focus a visible element.",
     "- submit: submit the nearest form for a visible form element.",
+    "- navigate: move the current tab to a user-requested http(s) URL or same-site relative URL.",
     "",
     "Modern editor policy:",
     "- Many sites expose post, reply, comment, search, and message composers as proxy composer controls before an actual input appears.",
@@ -161,10 +172,22 @@ export function createBrowserDomActionPlanPrompt(params: {
     "",
     "Safety policy:",
     "- Use only targetRef values from domElements unless targetRef is not available and selector is copied exactly from domElements.",
+    "- A navigate step does not need targetRef or selector, but it must include url.",
+    "- For navigate, only use a URL explicitly requested by the user or copied from a visible href/page URL. Do not invent destination URLs.",
     "- Do not plan purchases, payments, checkout, paid subscriptions, order placement, or money transfers. For those, return shouldAct=false and explain that Codex cannot complete payment actions.",
     "- You may plan non-payment site mutations such as sending messages, emails, posting, form submission, navigation, editing, or deleting only when the user's wording clearly requests that action and the target is visible.",
     "- Prefer the smallest set of steps that completes the user's explicit intent. If the user's intent is ambiguous, return shouldAct=false.",
     "- Never output arbitrary JavaScript, XPath, or hidden-element selectors.",
+    ...(generatedText
+      ? [
+          "",
+          "Generated content policy:",
+          "- generatedText is content already produced by the upstream agent for the user's page action.",
+          "- Use generatedText as the exact fill value for fill steps unless the user explicitly asked for a shorter transformation in userMessage.",
+          "- Do not fill surrounding assistant instructions, explanations, Markdown fences, or status text.",
+          "- If the user asked to draft without publishing, fill the composer but do not submit or post.",
+        ]
+      : []),
     "",
     "Schema:",
     JSON.stringify(
@@ -173,11 +196,12 @@ export function createBrowserDomActionPlanPrompt(params: {
         summary: "short user-facing summary of the planned browser action",
         steps: [
           {
-            action: "click | fill | select | scroll | focus | submit",
+            action: "click | fill | select | scroll | focus | submit | navigate",
             targetRef: "dom-1",
             selector: "optional exact selector from domElements",
             label: "optional human label",
             value: "text/value for fill/select",
+            url: "https://example.com/path for navigate",
             direction: "up | down | left | right | top | bottom",
             amountPx: 600,
             reason: "short reason",
@@ -194,6 +218,7 @@ export function createBrowserDomActionPlanPrompt(params: {
     JSON.stringify(
       {
         userMessage: params.message,
+        ...(generatedText ? { generatedText } : {}),
         locale: params.locale ?? "",
         page: params.snapshot.metadata,
         domElements: params.snapshot.elements.map((element) => ({
@@ -230,7 +255,7 @@ export function normalizeBrowserDomActionPlan(rawPlan: unknown, snapshot: Browse
   const validSelectors = new Set(snapshot.elements.map((element) => element.selector).filter(Boolean));
   const steps = Array.isArray(raw.steps)
     ? raw.steps
-        .map((step) => normalizeBrowserDomActionStep(step, validRefs, validSelectors))
+        .map((step) => normalizeBrowserDomActionStep(step, validRefs, validSelectors, snapshot.metadata.url))
         .filter((step): step is BrowserDomActionStep => step !== null)
         .slice(0, 4)
     : [];
@@ -254,6 +279,7 @@ function normalizeBrowserDomActionStep(
   rawStep: unknown,
   validRefs: Set<string>,
   validSelectors: Set<string>,
+  baseUrl: string,
 ): BrowserDomActionStep | null {
   const raw = asRecord(rawStep);
   if (!ACTIONS.has(raw.action as BrowserDomActionKind)) {
@@ -261,7 +287,11 @@ function normalizeBrowserDomActionStep(
   }
   const targetRef = typeof raw.targetRef === "string" && validRefs.has(raw.targetRef) ? raw.targetRef : undefined;
   const selector = typeof raw.selector === "string" && validSelectors.has(raw.selector) ? raw.selector : undefined;
-  if (raw.action !== "scroll" && !targetRef && !selector) {
+  const url = normalizeNavigationUrl(raw.url ?? raw.value, baseUrl);
+  if (raw.action === "navigate" && !url) {
+    return null;
+  }
+  if (raw.action !== "scroll" && raw.action !== "navigate" && !targetRef && !selector) {
     return null;
   }
   const direction = typeof raw.direction === "string" && DIRECTIONS.has(raw.direction) ? raw.direction : undefined;
@@ -287,6 +317,9 @@ function normalizeBrowserDomActionStep(
   if (typeof raw.value === "string") {
     step.value = raw.value.slice(0, 4_000);
   }
+  if (url) {
+    step.url = url;
+  }
   if (direction) {
     step.direction = direction as Exclude<BrowserDomActionStep["direction"], undefined>;
   }
@@ -294,6 +327,27 @@ function normalizeBrowserDomActionStep(
     step.amountPx = amountPx;
   }
   return step;
+}
+
+function normalizeNavigationUrl(value: unknown, baseUrl: string): string {
+  if (typeof value !== "string") {
+    return "";
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+  const candidate = /^[a-z][a-z\d+.-]*:/iu.test(trimmed)
+    ? trimmed
+    : /^([a-z\d-]+\.)+[a-z]{2,}(?::\d+)?(?:[/?#].*)?$/iu.test(trimmed)
+      ? `https://${trimmed}`
+      : trimmed;
+  try {
+    const url = new URL(candidate, baseUrl);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.href : "";
+  } catch {
+    return "";
+  }
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

@@ -38,13 +38,25 @@ const RESTRICTED_PROTOCOLS = new Set([
   "view-source:",
 ]);
 
+const RESTRICTED_EXTENSION_GALLERY_HOSTS = new Set(["chrome.google.com", "chromewebstore.google.com"]);
+
 export function isRestrictedBrowserUrl(url: string): boolean {
   try {
     const parsed = new URL(url);
-    return RESTRICTED_PROTOCOLS.has(parsed.protocol);
+    if (RESTRICTED_PROTOCOLS.has(parsed.protocol)) {
+      return true;
+    }
+    return isRestrictedExtensionGalleryUrl(parsed);
   } catch {
     return true;
   }
+}
+
+function isRestrictedExtensionGalleryUrl(parsed: URL): boolean {
+  if (!/^https?:$/.test(parsed.protocol) || !RESTRICTED_EXTENSION_GALLERY_HOSTS.has(parsed.hostname)) {
+    return false;
+  }
+  return parsed.hostname === "chromewebstore.google.com" || parsed.pathname.startsWith("/webstore");
 }
 
 export function toOriginPermissionPattern(url: string): string | null {

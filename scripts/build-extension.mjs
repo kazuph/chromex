@@ -2,6 +2,8 @@ import { build } from "esbuild";
 import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
+import { writeExtensionLocaleFiles } from "./extension-locales.mjs";
+
 const root = process.cwd();
 const outdir = resolve(root, "dist");
 const buildId = process.env.CODEX_EXTENSION_BUILD_ID ?? new Date().toISOString().replace(/[-:.TZ]/gu, "");
@@ -26,6 +28,7 @@ await build({
 });
 
 await cp(resolve(root, "public"), outdir, { recursive: true });
+await writeExtensionLocaleFiles(resolve(outdir, "_locales"));
 
 const sidepanelHtmlPath = resolve(outdir, "sidepanel.html");
 const sidepanelHtml = await readFile(sidepanelHtmlPath, "utf8");

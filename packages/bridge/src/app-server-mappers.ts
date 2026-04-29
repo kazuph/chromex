@@ -1,5 +1,6 @@
 import type {
   CodexAppOption,
+  CodexMcpServerOption,
   CodexModelOption,
   CodexPluginOption,
   CodexRateLimitBucket,
@@ -98,8 +99,15 @@ type AppServerApp = {
   name: string;
   description?: string | null;
   installUrl?: string | null;
+  install_url?: string | null;
+  logoUrl?: string | null;
+  logo_url?: string | null;
+  iconUrl?: string | null;
+  icon_url?: string | null;
   isAccessible?: boolean | null;
+  is_accessible?: boolean | null;
   isEnabled?: boolean | null;
+  is_enabled?: boolean | null;
 };
 
 type AppServerPluginListResponse = {
@@ -116,12 +124,49 @@ type AppServerPluginSummary = {
   name: string;
   installed?: boolean | null;
   enabled?: boolean | null;
+  logoUrl?: string | null;
+  iconUrl?: string | null;
+  icon?: string | null;
+  manifest?: {
+    logoUrl?: string | null;
+    logo_url?: string | null;
+    iconUrl?: string | null;
+    icon_url?: string | null;
+  } | null;
   interface?: {
     displayName?: string | null;
     shortDescription?: string | null;
     longDescription?: string | null;
+    logoUrl?: string | null;
+    iconUrl?: string | null;
+    iconSmall?: string | null;
+    iconLarge?: string | null;
+    imageUrl?: string | null;
     capabilities?: string[] | null;
   } | null;
+};
+
+type AppServerMcpStatusResponse = {
+  data?: AppServerMcpServerStatus[] | null;
+  nextCursor?: string | null;
+  next_cursor?: string | null;
+};
+
+type AppServerMcpServerStatus = {
+  name?: string | null;
+  tools?: AppServerMcpTool[] | Record<string, AppServerMcpTool | undefined> | null;
+  resources?: unknown[] | null;
+  resourceTemplates?: unknown[] | null;
+  resource_templates?: unknown[] | null;
+  authStatus?: string | { type?: string | null } | null;
+  auth_status?: string | { type?: string | null } | null;
+};
+
+type AppServerMcpTool = {
+  name?: string | null;
+  description?: string | null;
+  inputSchema?: Record<string, unknown> | null;
+  input_schema?: Record<string, unknown> | null;
 };
 
 export function mapModels(data: AppServerModel[]): CodexModelOption[] {
@@ -169,6 +214,63 @@ export function mapModels(data: AppServerModel[]): CodexModelOption[] {
     });
 }
 
+export function mapMcpServerStatusResponse(response: AppServerMcpStatusResponse): {
+  servers: CodexMcpServerOption[];
+  nextCursor: string | null;
+} {
+  return {
+    servers: mapMcpServers(response.data ?? []),
+    nextCursor: response.nextCursor ?? response.next_cursor ?? null,
+  };
+}
+
+export function mapMcpServers(data: AppServerMcpServerStatus[]): CodexMcpServerOption[] {
+  return data
+    .map((server) => {
+      const name = server.name?.trim() ?? "";
+      const tools = normalizeMcpTools(server.tools)
+        .map((tool) => ({
+          name: tool.name?.trim() ?? "",
+          description: tool.description?.trim() ?? "",
+          inputSchema: tool.inputSchema ?? tool.input_schema ?? null,
+        }))
+        .filter((tool) => tool.name)
+        .sort((left, right) => left.name.localeCompare(right.name));
+      const authStatus = normalizeMcpAuthStatus(server.authStatus ?? server.auth_status);
+
+      return {
+        id: `mcp:${name}`,
+        name,
+        description: summarizeMcpServer(name, tools.length, authStatus),
+        path: `mcp://${encodeURIComponent(name)}`,
+        token: toStructuredToken(name),
+        authStatus,
+        isAuthenticated: authStatus !== "notLoggedIn",
+        toolCount: tools.length,
+        tools,
+        resourceCount: (server.resources ?? []).length,
+        resourceTemplateCount: (server.resourceTemplates ?? server.resource_templates ?? []).length,
+      };
+    })
+    .filter((server) => server.name)
+    .sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function normalizeMcpTools(tools: AppServerMcpServerStatus["tools"]): AppServerMcpTool[] {
+  if (Array.isArray(tools)) {
+    return tools;
+  }
+  if (!tools || typeof tools !== "object") {
+    return [];
+  }
+  return Object.entries(tools)
+    .filter((entry): entry is [string, AppServerMcpTool] => Boolean(entry[0] && entry[1]))
+    .map(([name, tool]) => ({
+      ...tool,
+      name: tool.name?.trim() || name,
+    }));
+}
+
 export function mapThreadSummaries(data: AppServerThread[]): CodexThreadSummary[] {
   return data.map((thread) => ({
     id: thread.id,
@@ -179,6 +281,21 @@ export function mapThreadSummaries(data: AppServerThread[]): CodexThreadSummary[
     cwd: thread.cwd?.trim() || "",
     source: thread.source?.trim() || "unknown",
   }));
+}
+
+function normalizeMcpAuthStatus(value: AppServerMcpServerStatus["authStatus"]): string {
+  if (typeof value === "string") {
+    return value.trim() || "unsupported";
+  }
+  if (value && typeof value.type === "string") {
+    return value.type.trim() || "unsupported";
+  }
+  return "unsupported";
+}
+
+function summarizeMcpServer(name: string, toolCount: number, authStatus: string): string {
+  const auth = authStatus === "notLoggedIn" ? "OAuth required" : "Ready";
+  return `${auth} MCP server with ${toolCount} ${toolCount === 1 ? "tool" : "tools"}: ${name}`;
 }
 
 export function mapThreadTranscript(thread: AppServerThread): CodexThreadTranscript {
@@ -287,16 +404,22 @@ export function mapSkills(entries: AppServerSkillEntry[]): CodexSkillOption[] {
 
 export function mapApps(data: AppServerApp[]): CodexAppOption[] {
   return data
-    .map((app) => ({
-      id: app.id,
-      name: app.name,
-      description: app.description?.trim() || "",
-      path: `app://${app.id}`,
-      token: toStructuredToken(app.name),
-      isAccessible: Boolean(app.isAccessible),
-      isEnabled: Boolean(app.isEnabled),
-      ...(app.installUrl ? { installUrl: app.installUrl } : {}),
-    }))
+    .map((app) => {
+      const installUrl = firstString(app.installUrl, app.install_url);
+      const iconUrl = firstString(app.logoUrl, app.logo_url, app.iconUrl, app.icon_url);
+
+      return {
+        id: app.id,
+        name: app.name,
+        description: app.description?.trim() || "",
+        path: `app://${app.id}`,
+        token: toStructuredToken(app.name),
+        isAccessible: booleanFromAliases(app.isAccessible, app.is_accessible),
+        isEnabled: booleanFromAliases(app.isEnabled, app.is_enabled),
+        ...(installUrl ? { installUrl } : {}),
+        ...toOptionalIconUrl(iconUrl),
+      };
+    })
     .sort((left, right) => left.name.localeCompare(right.name));
 }
 
@@ -317,6 +440,7 @@ export function mapPlugins(response: AppServerPluginListResponse): CodexPluginOp
       const pluginName = plugin.name.trim() || plugin.id.split("@")[0]?.trim() || plugin.id;
       const displayName = plugin.interface?.displayName?.trim() || pluginName;
       const capabilities = (plugin.interface?.capabilities ?? []).map((capability) => capability.trim()).filter(Boolean);
+      const iconUrl = resolvePluginIconUrl(plugin);
       plugins.push({
         id: plugin.id,
         name: displayName,
@@ -329,12 +453,54 @@ export function mapPlugins(response: AppServerPluginListResponse): CodexPluginOp
         token: toStructuredToken(displayName),
         installed: true,
         enabled: true,
+        ...toOptionalIconUrl(iconUrl),
         capabilities,
       });
     }
   }
 
   return plugins.sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function resolvePluginIconUrl(plugin: AppServerPluginSummary): string {
+  const pluginInterface = plugin.interface;
+  return (
+    pluginInterface?.logoUrl?.trim() ||
+    pluginInterface?.iconUrl?.trim() ||
+    pluginInterface?.iconSmall?.trim() ||
+    pluginInterface?.iconLarge?.trim() ||
+    pluginInterface?.imageUrl?.trim() ||
+    plugin.logoUrl?.trim() ||
+    plugin.iconUrl?.trim() ||
+    plugin.icon?.trim() ||
+    plugin.manifest?.logoUrl?.trim() ||
+    plugin.manifest?.logo_url?.trim() ||
+    plugin.manifest?.iconUrl?.trim() ||
+    plugin.manifest?.icon_url?.trim() ||
+    ""
+  );
+}
+
+function toOptionalIconUrl(value: string | null | undefined): { iconUrl: string } | Record<string, never> {
+  const normalized = value?.trim() ?? "";
+  if (/^(?:https?:\/\/|data:image\/[a-z0-9.+-]+;base64,)/iu.test(normalized)) {
+    return { iconUrl: normalized };
+  }
+  return {};
+}
+
+function firstString(...values: Array<string | null | undefined>): string {
+  for (const value of values) {
+    const normalized = value?.trim() ?? "";
+    if (normalized) {
+      return normalized;
+    }
+  }
+  return "";
+}
+
+function booleanFromAliases(...values: Array<boolean | null | undefined>): boolean {
+  return values.some((value) => value === true);
 }
 
 export function toStructuredToken(name: string): string {

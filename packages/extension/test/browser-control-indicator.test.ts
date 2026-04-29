@@ -12,6 +12,7 @@ describe("agentic browser control indicator", () => {
   test("only the safe DOM automation mode is executed directly from the extension", () => {
     expect(backgroundSource).toContain("agenticRoutePlan.browserControl.shouldControl");
     expect(backgroundSource).toContain('agenticRoutePlan.browserControl.mode !== "dom"');
+    expect(backgroundSource).toContain('agenticRoutePlan.browserControl.surface !== "active-tab"');
     expect(backgroundSource).toContain("agenticRoutePlan.intent.action === \"navigate\"");
     expect(backgroundSource).toContain("agenticRoutePlan.intent.target === \"current-page\"");
   });
@@ -32,8 +33,15 @@ describe("agentic browser control indicator", () => {
     expect(contentSource).toContain("pointer-events: none");
   });
 
+  test("can navigate the current page URL through the browser action executor", () => {
+    expect(contentSource).toContain('step.action === "navigate"');
+    expect(contentSource).toContain("performNavigateAction(step)");
+    expect(contentSource).toContain("window.location.assign");
+    expect(sharedTypesSource).toContain('"submit" | "navigate"');
+  });
+
   test("lets the user stop in-flight browser control and removes the page indicator immediately", () => {
-    expect(sidepanelSource).toContain("const canStopCurrentWork = currentTurnActive || Boolean(state.promptActivity)");
+    expect(sidepanelSource).toContain("const canStopCurrentWork = currentWorkActive");
     expect(sidepanelSource).toContain('type: "prompt.cancel"');
     expect(sidepanelSource).toContain("cancelledPromptRequestIds.add");
     expect(backgroundSource).toContain('case "prompt.cancel"');
@@ -46,5 +54,14 @@ describe("agentic browser control indicator", () => {
     expect(contentSource).toContain("delayMs <= 0");
     expect(contentSource).toContain("cancelled: true");
     expect(sharedTypesSource).toContain("cancelled?: boolean");
+  });
+
+  test("expires the page control indicator if a stop message is missed", () => {
+    expect(contentSource).toContain("AI_CONTROL_OVERLAY_MAX_MS");
+    expect(contentSource).toContain("aiControlOverlayWatchdogTimer");
+    expect(contentSource).toContain("removeStaleAiControlOverlays();");
+    expect(contentSource).toContain('document.querySelectorAll(".codex-ai-control-border")');
+    expect(contentSource).toContain("window.setTimeout(() =>");
+    expect(contentSource).toContain("scheduleHideAiControlOverlay(0)");
   });
 });

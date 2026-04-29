@@ -269,8 +269,6 @@ describe("BridgeRpcRouter", () => {
         fileAttachments: [],
         conversationContext: "Previous chat requested executive visuals.",
         model: "gpt-image-2",
-        quality: "high",
-        size: "1024x1536",
       },
     });
 
@@ -281,8 +279,6 @@ describe("BridgeRpcRouter", () => {
         fileAttachments: [],
         conversationContext: "Previous chat requested executive visuals.",
         model: "gpt-image-2",
-        quality: "high",
-        size: "1024x1536",
       },
       expect.any(Function),
     );
@@ -369,13 +365,14 @@ describe("BridgeRpcRouter", () => {
   test("routes app-server catalog and control methods", async () => {
     const router = new BridgeRpcRouter(createDependencies());
 
-    const [models, threads, rateLimits, skills, apps, plugins, turns, steer, interrupt] = await Promise.all([
+    const [models, threads, rateLimits, skills, apps, plugins, mcpServers, turns, steer, interrupt] = await Promise.all([
       router.handle({ id: "m", method: "model.list", params: {} }),
       router.handle({ id: "t", method: "thread.list", params: { cwd: "/tmp/project" } }),
       router.handle({ id: "r", method: "account.rate_limits.read", params: {} }),
       router.handle({ id: "s", method: "skills.list", params: { cwd: "/tmp/project" } }),
       router.handle({ id: "a", method: "apps.list", params: {} }),
       router.handle({ id: "p", method: "plugins.list", params: { cwd: "/tmp/project" } }),
+      router.handle({ id: "mcp", method: "mcp.servers.list", params: {} }),
       router.handle({ id: "tt", method: "thread.turns.list", params: { threadId: "thread-1" } }),
       router.handle({
         id: "st",
@@ -466,6 +463,21 @@ describe("BridgeRpcRouter", () => {
         installed: true,
         enabled: true,
         capabilities: ["repositories"],
+      },
+    ]);
+    expect(mcpServers.result).toEqual([
+      {
+        id: "mcp:google-calendar",
+        name: "google-calendar",
+        description: "Ready MCP server with 1 tool: google-calendar",
+        path: "mcp://google-calendar",
+        token: "$google-calendar",
+        authStatus: "oauth",
+        isAuthenticated: true,
+        toolCount: 1,
+        tools: [{ name: "create_event", description: "Create an event", inputSchema: null }],
+        resourceCount: 0,
+        resourceTemplateCount: 0,
       },
     ]);
     expect(turns.result).toEqual([
@@ -796,6 +808,24 @@ function createDependencies(overrides: Partial<BridgeDependencies> = {}): Bridge
           capabilities: ["repositories"],
         },
       ],
+      listMcpServers: async () => [
+        {
+          id: "mcp:google-calendar",
+          name: "google-calendar",
+          description: "Ready MCP server with 1 tool: google-calendar",
+          path: "mcp://google-calendar",
+          token: "$google-calendar",
+          authStatus: "oauth",
+          isAuthenticated: true,
+          toolCount: 1,
+          tools: [{ name: "create_event", description: "Create an event", inputSchema: null }],
+          resourceCount: 0,
+          resourceTemplateCount: 0,
+        },
+      ],
+      startMcpOauthLogin: async () => ({ authorizationUrl: "https://example.com/oauth" }),
+      callMcpTool: async () => ({ content: [], structuredContent: { ok: true }, isError: false }),
+      reloadMcpServers: async () => ({ ok: true }),
       readRateLimits: async () => ({
         defaultBucket: {
           limitId: "codex",

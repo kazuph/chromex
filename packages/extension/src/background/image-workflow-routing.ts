@@ -12,7 +12,7 @@ export interface WorkflowImageInput {
 type FetchImage = (url: string) => Promise<Response>;
 
 export function shouldDeferPageContextCollectionForImageWorkflow(plan: AgenticRoutePlan): boolean {
-  return plan.task === "image-edit" && plan.imageEdit.shouldEdit && plan.imageEdit.target === "page-image";
+  return shouldHandleAgenticImageEditWorkflow(plan) && plan.imageEdit.target === "page-image";
 }
 
 export function shouldShowPendingImageWorkflowPlaceholder(plan: AgenticRoutePlan): boolean {
@@ -20,23 +20,32 @@ export function shouldShowPendingImageWorkflowPlaceholder(plan: AgenticRoutePlan
 }
 
 export function getPromptImageWorkflowKind(plan: AgenticRoutePlan): PromptImageWorkflowKind | null {
-  if (
-    plan.task === "image-edit" &&
-    plan.imageEdit.shouldEdit &&
-    (plan.imageEdit.target === "page-image" || plan.imageEdit.target === "uploaded-image")
-  ) {
+  if (shouldHandleAgenticImageEditWorkflow(plan)) {
     return "image-edit";
   }
 
-  if (plan.task === "image-generate" && plan.intent.action === "generate-image") {
+  if (shouldHandleAgenticImageGenerationWorkflow(plan)) {
     return "generated-image";
   }
 
   return null;
 }
 
+export function shouldHandleAgenticImageEditWorkflow(plan: AgenticRoutePlan): boolean {
+  return (
+    plan.task === "image-edit" &&
+    plan.intent.action === "edit-image" &&
+    plan.imageEdit.shouldEdit &&
+    (plan.imageEdit.target === "page-image" || plan.imageEdit.target === "uploaded-image")
+  );
+}
+
+export function shouldHandleAgenticImageGenerationWorkflow(plan: AgenticRoutePlan): boolean {
+  return plan.task === "image-generate" && plan.intent.action === "generate-image" && !plan.imageEdit.shouldEdit;
+}
+
 export function shouldSuppressDefaultCurrentPageContextForImageWorkflow(plan: AgenticRoutePlan): boolean {
-  if (plan.task !== "image-edit" || !plan.imageEdit.shouldEdit || plan.imageEdit.target !== "uploaded-image") {
+  if (!shouldHandleAgenticImageEditWorkflow(plan) || plan.imageEdit.target !== "uploaded-image") {
     return false;
   }
   return !plan.contextRequests.some(
@@ -45,7 +54,7 @@ export function shouldSuppressDefaultCurrentPageContextForImageWorkflow(plan: Ag
 }
 
 export function shouldSuppressDefaultCurrentPageContextForImageGeneration(plan: AgenticRoutePlan): boolean {
-  if (plan.task !== "image-generate" || plan.intent.action !== "generate-image") {
+  if (!shouldHandleAgenticImageGenerationWorkflow(plan)) {
     return false;
   }
   return !plan.contextRequests.some(

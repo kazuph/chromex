@@ -26,6 +26,12 @@ describe("message action rendering", () => {
     expect(sidepanelSource).not.toContain("state.actionStatus = stringsForState().status.messageCopied");
   });
 
+  test("does not disable edit and regenerate just because the composer draft is empty", () => {
+    expect(sidepanelSource).toContain("canStartMessageReplayInteraction");
+    expect(sidepanelSource).toContain("const disabled = canStartMessageReplayInteraction() ? \"\" : \"disabled\"");
+    expect(sidepanelSource).toContain("if (!messageId || !canStartMessageReplayInteraction())");
+  });
+
   test("marks edited user messages so the editor can use a wider layout", () => {
     expect(sidepanelSource).toContain('const editingClass = editing ? "editing" : ""');
     expect(sidepanelSource).toContain('class="message-card ${message.role} ${editingClass} ${voiceClass} ${imageResultClass}"');
@@ -57,5 +63,22 @@ describe("message action rendering", () => {
     expect(sidepanelSource).toContain("data-image-open");
     expect(sidepanelSource).not.toContain("data-image-download=");
     expect(sidepanelSource).not.toContain("message-image-actions");
+  });
+
+  test("renders selected plugin mentions on user messages and composer context chips", () => {
+    expect(sidepanelSource).toContain("renderConversationMessageStructuredInputs");
+    expect(sidepanelSource).toContain("createConversationMessageStructuredInputs");
+    expect(sidepanelSource).toContain("renderStructuredInputIcon");
+    expect(sidepanelSource).toContain("submittedMessageStructuredInputs.length ? { structuredInputs: submittedMessageStructuredInputs }");
+    expect(sidepanelSource).toContain("data-remove-structured-input-id=");
+    expect(sidepanelSource).toContain("summary-chip-remove");
+  });
+
+  test("renders selected plugin mentions inside the user message card metadata row", () => {
+    expect(sidepanelSource).toContain("function renderMessageMetaPills");
+    expect(sidepanelSource).toContain(
+      'const userMetaHtml = message.role === "user" ? renderMessageMetaPills(profileHtml, structuredInputHtml) : "";',
+    );
+    expect(sidepanelSource).not.toContain("${structuredInputHtml}\n          ${cardHtml}");
   });
 });

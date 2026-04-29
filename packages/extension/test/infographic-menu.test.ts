@@ -23,4 +23,10 @@ describe("infographic quick action UI", () => {
     expect(source).not.toContain("summarizeLabel");
     expect(source).not.toContain("infographicLabel");
   });
+
+  test("does not require composer text before starting current-page infographic generation", () => {
+    expect(source).toContain("canStartCurrentComposerWorkflow()");
+    expect(source).toMatch(/async function createInfographicFromCurrentPage\(\): Promise<void> \{\s+if \(!canStartCurrentComposerWorkflow\(\)\)/u);
+    expect(source).toMatch(/async function createSlideImagesFromCurrentPage\(prompt: string\): Promise<void> \{\s+if \(!canStartCurrentComposerWorkflow\(\)\)/u);
+  });
 });

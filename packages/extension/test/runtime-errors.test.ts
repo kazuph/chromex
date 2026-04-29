@@ -19,6 +19,13 @@ describe("runtime message error helpers", () => {
     expect(isRetryableRuntimeMessageError(error)).toBe(true);
   });
 
+  test("classifies removed frames during tab navigation as transient disconnects", () => {
+    const error = new Error("Frame with ID 0 was removed.");
+
+    expect(classifyRuntimeMessageError(error)).toBe("transient-disconnect");
+    expect(isRetryableRuntimeMessageError(error)).toBe(true);
+  });
+
   test("classifies raw host-access failures separately", () => {
     const error = new Error(
       "Cannot access contents of url \"https://x.com/home\". Extension manifest must request permission to access this host.",

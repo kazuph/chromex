@@ -2,11 +2,13 @@ import {
   DEFAULT_HARNESS_PERMISSIONS,
   type CodexActiveTurn,
   type CodexAppOption,
+  type CodexMcpServerOption,
   type CodexModelOption,
   type CodexModelReroute,
   type CodexPluginOption,
   type CodexRateLimits,
   type CodexSkillOption,
+  type CodexStructuredInput,
   type CodexThreadSummary,
   type CodexThreadTranscript,
   type CodexTurnDiff,
@@ -80,7 +82,9 @@ import {
   updateStoredSettings,
   deleteSkill,
 } from "./storage.js";
+import { resolveVisibleCurrentConversation } from "./conversation-history.js";
 import { NativeBridgeClient } from "./native-bridge-client.js";
+import { assertApiKeyLoginExplicitlyConfirmed } from "./api-key-login-guard.js";
 import { createUserProfileTemplate, updateUserProfileTemplate } from "../profile-templates.js";
 import { inferActionCardsForOpenTab } from "./site-suggestions.js";
 import {
@@ -93,6 +97,8 @@ import {
   resolveUploadedImageReferenceInputs,
   resolveUploadedImageEditInput,
   type PromptImageWorkflowKind,
+  shouldHandleAgenticImageEditWorkflow,
+  shouldHandleAgenticImageGenerationWorkflow,
   shouldDeferPageContextCollectionForImageWorkflow,
   shouldSuppressDefaultCurrentPageContextForImageGeneration,
   shouldSuppressDefaultCurrentPageContextForImageWorkflow,
@@ -121,6 +127,8 @@ import {
   resolveHistoryContextQuery,
   type HistoryContextItem,
 } from "./history-context.js";
+import { resolveUiLocale } from "../ui-language.js";
+import { getUiStrings } from "../sidepanel/i18n.js";
 import { selectEditablePageImageCandidate, type EditablePageImageCandidate } from "../page-image-target.js";
 import {
   createEffectivePromptRoutePlan,
@@ -141,7 +149,21 @@ import type {
 import type { SkillOption } from "../sidepanel/skills.js";
 import type { PromptActivityPhase } from "../sidepanel/prompt-activity.js";
 import { mergeStructuredInputsWithEnabledCodexSkills } from "../codex-skill-settings.js";
+import { requiresPluginCompanionAppConnection } from "../plugin-connection-availability.js";
+import {
+  createAvailableRouteStructuredInputs,
+  expandPluginStructuredInputsWithConnectedApps,
+  mergeExplicitAndRouteStructuredInputs,
+  resolveRouteStructuredInputs,
+} from "./route-structured-inputs.js";
 import { isRecoverableMissingCodexThreadError, shouldAutoCompactConversation } from "./auto-compact.js";
+import { resolveBridgeEventConversationId } from "./bridge-event-routing.js";
+import { ConversationRuntimeRegistry } from "./conversation-runtime.js";
+import {
+  buildDeferredBrowserActionMessage,
+  extractDeferredBrowserActionText,
+  shouldResumeDeferredBrowserDomAction,
+} from "./deferred-browser-action.js";
 import {
   createPaperPdfFallbackContext,
   createGenericSiteFallbackContext,
@@ -153,12 +175,46 @@ import {
 const bridge = new NativeBridgeClient();
 const UI_BRIDGE_TIMEOUT_MS = 4000;
 const UI_CONTEXT_TIMEOUT_MS = 2500;
-const CLICKED_IMAGE_SOURCE_TTL_MS = 10 * 60 * 1000;
 const PLAYWRIGHT_RUNTIME_INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
 const throttleVisibleTabCapture = createVisibleTabCaptureThrottle();
 const cancelledPromptClientRequestIds = new Set<string>();
+const OFFSCREEN_DOCUMENT_PATH = "offscreen.html";
+const OFFSCREEN_IMAGE_CROP_MESSAGE_TYPE = "offscreen.image.crop";
+let offscreenDocumentPromise: Promise<void> | null = null;
+const conversationRuntime = new ConversationRuntimeRegistry();
 type ReadableBrowserTab = chrome.tabs.Tab & { id: number; url: string; windowId: number };
 type PromptStatusEmitter = (phase: PromptActivityPhase, workflow?: PromptImageWorkflowKind) => void;
+type PromptTurnResult = { threadId: string; turnId: string };
+type CompletedAssistantMessageEvent = {
+  type: "message.completed";
+  text?: string;
+  threadId?: string;
+  turnId?: string;
+};
+type HarnessPermissionBlockedResponse = {
+  error: string;
+  requiresConfirmation?: boolean;
+  confirmationOperation?: HarnessPermissionOperation;
+};
+type BrowserDomActionWorkflowResult =
+  | { kind: "not-handled" }
+  | { kind: "blocked"; response: HarnessPermissionBlockedResponse }
+  | { kind: "handled"; response: { workflow: "browser-action"; assistantText: string; actionResult?: BrowserDomActionResult } };
+type PendingImagePromptExtraction = {
+  imageUrl: string;
+  alt?: string;
+  pageTitle?: string;
+  pageUrl?: string;
+  imageCandidate?: EditablePageImageCandidate;
+  attachment?: UserFileAttachment;
+  createdAt: number;
+};
+type PendingImageAttachment = {
+  imageUrl: string;
+  pageUrl?: string;
+  createdAt: number;
+};
+type PendingContextMenuAction = "summarize-page" | "summarize-video";
 let activeAiControlTab: ReadableBrowserTab | null = null;
 const state = {
   selectedProfileId: "default",
@@ -167,7 +223,7 @@ const state = {
   selectedServiceTier: "",
   threadId: undefined as string | undefined,
   currentConversationId: undefined as string | undefined,
-  lastImageSourceUrl: undefined as string | undefined,
+  currentDraftConversation: null as SavedConversation | null,
   browserWindowId: undefined as number | undefined,
   models: [] as CodexModelOption[],
   customProfiles: [] as ProfileTemplate[],
@@ -177,6 +233,7 @@ const state = {
   appServerSkills: [] as CodexSkillOption[],
   connectedApps: [] as CodexAppOption[],
   appServerPlugins: [] as CodexPluginOption[],
+  mcpServers: [] as CodexMcpServerOption[],
   serverThreads: [] as CodexThreadSummary[],
   rateLimits: null as CodexRateLimits | null,
   activeTurn: null as CodexActiveTurn | null,
@@ -188,8 +245,6 @@ const state = {
   playwrightRuntime: createFallbackPlaywrightRuntime(),
   imageAssetFolder: null as UiInitPayload["imageAssetFolder"] | null,
   diagnosticLogFolder: null as UiInitPayload["diagnosticLogFolder"] | null,
-  lastImageSourceTabId: undefined as number | undefined,
-  lastImageSourceCapturedAt: 0,
   catalogRefreshPromise: null as Promise<void> | null,
   lastRequestedCatalogWorkspaceRoot: null as string | null,
   initializationPromise: null as Promise<void> | null,
@@ -200,17 +255,29 @@ const state = {
 
 bridge.subscribe((event) => {
   const bridgeEvent = event as { type?: string };
+  let eventConversationId: string | null = resolveBridgeEventConversationId(event, conversationRuntime);
   if (bridgeEvent.type === "turn.started") {
-    state.activeTurn = (event as { activeTurn: CodexActiveTurn }).activeTurn;
+    const activeTurn = (event as { activeTurn: CodexActiveTurn }).activeTurn;
+    if (eventConversationId) {
+      conversationRuntime.setActiveTurn(eventConversationId, activeTurn);
+      syncCurrentRuntimeState(eventConversationId);
+    } else {
+      state.activeTurn = activeTurn;
+    }
   } else if (bridgeEvent.type === "turn.completed") {
     const completed = event as { threadId: string; turnId: string };
-    if (state.activeTurn?.turnId === completed.turnId) {
+    eventConversationId = conversationRuntime.completeTurn(completed.threadId, completed.turnId) ?? eventConversationId;
+    if (eventConversationId) {
+      syncCurrentRuntimeState(eventConversationId);
+    } else if (state.activeTurn?.turnId === completed.turnId) {
       state.activeTurn = null;
     }
   } else if (bridgeEvent.type === "turn.plan.updated") {
-    state.latestPlan = (event as { plan: CodexTurnPlan }).plan;
+    const plan = (event as { plan: CodexTurnPlan }).plan;
+    state.latestPlan = plan;
   } else if (bridgeEvent.type === "turn.diff.updated") {
-    state.latestDiff = (event as { diff: CodexTurnDiff }).diff;
+    const diff = (event as { diff: CodexTurnDiff }).diff;
+    state.latestDiff = diff;
   } else if (bridgeEvent.type === "account.rate_limits.updated") {
     state.rateLimits = (event as { rateLimits: CodexRateLimits | null }).rateLimits;
   } else if (bridgeEvent.type === "model.rerouted") {
@@ -218,7 +285,7 @@ bridge.subscribe((event) => {
   } else if (bridgeEvent.type === "catalog.updated") {
     void triggerCatalogRefresh();
   }
-  broadcastBridgeEvent(event);
+  broadcastBridgeEvent(annotateBridgeEventConversation(event, eventConversationId));
 });
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -275,38 +342,100 @@ chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
 });
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
-  if (!tab?.windowId) {
+  if (typeof tab?.windowId === "number") {
+    state.browserWindowId = tab.windowId;
+  }
+
+  const sidePanelOpenPromise = openSidePanelForContextMenu(tab).catch((error) => {
+    console.warn("Failed to open the Chromex side panel from a context menu action.", error);
+  });
+
+  if (info.menuItemId === "edit-codex-image" && info.srcUrl) {
+    await chrome.storage.session.set({
+      pendingImageAttachment: {
+        imageUrl: info.srcUrl,
+        ...(info.pageUrl || tab?.url ? { pageUrl: info.pageUrl ?? tab?.url } : {}),
+        createdAt: Date.now(),
+      },
+    });
+    await chrome.storage.session.remove("pendingAction");
+    await sidePanelOpenPromise;
+    void broadcastActiveTabSnapshot();
+    void chrome.runtime.sendMessage({ type: "ui.image-attachment.pending" }).catch(() => undefined);
     return;
   }
 
-  state.browserWindowId = tab.windowId;
-
-  if (info.menuItemId === "edit-codex-image" && info.srcUrl) {
-    state.lastImageSourceUrl = info.srcUrl;
-    state.lastImageSourceTabId = tab.id;
-    state.lastImageSourceCapturedAt = Date.now();
+  const pendingAction = resolvePendingContextMenuAction(info.menuItemId);
+  if (!pendingAction) {
+    await sidePanelOpenPromise;
+    void broadcastActiveTabSnapshot();
+    return;
   }
 
-  await chrome.sidePanel.open({ windowId: tab.windowId });
-  void broadcastActiveTabSnapshot();
   await chrome.storage.session.set({
-    pendingAction:
-      info.menuItemId === "summarize-codex-youtube"
-        ? "summarize-video"
-        : info.menuItemId === "edit-codex-image"
-          ? "edit-image"
-          : "summarize-page",
+    pendingAction: pendingAction,
   });
+  await chrome.storage.session.remove("pendingImageAttachment");
+  await sidePanelOpenPromise;
+  void broadcastActiveTabSnapshot();
+  void chrome.runtime.sendMessage({ type: "ui.context-menu-action.pending" }).catch(() => undefined);
 });
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+async function openSidePanelForContextMenu(tab?: chrome.tabs.Tab): Promise<void> {
+  const windowId = typeof tab?.windowId === "number" ? tab.windowId : chrome.windows.WINDOW_ID_CURRENT;
+  try {
+    await chrome.sidePanel.open({ windowId });
+    return;
+  } catch (error) {
+    if (typeof tab?.id === "number") {
+      await chrome.sidePanel.open({ tabId: tab.id });
+      return;
+    }
+    throw error;
+  }
+}
+
+function resolvePendingContextMenuAction(menuItemId: unknown): PendingContextMenuAction | null {
+  if (menuItemId === "summarize-codex-youtube") {
+    return "summarize-video";
+  }
+  if (menuItemId === "ask-codex-page") {
+    return "summarize-page";
+  }
+  return null;
+}
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.target === "offscreen") {
+    return false;
+  }
+
+  if (message.type === "page.image-prompt.extract") {
+    void handlePageImagePromptExtraction(message, sender.tab)
+      .then(sendResponse)
+      .catch((error) => {
+        const expectedPermissionResponse = toExpectedPermissionErrorResponse(error);
+        if (expectedPermissionResponse) {
+          sendResponse(expectedPermissionResponse);
+          return;
+        }
+        if (shouldLogBackgroundMessageError(error)) {
+          console.error("background message handling failed", message?.type, error);
+        }
+        sendResponse({
+          error: error instanceof Error ? error.message : "Unknown background failure",
+        });
+      });
+    return true;
+  }
+
   void (async () => {
     try {
       await ensureStateLoaded();
 
       switch (message.type) {
         case "ui.init":
-          sendResponse(await buildUiInitPayload(message.windowId));
+          sendResponse(await buildUiInitPayload(message.windowId, { forceCatalog: Boolean(message.forceCatalog) }));
           return;
         case "ui.popout":
           sendResponse(await popOutChat());
@@ -472,8 +601,33 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             skills: mergeSkillOptions(await deleteSkill(message.skillId), await getWorkspaceHarness()),
           });
           return;
+        case "mcp.servers.list": {
+          const mcpServers = await bridge.request<CodexMcpServerOption[]>("mcp.servers.list", {
+            detail: message.detail === "full" ? "full" : "toolsAndAuthOnly",
+            limit: Number.isFinite(message.limit) ? Number(message.limit) : 100,
+          });
+          state.mcpServers = mcpServers;
+          sendResponse({ mcpServers });
+          return;
+        }
+        case "mcp.oauth.login.start":
+          sendResponse(
+            await bridge.request("mcp.oauth.login.start", {
+              name: String(message.name ?? ""),
+              scopes: Array.isArray(message.scopes) ? message.scopes.map(String) : undefined,
+              timeoutSecs: Number.isFinite(message.timeoutSecs) ? Number(message.timeoutSecs) : undefined,
+            }),
+          );
+          return;
+        case "mcp.servers.reload":
+          sendResponse(await bridge.request("mcp.servers.reload"));
+          void triggerCatalogRefresh(undefined, { force: true });
+          return;
+        case "app.install.open":
+          sendResponse(await openAppInstallUrl(String(message.url ?? "")));
+          return;
         case "account.login.start":
-          sendResponse(await handleAccountLogin(message.loginType, message.apiKey));
+          sendResponse(await handleAccountLogin(message.loginType, message.apiKey, Boolean(message.confirmed)));
           return;
         case "account.logout":
           sendResponse(await bridge.request("account.logout"));
@@ -486,8 +640,23 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             await guardAndRun("context.history.read", Boolean(message.confirmed), () => searchHistory(message.query)),
           );
           return;
+        case "image.prompt.pending.take":
+          sendResponse(await takePendingImagePromptExtraction());
+          return;
+        case "image.prompt.error.pending.take":
+          sendResponse(await takePendingImagePromptError());
+          return;
+        case "image.attachment.pending.take":
+          sendResponse(await takePendingImageAttachment());
+          return;
+        case "context.menu.pending.take":
+          sendResponse(await takePendingContextMenuAction());
+          return;
         case "prompt.send":
           sendResponse(await handlePromptSend(message.payload));
+          return;
+        case "prompt.route.preview":
+          sendResponse(await handlePromptRoutePreview(message.payload));
           return;
         case "prompt.cancel":
           sendResponse(await handlePromptCancel(message.clientRequestId, message.threadId, message.turnId));
@@ -503,7 +672,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           return;
         case "image.infographic.start":
           sendResponse(
-            await handleInfographicGenerate(Boolean(message.confirmed), message.conversationContext, message.clientRequestId),
+            await handleInfographicGenerate(
+              Boolean(message.confirmed),
+              message.conversationContext,
+              message.clientRequestId,
+              message.conversationId,
+            ),
           );
           return;
         case "image.slides.start":
@@ -513,6 +687,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
               Boolean(message.confirmed),
               message.conversationContext,
               message.clientRequestId,
+              message.conversationId,
             ),
           );
           return;
@@ -606,6 +781,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           await sendMessageToActiveTab({ type: "page.clear-image-overlay" });
           sendResponse({ ok: true });
           return;
+        case "page.image-prompt-hover.install":
+          sendResponse(await installImagePromptHoverForTab(await getActiveTab().catch(() => null)));
+          return;
+        case "page.image-prompt.extract":
+          sendResponse(await handlePageImagePromptExtraction(message, sender.tab));
+          return;
         case "page.navigate":
           sendResponse(
             await guardAndRun("page.navigate", Boolean(message.confirmed), () =>
@@ -689,6 +870,53 @@ function normalizeSelectedProfileId(profileId: string | null | undefined): strin
     : (availableProfiles[0]?.id ?? "default");
 }
 
+async function ensurePromptConversationRuntime(payload: PromptRequestPayload) {
+  const requestedConversationId = payload.conversationId?.trim();
+  let conversationId = requestedConversationId || state.currentConversationId || "";
+  if (!conversationId) {
+    const conversation = await createConversation(payload.profileId, payload.model ?? state.selectedModel);
+    conversationId = conversation.id;
+    state.currentConversationId = conversation.id;
+    state.currentDraftConversation = conversation;
+    await setCurrentConversationId(conversation.id);
+  }
+
+  await seedConversationRuntime(conversationId);
+  return conversationRuntime.get(conversationId);
+}
+
+async function seedConversationRuntime(conversationId: string): Promise<void> {
+  const runtime = conversationRuntime.get(conversationId);
+  if (runtime.threadId) {
+    return;
+  }
+  const conversation = (await listConversations()).find((item) => item.id === conversationId);
+  if (conversation?.threadId) {
+    conversationRuntime.setThreadId(conversationId, conversation.threadId);
+  }
+}
+
+function syncCurrentRuntimeState(conversationId: string): void {
+  if (state.currentConversationId !== conversationId) {
+    return;
+  }
+  const runtime = conversationRuntime.get(conversationId);
+  state.threadId = runtime.threadId;
+  state.activeTurn = runtime.activeTurn;
+  state.lastAutoCompactThreadId = runtime.lastAutoCompactThreadId;
+  state.lastAutoCompactBucket = runtime.lastAutoCompactBucket;
+}
+
+function annotateBridgeEventConversation(event: unknown, conversationId: string | null): unknown {
+  if (!conversationId || typeof event !== "object" || event === null) {
+    return event;
+  }
+  return {
+    ...event,
+    conversationId,
+  };
+}
+
 async function ensureStateLoaded(): Promise<void> {
   if (state.initialized) {
     return;
@@ -715,7 +943,8 @@ async function ensureStateLoaded(): Promise<void> {
       const currentConversation = await getCurrentConversation();
       if (currentConversation) {
         state.currentConversationId = currentConversation.id;
-        state.threadId = currentConversation.threadId;
+        conversationRuntime.setThreadId(currentConversation.id, currentConversation.threadId);
+        syncCurrentRuntimeState(currentConversation.id);
       }
 
       state.initialized = true;
@@ -728,7 +957,10 @@ async function ensureStateLoaded(): Promise<void> {
   await state.initializationPromise;
 }
 
-async function buildUiInitPayload(windowId?: number): Promise<UiInitPayload> {
+async function buildUiInitPayload(
+  windowId?: number,
+  options: { forceCatalog?: boolean } = {},
+): Promise<UiInitPayload> {
   if (typeof windowId === "number") {
     state.browserWindowId = windowId;
   }
@@ -776,7 +1008,7 @@ async function buildUiInitPayload(windowId?: number): Promise<UiInitPayload> {
 
   await softTimeout(
     triggerCatalogRefresh(workspaceHarness.workspaceRoot || undefined, {
-      force: state.modelCatalogState !== "ready" || state.models.length === 0,
+      force: options.forceCatalog || state.modelCatalogState !== "ready" || state.models.length === 0,
     }),
     UI_BRIDGE_TIMEOUT_MS,
     undefined,
@@ -786,24 +1018,30 @@ async function buildUiInitPayload(windowId?: number): Promise<UiInitPayload> {
   const activeTab = await getActiveTab().catch(() => null);
   const currentPageSupport = getCurrentPageSupport(activeTab?.url);
 
-  const [customProfiles, deletedProfileIds, currentContext, currentConversation] = await Promise.all([
+  const [customProfiles, deletedProfileIds, currentContext] = await Promise.all([
     listCustomProfiles(),
     listDeletedProfileIds(),
     currentPageSupport.available
       ? softTimeout(collectCurrentPageContext("auto"), UI_CONTEXT_TIMEOUT_MS, null, "context.collect")
       : Promise.resolve(null),
-    getCurrentConversation(),
   ]);
+  const currentConversation = resolveVisibleCurrentConversation({
+    conversations,
+    currentConversationId: state.currentConversationId,
+    draftConversation: state.currentDraftConversation,
+  });
 
   state.customProfiles = customProfiles;
   state.deletedProfileIds = deletedProfileIds;
   state.selectedProfileId = normalizeSelectedProfileId(state.selectedProfileId);
   if (currentConversation) {
     state.currentConversationId = currentConversation.id;
-    state.threadId = currentConversation.threadId;
+    conversationRuntime.setThreadId(currentConversation.id, currentConversation.threadId);
+    syncCurrentRuntimeState(currentConversation.id);
   }
 
-  const activeTabActionCards = activeTab ? inferActionCardsForOpenTab(tabToOpenTabContext(activeTab), chrome.i18n?.getUILanguage?.() ?? "") : [];
+  const uiLocale = resolveSettingsUiLocale(settings);
+  const activeTabActionCards = activeTab ? inferActionCardsForOpenTab(tabToOpenTabContext(activeTab), uiLocale) : [];
 
   return {
     accountStatus,
@@ -831,6 +1069,7 @@ async function buildUiInitPayload(windowId?: number): Promise<UiInitPayload> {
     appServerSkills: state.appServerSkills,
     connectedApps: state.connectedApps,
     appServerPlugins: state.appServerPlugins,
+    mcpServers: state.mcpServers,
     recentChats: conversations.map(toConversationSummary),
     serverThreads: state.serverThreads,
     currentConversation,
@@ -845,12 +1084,17 @@ async function buildUiInitPayload(windowId?: number): Promise<UiInitPayload> {
   };
 }
 
-async function handleAccountLogin(loginType: "chatgpt" | "apiKey", apiKey?: string): Promise<unknown> {
+async function handleAccountLogin(
+  loginType: "chatgpt" | "apiKey",
+  apiKey?: string,
+  confirmed = false,
+): Promise<unknown> {
   if (loginType === "apiKey") {
-    if (!apiKey) {
-      return { cancelled: true };
-    }
-    return bridge.request("account.login.start", { type: "apiKey", apiKey });
+    assertApiKeyLoginExplicitlyConfirmed({ loginType, apiKey, confirmed });
+    return bridge.request("account.login.start", {
+      type: "apiKey",
+      ...(apiKey ? { apiKey } : {}),
+    });
   }
 
   const result = await bridge.request<{ authUrl?: string }>("account.login.start", {
@@ -862,9 +1106,40 @@ async function handleAccountLogin(loginType: "chatgpt" | "apiKey", apiKey?: stri
   return result;
 }
 
+async function openAppInstallUrl(url: string): Promise<{ ok: true }> {
+  const parsed = parseExternalInstallUrl(url);
+  if (!parsed) {
+    throw new Error(getUiStrings(await getActiveUiLocale()).errors.invalidAppConnectionUrl);
+  }
+  await chrome.tabs.create({ url: parsed.toString() });
+  return { ok: true };
+}
+
+function parseExternalInstallUrl(value: string): URL | null {
+  try {
+    const parsed = new URL(value.trim());
+    return parsed.protocol === "https:" || parsed.protocol === "http:" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+async function handlePromptRoutePreview(payload: PromptRequestPayload): Promise<{ plan: AgenticRoutePlan }> {
+  const settings = await getStoredSettings();
+  const activeTab = await getActiveTab().catch(() => null);
+  const routeInput = createAgenticRouteInput(payload, activeTab, settings);
+  return {
+    plan: await planAgenticRouteForPayload(payload, routeInput),
+  };
+}
+
 async function handlePromptSend(payload: PromptRequestPayload) {
+  const runtime = await ensurePromptConversationRuntime(payload);
+  const conversationId = runtime.conversationId;
+  payload.conversationId = conversationId;
   void recordDiagnostic("extension.prompt.send", {
     clientRequestId: payload.clientRequestId ?? null,
+    conversationId,
     messageLength: payload.message.length,
     attachments: payload.attachments,
     fileAttachmentCount: payload.fileAttachments?.length ?? 0,
@@ -893,14 +1168,10 @@ async function handlePromptSend(payload: PromptRequestPayload) {
   }
 
   if (payload.resetThread) {
-    state.threadId = undefined;
-    state.activeTurn = null;
+    conversationRuntime.resetConversation(conversationId);
+    syncCurrentRuntimeState(conversationId);
   }
 
-  if (!state.currentConversationId) {
-    const conversation = await createConversation(payload.profileId, payload.model ?? state.selectedModel);
-    state.currentConversationId = conversation.id;
-  }
   const imageWorkflow = await maybeHandleAgenticImageWorkflow(
     payload,
     prepared.agenticRoutePlan,
@@ -914,7 +1185,7 @@ async function handlePromptSend(payload: PromptRequestPayload) {
       ...imageWorkflow.response,
       actionCards: prepared.actionCards,
       settings,
-      currentConversationId: state.currentConversationId,
+      currentConversationId: conversationId,
     };
   }
   const imageGenerationWorkflow = await maybeHandleAgenticImageGenerationWorkflow(
@@ -932,7 +1203,7 @@ async function handlePromptSend(payload: PromptRequestPayload) {
       ...imageGenerationWorkflow.response,
       actionCards: prepared.actionCards,
       settings,
-      currentConversationId: state.currentConversationId,
+      currentConversationId: conversationId,
     };
   }
   const cancellationAfterImageWorkflow = await getPromptCancellationResponse(payload);
@@ -952,28 +1223,44 @@ async function handlePromptSend(payload: PromptRequestPayload) {
       ...browserActionWorkflow.response,
       actionCards: prepared.actionCards,
       settings,
-      currentConversationId: state.currentConversationId,
+      currentConversationId: conversationId,
     };
+  }
+  const deferredBrowserActionGate = await maybeEnsureDeferredBrowserDomActionAllowed(payload, prepared.agenticRoutePlan);
+  if (deferredBrowserActionGate.kind === "blocked") {
+    return deferredBrowserActionGate.response;
   }
   const cancellationAfterBrowserWorkflow = await getPromptCancellationResponse(payload);
   if (cancellationAfterBrowserWorkflow) {
     return cancellationAfterBrowserWorkflow;
   }
 
-  await maybeAutoCompactBeforePrompt(payload, settings);
+  await maybeAutoCompactBeforePrompt(payload, settings, conversationId);
   const cancellationAfterCompact = await getPromptCancellationResponse(payload);
   if (cancellationAfterCompact) {
     return cancellationAfterCompact;
   }
 
   emitPromptStatus(payload, "waiting-for-codex");
+  const cwd = normalizeConfiguredPath(settings.workspaceRoot);
+  let threadId = conversationRuntime.get(conversationId).threadId;
+  if (!threadId) {
+    const opened = await bridge.request<{ threadId: string }>("session.open", {
+      ...(cwd ? { cwd } : {}),
+      ...(prepared.selectedModel ? { model: prepared.selectedModel } : {}),
+    });
+    threadId = opened.threadId;
+    conversationRuntime.setThreadId(conversationId, threadId);
+    syncCurrentRuntimeState(conversationId);
+  }
   const structuredInputs = mergeStructuredInputsWithEnabledCodexSkills(
-    payload.structuredInputs ?? [],
+    prepared.structuredInputs,
     state.appServerSkills,
     settings.enabledCodexSkillIds,
     createCodexSkillRuntimeAvailability(settings),
+    state.connectedApps,
   );
-  const result = await bridge.request<{ threadId: string; turnId: string }>("prompt.send", {
+  const promptTurn = await requestPromptSendWithAssistantCapture({
     clientRequestId: payload.clientRequestId,
     profile: prepared.profile,
     message: payload.message,
@@ -981,47 +1268,67 @@ async function handlePromptSend(payload: PromptRequestPayload) {
     fileAttachments: prepared.fileAttachments,
     routePlan: prepared.routePlan,
     structuredInputs,
-    threadId: state.threadId,
-    ...(normalizeConfiguredPath(settings.workspaceRoot) ? { cwd: normalizeConfiguredPath(settings.workspaceRoot) } : {}),
+    threadId,
+    ...(cwd ? { cwd } : {}),
     ...(prepared.selectedModel ? { model: prepared.selectedModel } : {}),
     ...(payload.reasoningEffort ? { reasoningEffort: payload.reasoningEffort } : {}),
     ...(payload.serviceTier ? { serviceTier: payload.serviceTier } : {}),
   });
+  const result = promptTurn.result;
   const cancellationAfterPrompt = await getPromptCancellationResponse(payload);
   if (cancellationAfterPrompt) {
     return cancellationAfterPrompt;
   }
-  state.threadId = result.threadId;
-  state.activeTurn = null;
+  conversationRuntime.setThreadId(conversationId, result.threadId);
+  conversationRuntime.setActiveTurn(conversationId, null);
+  syncCurrentRuntimeState(conversationId);
+
+  const deferredBrowserActionWorkflow = await maybeHandleDeferredBrowserDomActionWorkflow(
+    payload,
+    prepared.agenticRoutePlan,
+    promptTurn.assistantText,
+    (phase, workflow) => emitPromptStatus(payload, phase, workflow),
+  );
+  if (deferredBrowserActionWorkflow.kind === "handled") {
+    return {
+      ...result,
+      ...deferredBrowserActionWorkflow.response,
+      actionCards: prepared.actionCards,
+      settings,
+      currentConversationId: conversationId,
+    };
+  }
 
   return {
     ...result,
     actionCards: prepared.actionCards,
     settings,
-    currentConversationId: state.currentConversationId,
+    currentConversationId: conversationId,
   };
 }
 
 async function maybeAutoCompactBeforePrompt(
   payload: PromptRequestPayload,
   settings: ExtensionSettings,
+  conversationId: string,
 ): Promise<void> {
+  const runtime = conversationRuntime.get(conversationId);
   const decision = shouldAutoCompactConversation({
     enabled: settings.autoCompactConversations,
     messageCount: payload.conversationMessageCount ?? 0,
-    lastCompactedThreadId: state.lastAutoCompactThreadId,
-    turnActive: Boolean(state.activeTurn),
-    ...(state.threadId ? { threadId: state.threadId } : {}),
-    ...(state.lastAutoCompactBucket !== null ? { lastCompactedBucket: state.lastAutoCompactBucket } : {}),
+    lastCompactedThreadId: runtime.lastAutoCompactThreadId,
+    turnActive: Boolean(runtime.activeTurn),
+    ...(runtime.threadId ? { threadId: runtime.threadId } : {}),
+    ...(runtime.lastAutoCompactBucket !== null ? { lastCompactedBucket: runtime.lastAutoCompactBucket } : {}),
   });
-  if (!decision.shouldCompact || decision.bucket === null || !state.threadId) {
+  if (!decision.shouldCompact || decision.bucket === null || !runtime.threadId) {
     return;
   }
 
   emitPromptStatus(payload, "compacting");
   try {
     await bridge.request("thread.compact.start", {
-      threadId: state.threadId,
+      threadId: runtime.threadId,
       waitForCompletion: true,
     });
   } catch (error) {
@@ -1029,22 +1336,26 @@ async function maybeAutoCompactBeforePrompt(
       throw error;
     }
     void recordDiagnostic("extension.auto_compact.stale_thread", {
-      threadId: state.threadId,
+      threadId: runtime.threadId,
       error: toErrorMessage(error),
     });
-    state.threadId = undefined;
-    state.activeTurn = null;
-    state.lastAutoCompactThreadId = "";
-    state.lastAutoCompactBucket = null;
+    conversationRuntime.resetConversation(conversationId);
+    syncCurrentRuntimeState(conversationId);
     return;
   }
-  state.lastAutoCompactThreadId = state.threadId;
-  state.lastAutoCompactBucket = decision.bucket;
+  runtime.lastAutoCompactThreadId = runtime.threadId;
+  runtime.lastAutoCompactBucket = decision.bucket;
 }
 
 async function handleTurnSteer(payload: PromptRequestPayload) {
-  if (!state.threadId || !state.activeTurn?.turnId) {
-    return handlePromptSend(payload);
+  const runtime = await ensurePromptConversationRuntime(payload);
+  const conversationId = runtime.conversationId;
+  payload.conversationId = conversationId;
+  if (!runtime.threadId || !runtime.activeTurn?.turnId) {
+    return {
+      error: "No active turn to steer.",
+      currentConversationId: conversationId,
+    };
   }
 
   emitPromptStatus(payload, "routing");
@@ -1069,69 +1380,15 @@ async function handleTurnSteer(payload: PromptRequestPayload) {
   if (cancellationAfterBuild) {
     return cancellationAfterBuild;
   }
-  const imageWorkflow = await maybeHandleAgenticImageWorkflow(
-    payload,
-    prepared.agenticRoutePlan,
-    (phase, workflow) => emitPromptStatus(payload, phase, workflow),
-  );
-  if (imageWorkflow.kind === "blocked") {
-    return imageWorkflow.response;
-  }
-  if (imageWorkflow.kind === "handled") {
-    return {
-      ...imageWorkflow.response,
-      actionCards: prepared.actionCards,
-      currentConversationId: state.currentConversationId,
-    };
-  }
-  const imageGenerationWorkflow = await maybeHandleAgenticImageGenerationWorkflow(
-    payload,
-    prepared.agenticRoutePlan,
-    prepared.contexts,
-    prepared.fileAttachments,
-    (phase, workflow) => emitPromptStatus(payload, phase, workflow),
-  );
-  if (imageGenerationWorkflow.kind === "blocked") {
-    return imageGenerationWorkflow.response;
-  }
-  if (imageGenerationWorkflow.kind === "handled") {
-    return {
-      ...imageGenerationWorkflow.response,
-      actionCards: prepared.actionCards,
-      currentConversationId: state.currentConversationId,
-    };
-  }
-  const cancellationAfterImageWorkflow = await getPromptCancellationResponse(payload);
-  if (cancellationAfterImageWorkflow) {
-    return cancellationAfterImageWorkflow;
-  }
-  const browserActionWorkflow = await maybeHandleBrowserDomActionWorkflow(
-    payload,
-    prepared.agenticRoutePlan,
-    (phase, workflow) => emitPromptStatus(payload, phase, workflow),
-  );
-  if (browserActionWorkflow.kind === "blocked") {
-    return browserActionWorkflow.response;
-  }
-  if (browserActionWorkflow.kind === "handled") {
-    return {
-      ...browserActionWorkflow.response,
-      actionCards: prepared.actionCards,
-      currentConversationId: state.currentConversationId,
-    };
-  }
-  const cancellationAfterBrowserWorkflow = await getPromptCancellationResponse(payload);
-  if (cancellationAfterBrowserWorkflow) {
-    return cancellationAfterBrowserWorkflow;
-  }
   let result: { threadId: string; turnId: string };
   try {
     emitPromptStatus(payload, "waiting-for-codex");
     const structuredInputs = mergeStructuredInputsWithEnabledCodexSkills(
-      payload.structuredInputs ?? [],
+      prepared.structuredInputs,
       state.appServerSkills,
       settings.enabledCodexSkillIds,
       createCodexSkillRuntimeAvailability(settings),
+      state.connectedApps,
     );
     const cancellationBeforeSteer = await getPromptCancellationResponse(payload);
     if (cancellationBeforeSteer) {
@@ -1145,8 +1402,8 @@ async function handleTurnSteer(payload: PromptRequestPayload) {
       fileAttachments: prepared.fileAttachments,
       routePlan: prepared.routePlan,
       structuredInputs,
-      threadId: state.threadId,
-      expectedTurnId: state.activeTurn.turnId,
+      threadId: runtime.threadId,
+      expectedTurnId: runtime.activeTurn.turnId,
       ...(normalizeConfiguredPath(settings.workspaceRoot) ? { cwd: normalizeConfiguredPath(settings.workspaceRoot) } : {}),
       ...(prepared.selectedModel ? { model: prepared.selectedModel } : {}),
       ...(payload.reasoningEffort ? { reasoningEffort: payload.reasoningEffort } : {}),
@@ -1160,18 +1417,22 @@ async function handleTurnSteer(payload: PromptRequestPayload) {
     if (!isRecoverableTurnSteerError(error)) {
       throw error;
     }
-    state.activeTurn = null;
-    return handlePromptSend(payload);
+    conversationRuntime.setActiveTurn(conversationId, null);
+    syncCurrentRuntimeState(conversationId);
+    return {
+      error: toErrorMessage(error) || "No active turn to steer.",
+      currentConversationId: conversationId,
+    };
   }
-  state.threadId = result.threadId;
-  state.activeTurn = {
+  conversationRuntime.setActiveTurn(conversationId, {
     threadId: result.threadId,
     turnId: result.turnId,
-  };
+  });
+  syncCurrentRuntimeState(conversationId);
   return {
     ...result,
     actionCards: prepared.actionCards,
-    currentConversationId: state.currentConversationId,
+    currentConversationId: conversationId,
   };
 }
 
@@ -1199,7 +1460,10 @@ async function handleTurnInterrupt(threadId?: string, turnId?: string) {
     threadId,
     turnId,
   });
-  if (state.activeTurn?.turnId === turnId) {
+  const conversationId = conversationRuntime.completeTurn(threadId, turnId);
+  if (conversationId) {
+    syncCurrentRuntimeState(conversationId);
+  } else if (state.activeTurn?.turnId === turnId) {
     state.activeTurn = null;
   }
   return result;
@@ -1236,6 +1500,7 @@ async function buildPromptRequest(
   actionCards: ActionCard[];
   selectedModel: string;
   fileAttachments: UserFileAttachment[];
+  structuredInputs: CodexStructuredInput[];
   routePlan: PromptRoutingPlan;
   agenticRoutePlan: AgenticRoutePlan;
 } | {
@@ -1244,11 +1509,47 @@ async function buildPromptRequest(
     error: string;
     requiresConfirmation?: boolean;
     confirmationOperation?: HarnessPermissionOperation;
+    appConnection?: {
+      kind: "plugin";
+      id: string;
+    };
   };
 }> {
   const activeTab = await getActiveTab().catch(() => null);
   const routeInput = createAgenticRouteInput(payload, activeTab, settings);
   const agenticRoutePlan = await planAgenticRouteForPayload(payload, routeInput);
+  let structuredInputs = expandPluginStructuredInputsWithConnectedApps(
+    mergeExplicitAndRouteStructuredInputs(
+      payload.structuredInputs ?? [],
+      resolveRouteStructuredInputs(agenticRoutePlan, routeInput),
+    ),
+    state.connectedApps,
+  );
+  let blockedPluginInput = structuredInputs.find((input) =>
+    requiresPluginCompanionAppConnection(input, state.connectedApps),
+  );
+  if (blockedPluginInput) {
+    await triggerCatalogRefresh(undefined, { force: true }).catch((error) => {
+      console.warn("catalog refresh before plugin connection check failed", error);
+    });
+    structuredInputs = expandPluginStructuredInputsWithConnectedApps(structuredInputs, state.connectedApps);
+    blockedPluginInput = structuredInputs.find((input) =>
+      requiresPluginCompanionAppConnection(input, state.connectedApps),
+    );
+  }
+  if (blockedPluginInput) {
+    const strings = getUiStrings(resolveSettingsUiLocale(settings));
+    return {
+      ok: false,
+      response: {
+        error: strings.errors.appConnectionRequired(blockedPluginInput.name),
+        appConnection: {
+          kind: "plugin",
+          id: blockedPluginInput.id,
+        },
+      },
+    };
+  }
   const routePlan = routePlanToPromptRoutingPlan(agenticRoutePlan, routeInput);
   const currentPageSupport = getCurrentPageSupport(activeTab?.url);
   const requestedContextRequests = payload.suppressPageContext
@@ -1369,6 +1670,7 @@ async function buildPromptRequest(
     actionCards,
     selectedModel: routePlan.selectedModel,
     fileAttachments,
+    structuredInputs,
     routePlan: effectiveRoutePlan,
     agenticRoutePlan,
   };
@@ -1388,6 +1690,7 @@ async function planAgenticRouteForPayload(
       selectedProfileId: normalized.selectedProfileId,
       selectedModel: normalized.selectedModel,
       contextSources: normalized.contextRequests.map((request) => request.source),
+      structuredInputIds: normalized.structuredInputIds,
       historyQuery: normalized.historyQuery,
       imageEdit: normalized.imageEdit,
     });
@@ -1420,7 +1723,12 @@ function createAgenticRouteInput(
     fileAttachments: payload.fileAttachments ?? [],
     ...(payload.selectedTabIds?.length ? { selectedTabIds: payload.selectedTabIds } : {}),
     ...(payload.historyQuery ? { historyQuery: payload.historyQuery } : {}),
-    locale: chrome.i18n?.getUILanguage?.() ?? "",
+    locale: resolveSettingsUiLocale(settings),
+    availableStructuredInputs: createAvailableRouteStructuredInputs({
+      apps: state.connectedApps,
+      plugins: state.appServerPlugins,
+      mcpServers: state.mcpServers,
+    }),
     browserAutomationCapabilities: {
       dom: true,
       playwright: state.playwrightRuntime.available && settings.playwrightBrowserControlEnabled,
@@ -1468,14 +1776,14 @@ async function maybeHandleAgenticImageWorkflow(
         workflow: "image-edit";
         assistantText: string;
         previewRef: string;
-        appliedToPage: boolean;
       };
     }
 > {
-  if (agenticRoutePlan.task !== "image-edit" || !agenticRoutePlan.imageEdit.shouldEdit) {
+  if (!shouldHandleAgenticImageEditWorkflow(agenticRoutePlan)) {
     void recordDiagnostic("extension.image.workflow.skip", {
-      reason: "route-not-image-edit",
+      reason: "route-not-actionable-image-edit",
       task: agenticRoutePlan.task,
+      intent: agenticRoutePlan.intent,
       imageEdit: agenticRoutePlan.imageEdit,
     });
     return { kind: "skip" };
@@ -1529,7 +1837,7 @@ async function maybeHandleAgenticImageWorkflow(
     },
     {
       timeoutMs: IMAGE_EDIT_TIMEOUT_MS,
-      timeoutMessage: buildImageEditTimeoutMessage(),
+      timeoutMessage: await buildLocalizedImageEditTimeoutMessage(),
     },
   );
   void recordDiagnostic("extension.image.workflow.bridge.completed", {
@@ -1539,26 +1847,12 @@ async function maybeHandleAgenticImageWorkflow(
   });
   emitStatus("rendering-image-preview", "image-edit");
 
-  let appliedToPage = false;
-  if (workflowPlan.target === "page-image") {
-    const overlayGate = await ensureOperationAllowed(
-      "page.image.overlay",
-      payload.confirmedOperations?.includes("page.image.overlay") ?? false,
-    );
-    if (overlayGate.ok) {
-      emitStatus("applying-image-preview", "image-edit");
-      await sendMessageToActiveTab({ type: "page.apply-image-overlay", previewRef: result.previewRef });
-      appliedToPage = true;
-    }
-  }
-
   return {
     kind: "handled",
     response: {
       workflow: "image-edit",
       previewRef: result.previewRef,
-      appliedToPage,
-      assistantText: buildImageWorkflowAssistantText(workflowPlan.target, image.filename, appliedToPage),
+      assistantText: buildImageWorkflowAssistantText(await getActiveUiLocale(), workflowPlan.target, image.filename),
     },
   };
 }
@@ -1588,7 +1882,7 @@ async function maybeHandleAgenticImageGenerationWorkflow(
       };
     }
 > {
-  if (agenticRoutePlan.task !== "image-generate" || agenticRoutePlan.intent.action !== "generate-image") {
+  if (!shouldHandleAgenticImageGenerationWorkflow(agenticRoutePlan)) {
     return { kind: "skip" };
   }
 
@@ -1615,13 +1909,13 @@ async function maybeHandleAgenticImageGenerationWorkflow(
       fileAttachments,
       conversationContext: payload.contextHint ?? "",
       clientRequestId: payload.clientRequestId,
+      conversationId: payload.conversationId,
       workflow: "generated-image",
       model: "gpt-image-2",
-      quality: "high",
     },
     {
       timeoutMs: IMAGE_EDIT_TIMEOUT_MS,
-      timeoutMessage: buildImageEditTimeoutMessage(),
+      timeoutMessage: await buildLocalizedImageEditTimeoutMessage(),
     },
   );
   emitStatus("rendering-image-preview", "generated-image");
@@ -1680,25 +1974,79 @@ async function resolveWorkflowReferenceImages(
   return references;
 }
 
-function buildImageWorkflowAssistantText(target: "page-image" | "uploaded-image", filename: string | undefined, appliedToPage: boolean): string {
+function buildImageWorkflowAssistantText(locale: string, target: "page-image" | "uploaded-image", filename: string | undefined): string {
+  const strings = getUiStrings(locale);
   if (target === "page-image") {
-    return appliedToPage
-      ? "현재 페이지 이미지를 요청에 맞게 편집했고, 미리보기를 바로 페이지 위에 적용했습니다."
-      : "현재 페이지 이미지를 요청에 맞게 편집했습니다. 브라우저 동작 권한이 꺼져 있어 페이지에는 자동 적용하지 않았습니다.";
+    return strings.images.editPreview;
   }
 
-  return `"${filename ?? "첨부 이미지"}"를 요청에 맞게 편집했습니다. 현재 페이지는 참고 맥락으로만 사용했습니다.`;
+  return filename ? `${strings.images.editPreview} (${filename})` : strings.images.editPreview;
+}
+
+async function buildLocalizedImageEditTimeoutMessage(): Promise<string> {
+  return buildImageEditTimeoutMessage(getUiStrings(await getActiveUiLocale()).errors.imageEditTimeout);
+}
+
+async function requestPromptSendWithAssistantCapture(
+  params: Record<string, unknown>,
+): Promise<{ result: PromptTurnResult; assistantText: string }> {
+  const completedMessages: CompletedAssistantMessageEvent[] = [];
+  const unsubscribe = bridge.subscribe((event) => {
+    if (isCompletedAssistantMessageEvent(event)) {
+      completedMessages.push(event);
+    }
+  });
+
+  try {
+    const result = await bridge.request<PromptTurnResult>("prompt.send", params);
+    return {
+      result,
+      assistantText: collectCompletedAssistantText(completedMessages, result),
+    };
+  } finally {
+    unsubscribe();
+  }
+}
+
+function isCompletedAssistantMessageEvent(event: unknown): event is CompletedAssistantMessageEvent {
+  return typeof event === "object" && event !== null && (event as { type?: unknown }).type === "message.completed";
+}
+
+function collectCompletedAssistantText(
+  events: CompletedAssistantMessageEvent[],
+  result: PromptTurnResult,
+): string {
+  return events
+    .filter((event) => event.threadId === result.threadId && event.turnId === result.turnId)
+    .map((event) => event.text?.trim() ?? "")
+    .filter(Boolean)
+    .join("\n\n")
+    .trim();
+}
+
+async function maybeEnsureDeferredBrowserDomActionAllowed(
+  payload: PromptRequestPayload,
+  agenticRoutePlan: AgenticRoutePlan,
+): Promise<{ kind: "not-handled" | "allowed" } | { kind: "blocked"; response: HarnessPermissionBlockedResponse }> {
+  if (!shouldResumeDeferredBrowserDomAction(agenticRoutePlan)) {
+    return { kind: "not-handled" };
+  }
+
+  const gate = await ensureOperationAllowed(
+    "page.dom.perform",
+    payload.confirmedOperations?.includes("page.dom.perform") ?? false,
+  );
+  if (!gate.ok) {
+    return { kind: "blocked", response: gate.response };
+  }
+  return { kind: "allowed" };
 }
 
 async function maybeHandleBrowserDomActionWorkflow(
   payload: PromptRequestPayload,
   agenticRoutePlan: AgenticRoutePlan,
   emitStatus: PromptStatusEmitter,
-): Promise<
-  | { kind: "not-handled" }
-  | { kind: "blocked"; response: { error: string; requiresConfirmation?: boolean; confirmationOperation?: HarnessPermissionOperation } }
-  | { kind: "handled"; response: { workflow: "browser-action"; assistantText: string; actionResult?: BrowserDomActionResult } }
-> {
+): Promise<BrowserDomActionWorkflowResult> {
   if (!shouldHandleBrowserDomAction(agenticRoutePlan)) {
     return { kind: "not-handled" };
   }
@@ -1713,6 +2061,8 @@ async function maybeHandleBrowserDomActionWorkflow(
 
   const controlTab = await getActiveTab();
   assertPageReadable(controlTab.url);
+  const locale = await getActiveUiLocale();
+  const strings = getUiStrings(locale);
   await startTabAiControlIndicator(controlTab, "dom", "Codex is controlling this page");
   try {
     if (consumePromptClientRequestCancellation(payload.clientRequestId)) {
@@ -1720,7 +2070,7 @@ async function maybeHandleBrowserDomActionWorkflow(
         kind: "handled",
         response: {
           workflow: "browser-action",
-          assistantText: "현재 페이지 조작을 중지했습니다.",
+          assistantText: strings.status.browserActionStopped,
         },
       };
     }
@@ -1731,7 +2081,7 @@ async function maybeHandleBrowserDomActionWorkflow(
         kind: "handled",
         response: {
           workflow: "browser-action",
-          assistantText: "현재 페이지 조작을 중지했습니다.",
+          assistantText: strings.status.browserActionStopped,
         },
       };
     }
@@ -1740,7 +2090,7 @@ async function maybeHandleBrowserDomActionWorkflow(
         kind: "handled",
         response: {
           workflow: "browser-action",
-          assistantText: "현재 페이지에서 조작 가능한 DOM 요소를 찾지 못했습니다.",
+          assistantText: strings.status.browserActionNoElements,
         },
       };
     }
@@ -1749,14 +2099,14 @@ async function maybeHandleBrowserDomActionWorkflow(
     const plan = await bridge.request<BrowserDomActionPlan>("browser.action.plan", {
       message: payload.message,
       snapshot,
-      locale: chrome.i18n?.getUILanguage?.() ?? "",
+      locale,
     });
     if (consumePromptClientRequestCancellation(payload.clientRequestId)) {
       return {
         kind: "handled",
         response: {
           workflow: "browser-action",
-          assistantText: "현재 페이지 조작을 중지했습니다.",
+          assistantText: strings.status.browserActionStopped,
         },
       };
     }
@@ -1766,7 +2116,7 @@ async function maybeHandleBrowserDomActionWorkflow(
         kind: "handled",
         response: {
           workflow: "browser-action",
-          assistantText: plan.summary || "이 요청은 안전하게 자동 조작할 수 없어서 실행하지 않았습니다.",
+          assistantText: plan.summary || strings.status.browserActionSkipped,
         },
       };
     }
@@ -1780,7 +2130,113 @@ async function maybeHandleBrowserDomActionWorkflow(
       kind: "handled",
       response: {
         workflow: "browser-action",
-        assistantText: buildBrowserDomActionAssistantText(plan, actionResult),
+        assistantText: buildBrowserDomActionAssistantText(locale, plan, actionResult),
+        actionResult,
+      },
+    };
+  } finally {
+    await stopTabAiControlIndicator(controlTab, 0);
+  }
+}
+
+async function maybeHandleDeferredBrowserDomActionWorkflow(
+  payload: PromptRequestPayload,
+  agenticRoutePlan: AgenticRoutePlan,
+  assistantText: string,
+  emitStatus: PromptStatusEmitter,
+): Promise<BrowserDomActionWorkflowResult> {
+  if (!shouldResumeDeferredBrowserDomAction(agenticRoutePlan)) {
+    return { kind: "not-handled" };
+  }
+
+  const locale = await getActiveUiLocale();
+  const strings = getUiStrings(locale);
+  const generatedText = extractDeferredBrowserActionText(assistantText);
+  if (!generatedText) {
+    return {
+      kind: "handled",
+      response: {
+        workflow: "browser-action",
+        assistantText: strings.status.browserActionSkipped,
+      },
+    };
+  }
+
+  const controlTab = await getActiveTab();
+  assertPageReadable(controlTab.url);
+  await startTabAiControlIndicator(controlTab, "dom", "Codex is controlling this page");
+  try {
+    if (consumePromptClientRequestCancellation(payload.clientRequestId)) {
+      return {
+        kind: "handled",
+        response: {
+          workflow: "browser-action",
+          assistantText: strings.status.browserActionStopped,
+        },
+      };
+    }
+
+    emitStatus("collecting-context");
+    const snapshot = (await sendMessageToTab(controlTab, { type: "page.dom.snapshot" })) as BrowserDomSnapshot;
+    if (consumePromptClientRequestCancellation(payload.clientRequestId)) {
+      return {
+        kind: "handled",
+        response: {
+          workflow: "browser-action",
+          assistantText: strings.status.browserActionStopped,
+        },
+      };
+    }
+    if (!snapshot.elements.length) {
+      return {
+        kind: "handled",
+        response: {
+          workflow: "browser-action",
+          assistantText: strings.status.browserActionNoElements,
+        },
+      };
+    }
+
+    emitStatus("waiting-for-codex");
+    const plan = await bridge.request<BrowserDomActionPlan>("browser.action.plan", {
+      message: buildDeferredBrowserActionMessage({
+        originalMessage: payload.message,
+        generatedText,
+      }),
+      generatedText,
+      snapshot,
+      locale,
+    });
+    if (consumePromptClientRequestCancellation(payload.clientRequestId)) {
+      return {
+        kind: "handled",
+        response: {
+          workflow: "browser-action",
+          assistantText: strings.status.browserActionStopped,
+        },
+      };
+    }
+
+    if (!plan.shouldAct || plan.steps.length === 0) {
+      return {
+        kind: "handled",
+        response: {
+          workflow: "browser-action",
+          assistantText: plan.summary || strings.status.browserActionSkipped,
+        },
+      };
+    }
+
+    const actionResult = (await sendMessageToTab(controlTab, {
+      type: "page.dom.perform",
+      steps: plan.steps,
+    })) as BrowserDomActionResult;
+
+    return {
+      kind: "handled",
+      response: {
+        workflow: "browser-action",
+        assistantText: buildBrowserDomActionAssistantText(locale, plan, actionResult),
         actionResult,
       },
     };
@@ -1793,23 +2249,30 @@ function shouldHandleBrowserDomAction(agenticRoutePlan: AgenticRoutePlan): boole
   if (agenticRoutePlan.intent.needsClarification || !agenticRoutePlan.browserControl.shouldControl) {
     return false;
   }
+  if (agenticRoutePlan.browserControl.preconditions?.length) {
+    return false;
+  }
   if (agenticRoutePlan.browserControl.mode !== "dom") {
+    return false;
+  }
+  if (agenticRoutePlan.browserControl.surface !== "active-tab") {
     return false;
   }
   return agenticRoutePlan.intent.action === "navigate" && agenticRoutePlan.intent.target === "current-page";
 }
 
-function buildBrowserDomActionAssistantText(plan: BrowserDomActionPlan, result: BrowserDomActionResult): string {
+function buildBrowserDomActionAssistantText(locale: string, plan: BrowserDomActionPlan, result: BrowserDomActionResult): string {
+  const strings = getUiStrings(locale);
   if (result.cancelled) {
-    return "현재 페이지 조작을 중지했습니다.";
+    return strings.status.browserActionStopped;
   }
   if (result.ok) {
-    return plan.summary || "현재 페이지에서 요청한 작업을 완료했습니다.";
+    return plan.summary || strings.status.browserActionCompleted;
   }
   const failed = result.results.find((item) => !item.ok);
   return failed?.message
-    ? `현재 페이지 조작을 완료하지 못했습니다. ${failed.message}`
-    : "현재 페이지 조작을 완료하지 못했습니다.";
+    ? strings.status.browserActionFailedWithReason(failed.message)
+    : strings.status.browserActionFailed;
 }
 
 async function handleImageEdit(prompt: string, confirmed: boolean) {
@@ -1826,7 +2289,7 @@ async function handleImageEdit(prompt: string, confirmed: boolean) {
     },
     {
       timeoutMs: IMAGE_EDIT_TIMEOUT_MS,
-      timeoutMessage: buildImageEditTimeoutMessage(),
+      timeoutMessage: await buildLocalizedImageEditTimeoutMessage(),
     },
   );
 }
@@ -1835,6 +2298,7 @@ async function handleInfographicGenerate(
   confirmed: boolean,
   conversationContextInput?: unknown,
   clientRequestIdInput?: unknown,
+  conversationIdInput?: unknown,
 ) {
   const gate = await ensureOperationAllowed("image.edit", confirmed);
   if (!gate.ok) {
@@ -1845,7 +2309,7 @@ async function handleInfographicGenerate(
   const activeTab = await getActiveTab().catch(() => null);
   const fileAttachments = await collectAutomaticDocumentAttachments(activeTab, ["current-page"], []);
   const prompt = buildInfographicPrompt({
-    locale: (chrome.i18n?.getUILanguage?.() ?? "").toLowerCase().startsWith("ko") ? "ko" : "en",
+    locale: await getActiveUiLocale(),
     pageTitle: context.envelope.metadata.title,
     pageUrl: context.envelope.metadata.url,
     adapterPayload: context.envelope.adapterPayload,
@@ -1859,20 +2323,20 @@ async function handleInfographicGenerate(
       fileAttachments,
       conversationContext: normalizeInfographicConversationContext(conversationContextInput),
       clientRequestId: normalizeOptionalClientRequestId(clientRequestIdInput),
+      conversationId: normalizeOptionalConversationId(conversationIdInput),
       workflow: "infographic",
       model: "gpt-image-2",
-      quality: "high",
-      size: "1024x1536",
     },
     {
       timeoutMs: IMAGE_EDIT_TIMEOUT_MS,
-      timeoutMessage: buildImageEditTimeoutMessage(),
+      timeoutMessage: await buildLocalizedImageEditTimeoutMessage(),
     },
   );
 
   return {
     workflow: "infographic",
     ...result,
+    currentConversationId: normalizeOptionalConversationId(conversationIdInput),
     previewRefs: normalizeImageGeneratePreviewRefs(result.previewRefs, result.previewRef),
     actionCards: context.actionCards,
   };
@@ -1883,6 +2347,7 @@ async function handleSlideDeckImageGenerate(
   confirmed: boolean,
   conversationContextInput?: unknown,
   clientRequestIdInput?: unknown,
+  conversationIdInput?: unknown,
 ) {
   const gate = await ensureOperationAllowed("image.edit", confirmed);
   if (!gate.ok) {
@@ -1893,7 +2358,7 @@ async function handleSlideDeckImageGenerate(
   const activeTab = await getActiveTab().catch(() => null);
   const fileAttachments = await collectAutomaticDocumentAttachments(activeTab, ["current-page"], []);
   const prompt = buildSlideDeckImagePrompt({
-    locale: (chrome.i18n?.getUILanguage?.() ?? "").toLowerCase().startsWith("ko") ? "ko" : "en",
+    locale: await getActiveUiLocale(),
     pageTitle: context.envelope.metadata.title,
     pageUrl: context.envelope.metadata.url,
     userPrompt,
@@ -1907,20 +2372,20 @@ async function handleSlideDeckImageGenerate(
       fileAttachments,
       conversationContext: normalizeInfographicConversationContext(conversationContextInput),
       clientRequestId: normalizeOptionalClientRequestId(clientRequestIdInput),
+      conversationId: normalizeOptionalConversationId(conversationIdInput),
       workflow: "slide-images",
       model: "gpt-image-2",
-      quality: "high",
-      size: "1536x1024",
     },
     {
       timeoutMs: IMAGE_EDIT_TIMEOUT_MS,
-      timeoutMessage: buildImageEditTimeoutMessage(),
+      timeoutMessage: await buildLocalizedImageEditTimeoutMessage(),
     },
   );
 
   return {
     workflow: "slide-images",
     ...result,
+    currentConversationId: normalizeOptionalConversationId(conversationIdInput),
     previewRefs: normalizeImageGeneratePreviewRefs(result.previewRefs, result.previewRef),
     actionCards: context.actionCards,
   };
@@ -2002,13 +2467,13 @@ async function collectVisibleScreenOnlyInfographicContext(
 ) {
   const activeTab = await getActiveTab();
   assertPageReadable(activeTab.url);
-  const locale = chrome.i18n?.getUILanguage?.() ?? "";
+  const locale = await getActiveUiLocale();
   const screenshotRef = await captureVisibleTab(activeTab);
   const fallbackContext =
     baseContext ??
     createPaperPdfFallbackContext(activeTab, locale) ??
     createGenericSiteFallbackContext(activeTab, locale) ??
-    createMinimalVisibleScreenContext(activeTab);
+    createMinimalVisibleScreenContext(activeTab, locale);
   const adapterPayload = fallbackContext.envelope.adapterPayload;
 
   return {
@@ -2038,7 +2503,10 @@ async function collectVisibleScreenOnlyInfographicContext(
   };
 }
 
-function createMinimalVisibleScreenContext(activeTab: chrome.tabs.Tab & { url: string }): Awaited<ReturnType<typeof collectCurrentPageContext>> {
+function createMinimalVisibleScreenContext(
+  activeTab: chrome.tabs.Tab & { url: string },
+  locale = "",
+): Awaited<ReturnType<typeof collectCurrentPageContext>> {
   return {
     envelope: {
       metadata: {
@@ -2061,7 +2529,7 @@ function createMinimalVisibleScreenContext(activeTab: chrome.tabs.Tab & { url: s
       adapterActions: [],
       availableSources: ["current-page"],
       adapterPayload: null,
-      locale: chrome.i18n?.getUILanguage?.() ?? "",
+      locale,
     }),
   };
 }
@@ -2079,6 +2547,14 @@ function normalizeInfographicConversationContext(value: unknown): string {
 }
 
 function normalizeOptionalClientRequestId(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed ? trimmed.slice(0, 160) : undefined;
+}
+
+function normalizeOptionalConversationId(value: unknown): string | undefined {
   if (typeof value !== "string") {
     return undefined;
   }
@@ -2132,12 +2608,13 @@ async function handleYouTubeCurrentMomentPrompt() {
   })) as Record<string, unknown> | null;
   return createYouTubeCurrentMomentPromptResult({
     adapterPayload: playbackState,
-    locale: chrome.i18n?.getUILanguage?.() ?? "",
+    locale: await getActiveUiLocale(),
   });
 }
 
 async function collectCurrentPageContext(readOverride: ReadStrategy | "auto") {
   const activeTab = await getActiveTab();
+  const locale = await getActiveUiLocale();
 
   assertPageReadable(activeTab.url);
   let probe: ContentProbeResult;
@@ -2147,8 +2624,8 @@ async function collectCurrentPageContext(readOverride: ReadStrategy | "auto") {
     })) as ContentProbeResult;
   } catch (error) {
     const fallback =
-      createPaperPdfFallbackContext(activeTab, chrome.i18n?.getUILanguage?.() ?? "") ??
-      createGenericSiteFallbackContext(activeTab, chrome.i18n?.getUILanguage?.() ?? "");
+      createPaperPdfFallbackContext(activeTab, locale) ??
+      createGenericSiteFallbackContext(activeTab, locale);
     if (!fallback) {
       throw error;
     }
@@ -2191,7 +2668,7 @@ async function collectCurrentPageContext(readOverride: ReadStrategy | "auto") {
     adapterActions: probe.adapterActions,
     availableSources: ["current-page", ...(probe.rawCapture.images.length ? ["image" as const] : [])],
     adapterPayload: probe.rawCapture.adapterPayload,
-    locale: chrome.i18n?.getUILanguage?.() ?? "",
+    locale,
   });
 
   return { envelope, readStrategy, actionCards };
@@ -2225,6 +2702,9 @@ async function collectAutomaticDocumentAttachments(
 }
 
 async function ensureContentScript(tabId: number, url?: string): Promise<void> {
+  if (await hasActiveContentScript(tabId)) {
+    return;
+  }
   try {
     await chrome.scripting.executeScript({
       target: { tabId },
@@ -2243,6 +2723,15 @@ async function ensureContentScript(tabId: number, url?: string): Promise<void> {
       }
     }
     throw toFriendlyPageAccessError(url, error);
+  }
+}
+
+async function hasActiveContentScript(tabId: number): Promise<boolean> {
+  try {
+    const response = await chrome.tabs.sendMessage(tabId, { type: "page.ping" });
+    return typeof response === "object" && response !== null && (response as { ok?: unknown }).ok === true;
+  } catch {
+    return false;
   }
 }
 
@@ -2277,15 +2766,347 @@ async function broadcastActiveTabSnapshot(): Promise<void> {
   if (!activeTab) {
     return;
   }
+  void installImagePromptHoverForTab(activeTab).catch(() => undefined);
   const currentTab = tabToOpenTabContext(activeTab);
   await chrome.runtime
     .sendMessage({
       type: "ui.active-tab.updated",
       currentPageSupport: getCurrentPageSupport(activeTab.url),
       currentTab,
-      actionCards: inferActionCardsForOpenTab(currentTab, chrome.i18n?.getUILanguage?.() ?? ""),
+      actionCards: inferActionCardsForOpenTab(currentTab, await getActiveUiLocale()),
     })
     .catch(() => undefined);
+}
+
+async function installImagePromptHoverForTab(
+  tab: chrome.tabs.Tab | undefined | null,
+): Promise<{ ok: true; installed: boolean }> {
+  if (!tab?.id || !tab.url || !getCurrentPageSupport(tab.url).available) {
+    return { ok: true, installed: false };
+  }
+  await sendMessageToTab(tab as chrome.tabs.Tab & { id: number; url: string }, {
+    type: "page.image-prompt-hover.install",
+  });
+  return { ok: true, installed: true };
+}
+
+function normalizePendingImagePromptExtraction(message: Record<string, unknown>): PendingImagePromptExtraction | null {
+  const imageUrl = typeof message.imageUrl === "string" ? message.imageUrl.trim() : "";
+  const imageCandidate = normalizePromptImageCandidate(message.imageCandidate, imageUrl);
+  const attachment = normalizePromptImageAttachment(message.attachment);
+  if (!isSupportedImagePromptSource(imageUrl) || !(attachment || imageCandidate || isFetchableImagePromptSource(imageUrl))) {
+    return null;
+  }
+  return {
+    imageUrl,
+    createdAt: Date.now(),
+    ...(imageCandidate ? { imageCandidate } : {}),
+    ...(attachment ? { attachment } : {}),
+    ...(typeof message.alt === "string" && message.alt.trim() ? { alt: message.alt.trim().slice(0, 240) } : {}),
+    ...(typeof message.pageTitle === "string" && message.pageTitle.trim()
+      ? { pageTitle: message.pageTitle.trim().slice(0, 240) }
+      : {}),
+    ...(typeof message.pageUrl === "string" && message.pageUrl.trim() ? { pageUrl: message.pageUrl.trim() } : {}),
+  };
+}
+
+function normalizePromptImageCandidate(value: unknown, fallbackUrl: string): EditablePageImageCandidate | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const input = value as Record<string, unknown>;
+  const sourceUrl = typeof input.url === "string" && isHttpUrl(input.url.trim()) ? input.url.trim() : fallbackUrl;
+  const viewportRect = normalizePromptImageViewportRect(input.viewportRect);
+  const viewportWidth = normalizePositiveNumber(input.viewportWidth);
+  const viewportHeight = normalizePositiveNumber(input.viewportHeight);
+  if (!viewportRect || !viewportWidth || !viewportHeight) {
+    return null;
+  }
+
+  const candidate: EditablePageImageCandidate = {
+    url: sourceUrl,
+    viewportRect,
+    viewportWidth,
+    viewportHeight,
+  };
+  assignPositiveImageCandidateNumber(candidate, "width", input.width);
+  assignPositiveImageCandidateNumber(candidate, "height", input.height);
+  assignPositiveImageCandidateNumber(candidate, "naturalWidth", input.naturalWidth);
+  assignPositiveImageCandidateNumber(candidate, "naturalHeight", input.naturalHeight);
+  assignPositiveImageCandidateNumber(candidate, "renderedWidth", input.renderedWidth);
+  assignPositiveImageCandidateNumber(candidate, "renderedHeight", input.renderedHeight);
+  assignPositiveImageCandidateNumber(candidate, "visibleArea", input.visibleArea);
+  assignPositiveImageCandidateNumber(candidate, "devicePixelRatio", input.devicePixelRatio);
+  const distanceFromViewportCenter = normalizeFiniteNumber(input.distanceFromViewportCenter);
+  if (distanceFromViewportCenter !== null) {
+    candidate.distanceFromViewportCenter = distanceFromViewportCenter;
+  }
+  return candidate;
+}
+
+function assignPositiveImageCandidateNumber(
+  candidate: EditablePageImageCandidate,
+  key: keyof Pick<
+    EditablePageImageCandidate,
+    "width" | "height" | "naturalWidth" | "naturalHeight" | "renderedWidth" | "renderedHeight" | "visibleArea" | "devicePixelRatio"
+  >,
+  value: unknown,
+): void {
+  const number = normalizePositiveNumber(value);
+  if (number !== null) {
+    candidate[key] = number;
+  }
+}
+
+function normalizePromptImageViewportRect(value: unknown): EditablePageImageCandidate["viewportRect"] | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const input = value as Record<string, unknown>;
+  const left = normalizeFiniteNumber(input.left);
+  const top = normalizeFiniteNumber(input.top);
+  const width = normalizePositiveNumber(input.width);
+  const height = normalizePositiveNumber(input.height);
+  if (left === null || top === null || !width || !height) {
+    return null;
+  }
+  return { left, top, width, height };
+}
+
+function normalizePromptImageAttachment(value: unknown): UserFileAttachment | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const input = value as Record<string, unknown>;
+  const id = typeof input.id === "string" ? input.id.trim().slice(0, 160) : "";
+  const name = typeof input.name === "string" ? input.name.trim().slice(0, 180) : "";
+  const mimeType = typeof input.mimeType === "string" ? input.mimeType.trim().slice(0, 120) : "image/png";
+  const base64 = typeof input.base64 === "string" ? input.base64.trim() : "";
+  if (!id || !name || !base64 || input.kind !== "image") {
+    return null;
+  }
+  return {
+    id,
+    name,
+    mimeType: mimeType.startsWith("image/") ? mimeType : "image/png",
+    sizeBytes: Math.max(0, Number(input.sizeBytes) || estimateBase64ByteLength(base64)),
+    lastModified: Math.max(0, Number(input.lastModified) || Date.now()),
+    base64,
+    kind: "image",
+    ...(typeof input.sourceUrl === "string" && isHttpUrl(input.sourceUrl.trim()) ? { sourceUrl: input.sourceUrl.trim() } : {}),
+  };
+}
+
+function normalizePositiveNumber(value: unknown): number | null {
+  const number = normalizeFiniteNumber(value);
+  return number !== null && number > 0 ? number : null;
+}
+
+function normalizeFiniteNumber(value: unknown): number | null {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function isSupportedImagePromptSource(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  return isHttpUrl(value) || normalized.startsWith("blob:") || normalized.startsWith("data:image/");
+}
+
+function isFetchableImagePromptSource(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  return isHttpUrl(value) || normalized.startsWith("data:image/");
+}
+
+async function handlePageImagePromptExtraction(
+  message: Record<string, unknown>,
+  tab: chrome.tabs.Tab | undefined,
+): Promise<{ ok: true } | { error: string }> {
+  const extraction = normalizePendingImagePromptExtraction(message);
+  if (!extraction) {
+    return { error: "No online image URL was provided." };
+  }
+
+  let sidePanelOpenPromise: Promise<void> | null = null;
+  if (tab?.windowId) {
+    state.browserWindowId = tab.windowId;
+    sidePanelOpenPromise = chrome.sidePanel.open({ windowId: tab.windowId }).catch(() => undefined);
+  }
+  const attachmentPromise = createOnlineImagePromptAttachment(extraction, tab);
+  const attachment = await attachmentPromise;
+  if (!attachment && !isHttpUrl(extraction.imageUrl)) {
+    const error = buildOnlineImagePromptAttachmentError(extraction);
+    await chrome.storage.session.set({ pendingImagePromptError: error });
+    await sidePanelOpenPromise;
+    await chrome.runtime
+      .sendMessage({
+        type: "ui.image-prompt.error",
+        error,
+      })
+      .catch(() => undefined);
+    return { error: "Chromex could not read this page image for prompt extraction." };
+  }
+  const pendingExtraction = attachment ? { ...extraction, attachment } : extraction;
+  await chrome.storage.session.set({ pendingImagePromptExtraction: pendingExtraction });
+  await sidePanelOpenPromise;
+  await chrome.runtime
+    .sendMessage({
+      type: "ui.image-prompt.extract",
+      extraction: pendingExtraction,
+    })
+    .catch(() => undefined);
+  return { ok: true };
+}
+
+function buildOnlineImagePromptAttachmentError(
+  extraction: PendingImagePromptExtraction,
+): { code: "attachment-unavailable"; imageUrl: string } {
+  return {
+    code: "attachment-unavailable",
+    imageUrl: extraction.imageUrl,
+  };
+}
+
+async function createOnlineImagePromptAttachment(
+  extraction: PendingImagePromptExtraction,
+  tab: chrome.tabs.Tab | undefined,
+): Promise<UserFileAttachment | null> {
+  if (extraction.attachment) {
+    return extraction.attachment;
+  }
+
+  const visibleCapture = capturePromptVisibleImage(tab, extraction.imageCandidate);
+  const visibleInput = visibleCapture && extraction.imageCandidate
+    ? await visibleCapture
+        .then((dataUrl) => (dataUrl ? cropVisibleTabDataUrlToImageCandidate(dataUrl, extraction.imageCandidate!) : null))
+        .catch((error) => {
+          void recordDiagnostic("extension.image_prompt.visible_capture.failed", {
+            error: toErrorMessage(error),
+          });
+          return null;
+        })
+    : null;
+  const input = visibleInput ?? (isFetchableImagePromptSource(extraction.imageUrl)
+    ? await fetchImageUrlAsEditableInput(extraction.imageUrl, filenameFromImageUrl(extraction.imageUrl))
+        .catch((error) => {
+          void recordDiagnostic("extension.image_prompt.remote_fetch.failed", {
+            url: extraction.imageUrl,
+            error: toErrorMessage(error),
+          });
+          return null;
+        })
+    : null);
+
+  if (!input?.base64) {
+    return null;
+  }
+
+  return {
+    id: `online-image-prompt-${Date.now()}`,
+    name: input.filename ?? filenameFromImageUrl(extraction.imageUrl),
+    mimeType: input.mimeType || "image/png",
+    sizeBytes: estimateBase64ByteLength(input.base64),
+    lastModified: Date.now(),
+    base64: input.base64,
+    kind: "image",
+    ...(isHttpUrl(extraction.imageUrl) ? { sourceUrl: extraction.imageUrl } : {}),
+  };
+}
+
+function capturePromptVisibleImage(
+  tab: chrome.tabs.Tab | undefined,
+  candidate: EditablePageImageCandidate | undefined,
+): Promise<string | null> | null {
+  if (!tab?.windowId || !candidate?.viewportRect || !candidate.viewportWidth || !candidate.viewportHeight) {
+    return null;
+  }
+  return chrome.tabs.captureVisibleTab(tab.windowId).catch(async (error) => {
+    if (!isCaptureVisibleTabQuotaError(error)) {
+      throw error;
+    }
+    await sleepMs(DEFAULT_VISIBLE_TAB_CAPTURE_MIN_INTERVAL_MS);
+    return chrome.tabs.captureVisibleTab(tab.windowId);
+  });
+}
+
+async function takePendingImagePromptExtraction(): Promise<{ extraction?: PendingImagePromptExtraction }> {
+  const stored = await chrome.storage.session.get("pendingImagePromptExtraction");
+  await chrome.storage.session.remove("pendingImagePromptExtraction");
+  const value = stored.pendingImagePromptExtraction;
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+  const extraction = normalizePendingImagePromptExtraction(value as Record<string, unknown>);
+  return extraction ? { extraction } : {};
+}
+
+async function takePendingImagePromptError(): Promise<{ error?: { code: "attachment-unavailable"; imageUrl: string } }> {
+  const stored = await chrome.storage.session.get("pendingImagePromptError");
+  await chrome.storage.session.remove("pendingImagePromptError");
+  const error = normalizePendingImagePromptError(stored.pendingImagePromptError);
+  return error ? { error } : {};
+}
+
+function normalizePendingImagePromptError(
+  value: unknown,
+): { code: "attachment-unavailable"; imageUrl: string } | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const input = value as Record<string, unknown>;
+  if (input.code !== "attachment-unavailable") {
+    return null;
+  }
+  const imageUrl = typeof input.imageUrl === "string" ? input.imageUrl.trim() : "";
+  if (!imageUrl) {
+    return null;
+  }
+  return {
+    code: "attachment-unavailable",
+    imageUrl,
+  };
+}
+
+async function takePendingImageAttachment(): Promise<{ attachment?: PendingImageAttachment }> {
+  const stored = await chrome.storage.session.get("pendingImageAttachment");
+  await chrome.storage.session.remove("pendingImageAttachment");
+  const attachment = normalizePendingImageAttachment(stored.pendingImageAttachment);
+  return attachment ? { attachment } : {};
+}
+
+async function takePendingContextMenuAction(): Promise<{ action?: PendingContextMenuAction }> {
+  const stored = await chrome.storage.session.get("pendingAction");
+  await chrome.storage.session.remove("pendingAction");
+  const action = normalizePendingContextMenuAction(stored.pendingAction);
+  return action ? { action } : {};
+}
+
+function normalizePendingContextMenuAction(value: unknown): PendingContextMenuAction | null {
+  return value === "summarize-page" || value === "summarize-video" ? value : null;
+}
+
+function normalizePendingImageAttachment(value: unknown): PendingImageAttachment | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const input = value as Record<string, unknown>;
+  const imageUrl = typeof input.imageUrl === "string" ? input.imageUrl.trim() : "";
+  if (!isFetchableImagePromptSource(imageUrl)) {
+    return null;
+  }
+  return {
+    imageUrl,
+    createdAt: Math.max(0, Number(input.createdAt) || Date.now()),
+    ...(typeof input.pageUrl === "string" && input.pageUrl.trim() ? { pageUrl: input.pageUrl.trim() } : {}),
+  };
 }
 
 async function sendMessageToActiveTab(message: Record<string, unknown>) {
@@ -2430,24 +3251,7 @@ async function getEditableImageInput() {
   void recordDiagnostic("extension.image.input.resolve.start", {
     tabId: activeTab.id,
     url: activeTab.url,
-    hasClickedImage: isFreshClickedImageSource(activeTab),
   });
-  if (isFreshClickedImageSource(activeTab)) {
-    try {
-      const input = await fetchImageUrlAsEditableInput(state.lastImageSourceUrl, "clicked-page-image.jpg");
-      void recordDiagnostic("extension.image.input.clicked.ready", {
-        mimeType: input.mimeType,
-        filename: input.filename ?? null,
-      });
-      return input;
-    } catch (error) {
-      void recordDiagnostic("extension.image.input.clicked.failed", {
-        error: toErrorMessage(error),
-      });
-      // Fall back to DOM-selected image or visible tab capture below.
-    }
-  }
-
   const visiblePageImage = await getVisiblePageImageInput(activeTab).catch(() => null);
   if (visiblePageImage) {
     void recordDiagnostic("extension.image.input.visible-page.ready", {
@@ -2464,14 +3268,6 @@ async function getEditableImageInput() {
     filename: input.filename ?? null,
   });
   return input;
-}
-
-function isFreshClickedImageSource(activeTab: chrome.tabs.Tab & { id: number }): boolean {
-  return Boolean(
-    state.lastImageSourceUrl &&
-      state.lastImageSourceTabId === activeTab.id &&
-      Date.now() - state.lastImageSourceCapturedAt <= CLICKED_IMAGE_SOURCE_TTL_MS,
-  );
 }
 
 async function getVisiblePageImageInput(activeTab: chrome.tabs.Tab & { id: number; url: string; windowId: number }) {
@@ -2529,11 +3325,21 @@ async function cropVisibleTabToImageCandidate(
   if (!candidate.viewportRect || !candidate.viewportWidth || !candidate.viewportHeight) {
     return null;
   }
-  if (typeof createImageBitmap !== "function" || typeof OffscreenCanvas === "undefined") {
+  const dataUrl = await captureVisibleTab(activeTab);
+  return cropVisibleTabDataUrlToImageCandidate(dataUrl, candidate);
+}
+
+async function cropVisibleTabDataUrlToImageCandidate(
+  dataUrl: string,
+  candidate: EditablePageImageCandidate,
+) {
+  if (!candidate.viewportRect || !candidate.viewportWidth || !candidate.viewportHeight) {
     return null;
   }
+  if (typeof createImageBitmap !== "function" || typeof OffscreenCanvas === "undefined") {
+    return cropVisibleTabDataUrlToImageCandidateViaOffscreenDocument(dataUrl, candidate);
+  }
 
-  const dataUrl = await captureVisibleTab(activeTab);
   const sourceBlob = await (await fetch(dataUrl)).blob();
   const bitmap = await createImageBitmap(sourceBlob);
   const crop = getVisibleImageCropRect(candidate, bitmap.width, bitmap.height);
@@ -2558,6 +3364,85 @@ async function cropVisibleTabToImageCandidate(
     mimeType: "image/jpeg",
     filename: "visible-page-image.jpg",
   };
+}
+
+async function cropVisibleTabDataUrlToImageCandidateViaOffscreenDocument(
+  dataUrl: string,
+  candidate: EditablePageImageCandidate,
+): Promise<{ base64: string; mimeType: string; filename: string } | null> {
+  const ensured = await ensureOffscreenDocumentForImageProcessing();
+  if (!ensured) {
+    return null;
+  }
+  const response = await chrome.runtime.sendMessage({
+    target: "offscreen",
+    type: OFFSCREEN_IMAGE_CROP_MESSAGE_TYPE,
+    dataUrl,
+    candidate,
+  });
+  if (!response || typeof response !== "object") {
+    return null;
+  }
+  const output = response as Record<string, unknown>;
+  const base64 = typeof output.base64 === "string" ? output.base64.trim() : "";
+  const mimeType = typeof output.mimeType === "string" ? output.mimeType.trim() : "";
+  const filename = typeof output.filename === "string" ? output.filename.trim() : "";
+  if (!base64 || !mimeType || !filename) {
+    return null;
+  }
+  return {
+    base64,
+    mimeType,
+    filename,
+  };
+}
+
+async function ensureOffscreenDocumentForImageProcessing(): Promise<boolean> {
+  if (!chrome.offscreen?.createDocument) {
+    return false;
+  }
+  const offscreenUrl = chrome.runtime.getURL(OFFSCREEN_DOCUMENT_PATH);
+  const runtimeWithContexts = chrome.runtime as typeof chrome.runtime & {
+    getContexts?: (filter: {
+      contextTypes?: string[];
+      documentUrls?: string[];
+    }) => Promise<Array<Record<string, unknown>>>;
+  };
+  if (typeof runtimeWithContexts.getContexts === "function") {
+    const contexts = await runtimeWithContexts
+      .getContexts({
+        contextTypes: ["OFFSCREEN_DOCUMENT"],
+        documentUrls: [offscreenUrl],
+      })
+      .catch(() => []);
+    if (contexts.length) {
+      return true;
+    }
+  }
+  if (offscreenDocumentPromise) {
+    await offscreenDocumentPromise;
+    return true;
+  }
+  offscreenDocumentPromise = chrome.offscreen
+    .createDocument({
+      url: OFFSCREEN_DOCUMENT_PATH,
+      reasons: [chrome.offscreen.Reason.BLOBS],
+      justification: "Crop captured tab images for prompt extraction compatibility.",
+    })
+    .catch((error) => {
+      if (!isOffscreenDocumentAlreadyExistsError(error)) {
+        throw error;
+      }
+    })
+    .finally(() => {
+      offscreenDocumentPromise = null;
+    });
+  await offscreenDocumentPromise;
+  return true;
+}
+
+function isOffscreenDocumentAlreadyExistsError(error: unknown): boolean {
+  return toErrorMessage(error).toLowerCase().includes("single offscreen document");
 }
 
 async function recordDiagnostic(event: string, details: Record<string, unknown> = {}): Promise<void> {
@@ -2690,14 +3575,26 @@ async function blobToBase64(blob: Blob): Promise<string> {
   return dataUrl.split(",", 2)[1] ?? "";
 }
 
-async function refreshAppServerCatalog(workspaceRoot?: string): Promise<void> {
+function estimateBase64ByteLength(base64: string): number {
+  const clean = base64.replace(/\s+/gu, "");
+  if (!clean) {
+    return 0;
+  }
+  const padding = clean.endsWith("==") ? 2 : clean.endsWith("=") ? 1 : 0;
+  return Math.max(0, Math.floor((clean.length * 3) / 4) - padding);
+}
+
+async function refreshAppServerCatalog(
+  workspaceRoot?: string,
+  options: { force?: boolean } = {},
+): Promise<void> {
   state.modelCatalogState = "loading";
   state.modelCatalogErrorMessage = "";
   const normalizedWorkspaceRoot = normalizeCatalogWorkspaceRoot(workspaceRoot ?? (await getWorkspaceHarness()).workspaceRoot);
   const cwd = normalizedWorkspaceRoot || undefined;
   let modelRequestFailed = false;
   let modelRequestErrorMessage = "";
-  const [models, serverThreads, appServerSkills, connectedApps, appServerPlugins, rateLimits] = await Promise.all([
+  const [models, serverThreads, appServerSkills, connectedApps, appServerPlugins, mcpServers, rateLimits] = await Promise.all([
     bridge.request<CodexModelOption[]>("model.list").catch((error) => {
       modelRequestFailed = true;
       modelRequestErrorMessage = toErrorMessage(error);
@@ -2712,9 +3609,15 @@ async function refreshAppServerCatalog(workspaceRoot?: string): Promise<void> {
       ...(cwd ? { cwd } : {}),
       forceReload: true,
     }).catch(() => []),
-    bridge.request<CodexAppOption[]>("apps.list", state.threadId ? { threadId: state.threadId } : {}).catch(() => []),
+    bridge.request<CodexAppOption[]>("apps.list", {
+      ...(options.force ? { forceRefetch: true } : {}),
+    }).catch(() => []),
     bridge.request<CodexPluginOption[]>("plugins.list", {
       ...(cwd ? { cwd } : {}),
+    }).catch(() => []),
+    bridge.request<CodexMcpServerOption[]>("mcp.servers.list", {
+      detail: "toolsAndAuthOnly",
+      limit: 100,
     }).catch(() => []),
     bridge.request<CodexRateLimits | null>("account.rate_limits.read").catch(() => null),
   ]);
@@ -2724,6 +3627,7 @@ async function refreshAppServerCatalog(workspaceRoot?: string): Promise<void> {
   state.appServerSkills = appServerSkills;
   state.connectedApps = connectedApps;
   state.appServerPlugins = appServerPlugins;
+  state.mcpServers = mcpServers;
   state.rateLimits = rateLimits;
   state.modelCatalogState = resolveCatalogModelState({
     modelRequestFailed,
@@ -2826,7 +3730,7 @@ function triggerCatalogRefresh(
   }
 
   state.lastRequestedCatalogWorkspaceRoot = normalizeCatalogWorkspaceRoot(workspaceRoot);
-  state.catalogRefreshPromise = refreshAppServerCatalog(workspaceRoot)
+  state.catalogRefreshPromise = refreshAppServerCatalog(workspaceRoot, options.force ? { force: true } : {})
     .catch((error) => {
       state.modelCatalogState = "error";
       state.modelCatalogErrorMessage = toErrorMessage(error);
@@ -2853,9 +3757,12 @@ async function startNewConversation(profileId?: string, model?: string) {
     ? resolveSelectedCatalogModel({ selectedModel: model ?? state.selectedModel, models: state.models })
     : (model ?? state.selectedModel);
   const conversation = await createConversation(nextProfileId, nextModel);
+  conversationRuntime.resetConversation(conversation.id);
   state.currentConversationId = conversation.id;
+  state.currentDraftConversation = conversation;
   state.selectedProfileId = nextProfileId;
   state.selectedModel = nextModel;
+  await setCurrentConversationId(conversation.id);
   await setSelectedProfileId(nextProfileId);
   await setSelectedModel(nextModel);
   return { conversation };
@@ -2864,8 +3771,6 @@ async function startNewConversation(profileId?: string, model?: string) {
 async function resumeServerConversation(threadId: string) {
   const transcript = await bridge.request<CodexThreadTranscript>("thread.read", { threadId });
   await bridge.request("session.resume", { threadId });
-  state.threadId = threadId;
-  state.activeTurn = null;
   state.latestPlan = null;
   state.latestDiff = null;
   state.latestReroute = null;
@@ -2886,6 +3791,10 @@ async function resumeServerConversation(threadId: string) {
     updatedAt: transcript.updatedAt,
   });
   state.currentConversationId = conversation.id;
+  state.currentDraftConversation = null;
+  conversationRuntime.setThreadId(conversation.id, threadId);
+  conversationRuntime.setActiveTurn(conversation.id, null);
+  syncCurrentRuntimeState(conversation.id);
   await setCurrentConversationId(conversation.id);
   return { conversation };
 }
@@ -2898,13 +3807,12 @@ async function resumeConversation(conversationId: string) {
   }
 
   state.currentConversationId = conversation.id;
-  state.threadId = conversation.threadId;
-  state.activeTurn = null;
+  state.currentDraftConversation = null;
+  conversationRuntime.setThreadId(conversation.id, conversation.threadId);
   state.latestPlan = null;
   state.latestDiff = null;
   state.latestReroute = null;
-  state.lastAutoCompactThreadId = "";
-  state.lastAutoCompactBucket = null;
+  syncCurrentRuntimeState(conversation.id);
   state.selectedProfileId = normalizeSelectedProfileId(conversation.profileId);
   state.selectedModel = await reconcileSelectedModelWithCatalog(conversation.model ?? state.selectedModel);
   await setCurrentConversationId(conversation.id);
@@ -2914,7 +3822,8 @@ async function resumeConversation(conversationId: string) {
     try {
       await bridge.request("session.resume", { threadId: conversation.threadId });
     } catch {
-      state.threadId = undefined;
+      conversationRuntime.setThreadId(conversation.id, undefined);
+      syncCurrentRuntimeState(conversation.id);
     }
   }
 
@@ -2923,9 +3832,15 @@ async function resumeConversation(conversationId: string) {
 
 async function persistConversation(conversation: SavedConversation) {
   const saved = await saveConversation(conversation);
-  state.currentConversationId = saved.id;
-  state.threadId = saved.threadId;
-  await setCurrentConversationId(saved.id);
+  if (state.currentDraftConversation?.id === saved.id) {
+    state.currentDraftConversation = null;
+  }
+  conversationRuntime.setThreadId(saved.id, saved.threadId);
+  if (!state.currentConversationId || state.currentConversationId === saved.id) {
+    state.currentConversationId = saved.id;
+    syncCurrentRuntimeState(saved.id);
+    await setCurrentConversationId(saved.id);
+  }
   return { conversation: saved };
 }
 
@@ -2936,9 +3851,22 @@ async function handleConversationDelete(conversationId: string) {
 
   const wasCurrent = state.currentConversationId === conversationId;
   const conversations = await deleteConversation(conversationId);
-  const currentConversation = await getCurrentConversation();
+  conversationRuntime.deleteConversation(conversationId);
+  if (state.currentDraftConversation?.id === conversationId) {
+    state.currentDraftConversation = null;
+  }
+  const currentConversation = resolveVisibleCurrentConversation({
+    conversations,
+    currentConversationId: state.currentConversationId,
+    draftConversation: state.currentDraftConversation,
+  });
   state.currentConversationId = currentConversation?.id ?? "";
-  state.threadId = currentConversation?.threadId;
+  if (currentConversation) {
+    conversationRuntime.setThreadId(currentConversation.id, currentConversation.threadId);
+    syncCurrentRuntimeState(currentConversation.id);
+  } else {
+    state.threadId = undefined;
+  }
   if (wasCurrent && !currentConversation) {
     state.activeTurn = null;
     state.latestPlan = null;
@@ -2955,7 +3883,9 @@ async function handleConversationDelete(conversationId: string) {
 
 async function handleConversationClear() {
   await clearConversations();
+  conversationRuntime.clear();
   state.currentConversationId = "";
+  state.currentDraftConversation = null;
   state.threadId = undefined;
   state.activeTurn = null;
   state.latestPlan = null;
@@ -3150,9 +4080,8 @@ async function sendMessageToTab(
   activeTab: chrome.tabs.Tab & { id: number; url: string },
   message: Record<string, unknown>,
 ): Promise<unknown> {
-  await ensureContentScript(activeTab.id, activeTab.url);
-
   try {
+    await ensureContentScript(activeTab.id, activeTab.url);
     return await chrome.tabs.sendMessage(activeTab.id, message);
   } catch (error) {
     if (shouldAttemptTabOriginRecovery(activeTab.url, error) && (await hasTabOriginPermission(activeTab.url))) {
@@ -3164,6 +4093,7 @@ async function sendMessageToTab(
       }
     }
     if (isRetryableRuntimeMessageError(error)) {
+      await sleepMs(120);
       await ensureContentScript(activeTab.id, activeTab.url);
       try {
         return await chrome.tabs.sendMessage(activeTab.id, message);
@@ -3304,6 +4234,7 @@ function createFallbackAccountStatus(): UiInitPayload["accountStatus"] {
     codexAuthenticated: false,
     multimodalAvailable: false,
     openAiApiKeyConfigured: false,
+    planType: null,
   };
 }
 
@@ -3372,6 +4303,22 @@ function normalizeConfiguredPath(value: string | undefined): string {
   return value?.trim() ?? "";
 }
 
+function resolveSettingsUiLocale(settings: Pick<ExtensionSettings, "uiLanguage">): string {
+  return resolveUiLocale(settings.uiLanguage, getBrowserLocale());
+}
+
+async function getActiveUiLocale(): Promise<string> {
+  return resolveSettingsUiLocale(await getStoredSettings());
+}
+
+function getBrowserLocale(): string {
+  try {
+    return chrome.i18n?.getUILanguage?.() || "en";
+  } catch {
+    return "en";
+  }
+}
+
 function broadcastBridgeEvent(event: unknown): void {
   chrome.runtime.sendMessage({ type: "bridge.event", event }).catch(() => undefined);
 }
@@ -3380,6 +4327,7 @@ function emitPromptStatus(payload: PromptRequestPayload, phase: PromptActivityPh
   broadcastBridgeEvent({
     type: "prompt.status",
     clientRequestId: payload.clientRequestId ?? "",
+    ...(payload.conversationId ? { conversationId: payload.conversationId } : {}),
     phase,
     ...(workflow ? { workflow } : {}),
   });

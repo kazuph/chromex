@@ -1,3 +1,5 @@
+import { getPromptOutputLanguageName } from "./ui-language.js";
+
 export interface YouTubeCurrentMomentPromptInput {
   adapterPayload: Record<string, unknown> | null | undefined;
   locale?: string;
@@ -25,10 +27,10 @@ export function createYouTubeCurrentMomentPromptResult(
 ): YouTubeCurrentMomentPromptResult {
   const adapterPayload = input.adapterPayload;
   if (!isYouTubeAdapterPayload(adapterPayload)) {
-    throw new Error("현재 활성 탭의 YouTube 재생 정보를 읽지 못했습니다.");
+    throw new Error("Could not read playback information from the active YouTube tab.");
   }
 
-  const title = getString(adapterPayload.title) || (isKoreanLocale(input.locale) ? "이 영상" : "this video");
+  const title = getString(adapterPayload.title) || "this video";
   const channel = getString(adapterPayload.channel);
   const currentTimeSeconds = getFiniteNumber(adapterPayload.currentTimeSeconds) ?? 0;
   const timestamp = formatYouTubeMomentTimestamp(currentTimeSeconds);
@@ -46,16 +48,14 @@ export function createYouTubeCurrentMomentPrompt(
   input: YouTubeCurrentMomentPromptInput,
 ): string {
   const adapterPayload = input.adapterPayload ?? {};
-  const ko = isKoreanLocale(input.locale);
-  const title = getString(adapterPayload.title) || (ko ? "이 영상" : "this video");
+  const outputLanguage = getPromptOutputLanguageName(input.locale);
+  const title = getString(adapterPayload.title) || "this video";
   const channel = getString(adapterPayload.channel);
   const currentTimeSeconds = getFiniteNumber(adapterPayload.currentTimeSeconds) ?? 0;
   const timestamp = formatYouTubeMomentTimestamp(currentTimeSeconds);
-  const channelLabel = channel ? (ko ? ` (${channel})` : ` by ${channel}`) : "";
+  const channelLabel = channel ? ` by ${channel}` : "";
 
-  return ko
-    ? `현재 재생 위치 ${timestamp}(${currentTimeSeconds}초)를 기준으로 이 유튜브 영상 "${title}"${channelLabel}에서 어떤 장면/내용인지 설명해줘. 사용자가 실제로 보고 있는 현재 시간대와 앞뒤 맥락을 우선해서 한국어로 알려줘.`
-    : `Explain what is happening at the current playback position ${timestamp} (${currentTimeSeconds} seconds) in the YouTube video "${title}"${channelLabel}. Prioritize the exact moment the user is watching and include brief surrounding context.`;
+  return `Explain what is happening at the current playback position ${timestamp} (${currentTimeSeconds} seconds) in the YouTube video "${title}"${channelLabel}. Prioritize the exact moment the user is watching and include brief surrounding context. Answer in ${outputLanguage}.`;
 }
 
 export function formatYouTubeMomentTimestamp(value: number): string {
@@ -82,8 +82,4 @@ function getString(value: unknown): string {
 function getFiniteNumber(value: unknown): number | null {
   const number = typeof value === "number" ? value : Number(value);
   return Number.isFinite(number) ? number : null;
-}
-
-function isKoreanLocale(locale: string | undefined): boolean {
-  return locale?.toLowerCase().startsWith("ko") ?? false;
 }

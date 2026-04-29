@@ -1,34 +1,4 @@
-import { getTranslatedUiLocale, type UiLocale } from "./i18n.js";
-
-type CopyPackLocale = "en" | "ko";
-
-const REASONING_LABELS: Record<CopyPackLocale, Record<string, string>> = {
-  en: {
-    low: "Low",
-    medium: "Medium",
-    high: "High",
-    xhigh: "Very high",
-  },
-  ko: {
-    low: "낮음",
-    medium: "보통",
-    high: "높음",
-    xhigh: "매우 높음",
-  },
-};
-
-const SERVICE_TIER_LABELS: Record<CopyPackLocale, Record<string, string>> = {
-  en: {
-    "": "Normal",
-    fast: "Fast",
-    flex: "Flex",
-  },
-  ko: {
-    "": "보통",
-    fast: "속도형",
-    flex: "Flex",
-  },
-};
+import { getUiStrings, type UiLocale } from "./i18n.js";
 
 export const DEFAULT_REASONING_EFFORTS = ["low", "medium", "high", "xhigh"];
 
@@ -55,7 +25,8 @@ export function normalizeReasoningEffort(selected: string, reasoningEfforts: str
 }
 
 export function formatReasoningEffortLabel(reasoningEffort: string, locale: UiLocale): string {
-  return REASONING_LABELS[getCopyPackLocale(locale)][reasoningEffort] ?? reasoningEffort;
+  const labels: Record<string, string> = getUiStrings(locale).composerControls.reasoning;
+  return labels[reasoningEffort] ?? reasoningEffort;
 }
 
 export function normalizeServiceTier(
@@ -86,9 +57,6 @@ export function normalizeServiceTierWithDefault(
 }
 
 export function formatServiceTierLabel(serviceTier: string, locale: UiLocale): string {
-  return SERVICE_TIER_LABELS[getCopyPackLocale(locale)][serviceTier] ?? serviceTier;
-}
-
-function getCopyPackLocale(locale: UiLocale): CopyPackLocale {
-  return getTranslatedUiLocale(locale) === "ko" ? "ko" : "en";
+  const labels: Record<string, string> = getUiStrings(locale).composerControls.serviceTier;
+  return labels[serviceTier] ?? serviceTier;
 }

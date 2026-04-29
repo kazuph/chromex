@@ -4,6 +4,9 @@ import {
   normalizePanelConversation,
   normalizeSidepanelCollections,
   serializeConversationMessagesForStorage,
+  shouldApplyConversationSaveResultToActiveChat,
+  shouldHydrateInitConversation,
+  shouldPersistConversationMessagesForStorage,
 } from "../src/sidepanel/sidepanel-state.js";
 
 describe("sidepanel state normalization", () => {
@@ -16,9 +19,55 @@ describe("sidepanel state normalization", () => {
       appServerSkills: [],
       connectedApps: [],
       appServerPlugins: [],
+      mcpServers: [],
       recentChats: [],
       serverThreads: [],
     });
+  });
+
+  test("does not mark empty local drafts as recent-chat history", () => {
+    expect(shouldPersistConversationMessagesForStorage([])).toBe(false);
+    expect(shouldPersistConversationMessagesForStorage([{ id: "user-1", role: "user", text: "Hello" }])).toBe(true);
+  });
+
+  test("does not move the active chat when a stale save response returns late", () => {
+    expect(
+      shouldApplyConversationSaveResultToActiveChat({
+        saveStartedConversationId: "old-chat",
+        currentConversationId: "new-chat",
+        savedConversationId: "old-chat",
+      }),
+    ).toBe(false);
+  });
+
+  test("applies save results for the still-active chat", () => {
+    expect(
+      shouldApplyConversationSaveResultToActiveChat({
+        saveStartedConversationId: "active-chat",
+        currentConversationId: "active-chat",
+        savedConversationId: "active-chat",
+      }),
+    ).toBe(true);
+  });
+
+  test("does not hydrate a stale init payload after the active chat changed", () => {
+    expect(
+      shouldHydrateInitConversation({
+        currentConversationIdBeforeInit: "old-chat",
+        currentConversationIdNow: "new-chat",
+        payloadConversationId: "old-chat",
+      }),
+    ).toBe(false);
+  });
+
+  test("hydrates init payloads that match the current active chat", () => {
+    expect(
+      shouldHydrateInitConversation({
+        currentConversationIdBeforeInit: "old-chat",
+        currentConversationIdNow: "new-chat",
+        payloadConversationId: "new-chat",
+      }),
+    ).toBe(true);
   });
 
   test("hydrates older saved conversations with missing array fields safely", () => {
@@ -275,6 +324,60 @@ describe("sidepanel state normalization", () => {
         icon: "briefcase",
       },
     });
+  });
+
+  test("preserves selected plugin mentions on user messages without storing runtime tokens", () => {
+    const conversation = normalizePanelConversation({
+      id: "plugin-chat",
+      title: "Plugin chat",
+      profileId: "default",
+      messages: [
+        {
+          id: "m1",
+          role: "user",
+          text: "메일함에서 답장 필요한 것 정리해줘",
+          structuredInputs: [
+            {
+              id: "gmail@openai-curated",
+              type: "mention",
+              name: "Gmail",
+              path: "plugin://gmail@openai-curated",
+              description: "Read and manage Gmail",
+              iconUrl: "https://example.com/gmail.png",
+              token: "$gmail",
+            },
+          ],
+        },
+      ],
+    } as any);
+
+    expect(conversation?.messages[0]).toMatchObject({
+      structuredInputs: [
+        {
+          id: "gmail@openai-curated",
+          type: "mention",
+          name: "Gmail",
+          path: "plugin://gmail@openai-curated",
+          description: "Read and manage Gmail",
+          iconUrl: "https://example.com/gmail.png",
+        },
+      ],
+    });
+    expect(serializeConversationMessagesForStorage(conversation?.messages ?? [])[0]).toMatchObject({
+      structuredInputs: [
+        {
+          id: "gmail@openai-curated",
+          type: "mention",
+          name: "Gmail",
+          path: "plugin://gmail@openai-curated",
+          description: "Read and manage Gmail",
+          iconUrl: "https://example.com/gmail.png",
+        },
+      ],
+    });
+    expect(
+      JSON.stringify(serializeConversationMessagesForStorage(conversation?.messages ?? [])[0]),
+    ).not.toContain("$gmail");
   });
 
   test("preserves user-visible attachment previews when hydrating and storing conversations", () => {

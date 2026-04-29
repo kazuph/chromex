@@ -1,4 +1,5 @@
 import { escapeAttribute, escapeHtml } from "./html-escape.js";
+import { getUiStrings } from "./i18n.js";
 import { type PendingProfileQuestionState } from "./profile-question.js";
 import { renderUiIcon } from "./ui-icons.js";
 
@@ -47,13 +48,13 @@ export function renderPendingProfileQuestionCard(options: RenderProfileQuestionC
 }
 
 function getProfileQuestionCardLabels(uiLocale: string, fallbackProfileLabel: string): ProfileQuestionCardLabels {
-  const ko = uiLocale === "ko";
+  const strings = getUiStrings(uiLocale);
   return {
     fallbackProfile: fallbackProfileLabel,
-    title: ko ? "프로필 확인 질문" : "Profile question",
-    placeholder: ko ? "답변을 입력하세요" : "Type your answer",
-    submit: ko ? "답변 보내기" : "Send answer",
-    dismiss: ko ? "건너뛰기" : "Skip",
+    title: strings.profileQuestion.title,
+    placeholder: strings.profileQuestion.placeholder,
+    submit: strings.profileQuestion.submit,
+    dismiss: strings.profileQuestion.dismiss,
   };
 }
 

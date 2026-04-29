@@ -1,9 +1,11 @@
 import {
   normalizeCodexRealtimeVoice,
   type ActionCard,
+  type AgenticRoutePlan,
   type BrowserActionPermissionMode,
   type CodexActiveTurn,
   type CodexAppOption,
+  type CodexMcpServerOption,
   type CodexModelOption,
   type CodexModelReroute,
   type CodexPluginOption,
@@ -21,10 +23,18 @@ import {
 } from "@codex-sidepanel/shared";
 
 import { shouldInterceptComposerDropdownOnEnter, shouldSubmitComposerOnKeydown } from "./composer-submit.js";
+import { createSubmittedComposerFileAttachmentState } from "./composer-attachment-submit.js";
 import { createPendingComposerDraftState, createRestoredComposerDraftState } from "./composer-draft.js";
+import { getDroppedFiles, hasComposerDropPayload } from "./composer-drop.js";
+import { isTextFirstActionCard } from "./action-card-routing.js";
 import { calculateComposerTextareaAutosize } from "./composer-textarea-autosize.js";
 import { canSendComposerMessage } from "./composer-send-guard.js";
-import { resolveComposerPrimaryAction } from "./composer-primary-action.js";
+import {
+  didComposerPrimaryActionChangeForDraftInput,
+  resolveComposerPrimaryAction,
+} from "./composer-primary-action.js";
+import { shouldSendComposerAsTurnSteer } from "./turn-steer-routing.js";
+import { resolveAcceptedPromptActiveTurn } from "./active-turn-after-send.js";
 import {
   clearTransientComposerCommandPills,
   removeComposerCommandPill,
@@ -35,6 +45,14 @@ import { createDebouncedTask } from "./debounced-task.js";
 import { prepareMessageReplay } from "./message-actions.js";
 import { createConversationMessageAttachments } from "./message-attachments.js";
 import { isSafeMessageImageUrl, renderMessageContentHtml } from "./message-content.js";
+import { createExternalImagePreviewUrl } from "./external-image-preview.js";
+import {
+  clearEmptyAssistantResponseNotice,
+  clearResolvedEmptyAssistantResponseNotices,
+  createEmptyAssistantResponseNotice,
+  getStructuredInputNamesForEmptyResponseNotice,
+  shouldShowEmptyAssistantResponseNotice,
+} from "./empty-assistant-response.js";
 import {
   ASK_USER_QUESTION_TAG,
   hasProfileAskUserQuestionStart,
@@ -44,12 +62,24 @@ import {
   type ProfileAskUserQuestion,
 } from "./profile-question.js";
 import { renderPendingProfileQuestionCard } from "./profile-question-card.js";
-import { extractMentionQuery, listMentionOptions } from "./mentions.js";
+import {
+  clampMentionOptionIndex,
+  extractMentionQuery,
+  getNextMentionOptionIndex,
+  isMentionOptionArrowKey,
+  isStructuredMentionOption,
+  listMentionOptions,
+  type MentionOption,
+  type StructuredMentionOption,
+} from "./mentions.js";
 import { createRenderBatcher } from "./render-batcher.js";
 import {
   normalizePanelConversation,
   normalizeSidepanelCollections,
   serializeConversationMessagesForStorage,
+  shouldApplyConversationSaveResultToActiveChat,
+  shouldHydrateInitConversation,
+  shouldPersistConversationMessagesForStorage,
 } from "./sidepanel-state.js";
 import {
   formatPromptActivityLabel,
@@ -57,6 +87,13 @@ import {
   type PromptActivityPhase,
   type PromptActivityState,
 } from "./prompt-activity.js";
+import {
+  getEffectivePromptActivityForActiveWork,
+  promotePromptActivityForAssistantProgress,
+  promotePromptActivityForTurnActivity,
+  shouldClearPromptActivityOnMessageCompleted,
+  shouldClearPromptActivityOnTurnCompleted,
+} from "./prompt-activity-lifecycle.js";
 import {
   getPermissionRequestForMessage,
   getPermissionRequestForRuntimeResponse,
@@ -71,10 +108,13 @@ import {
 import {
   createAttachmentFingerprint,
   createFileChipLabel,
+  createImageAttachmentPreviewSrc,
   createRemoteImageAttachment,
   extractWebImageUrlsFromDropData,
+  MAX_FILE_ATTACHMENTS,
   planAttachmentSelection,
 } from "./file-attachments.js";
+import { createOnlineImagePromptExtractionPrompt } from "./online-image-prompt.js";
 import {
   getCodexBinaryHealth,
   getNativeHostHealth,
@@ -94,6 +134,11 @@ import {
   getSuggestionCardSource,
   mergeProfileAndSiteSuggestionCards,
 } from "./profile-suggestions.js";
+import {
+  createImageAttachmentSuggestionCards,
+  IMAGE_ATTACHMENT_DESCRIBE_ACTION_ID,
+  IMAGE_ATTACHMENT_PROMPT_EXTRACT_ACTION_ID,
+} from "./image-attachment-suggestions.js";
 import { parseVoiceNavigationCommand } from "./voice-commands.js";
 import { shouldAutoReconnectVoice } from "./voice-reconnect.js";
 import { shouldInterruptVoiceOutputForTranscript } from "./voice-barge-in.js";
@@ -105,6 +150,9 @@ import {
 } from "./voice-permissions.js";
 import { listCodexRealtimeVoiceOptions } from "./voice-session.js";
 import { createRealtimeVoiceContextAppendText } from "./voice-turn-context.js";
+import { shouldRouteRealtimeVoiceTranscriptThroughPrompt } from "./voice-agentic-routing.js";
+import { extractRealtimeVoiceHandoffPrompt } from "./voice-handoff.js";
+import { createVoiceRoutePreviewPayload as createSanitizedVoiceRoutePreviewPayload } from "./voice-route-preview.js";
 import {
   applyVoiceTranscriptDelta,
   applyVoiceTranscriptDone,
@@ -135,14 +183,45 @@ import {
   resolveComposerProfileSelection,
 } from "./profile-selection.js";
 import { localizeBuiltinProfiles } from "../profile-localization.js";
+import { shouldOfferApiKeyFallbackForError } from "./oauth-fallback.js";
 import {
   APP_MENU_RECENT_CHAT_LIMIT,
+  createRecentChatDisplayItems,
   getAppMenuLabels,
   hasAppMenuMoreRecentChats,
-  listAppMenuRecentChats,
 } from "./app-menu.js";
 import { createAssistantFailureMessage } from "./submission-failure.js";
 import { isBridgeImageAssetRef, resolveImagePreviewRefForUi } from "./image-preview-assets.js";
+import {
+  buildImageDownloadName,
+  createFailedConversationImage,
+  createGeneratedImageAlt,
+  createLoadingConversationImage,
+  createPendingConversationImage,
+  isSameConversationImage,
+  normalizeImageGenerateWorkflow,
+  normalizeImagePreviewRefs,
+  normalizePromptStatusImageWorkflow,
+  type ImageWorkflowPlaceholderKind,
+} from "./image-workflow-messages.js";
+import {
+  createGeneratedImageAttachmentName,
+  getGeneratedImageAttachmentLimit,
+  shouldAttachGeneratedImagesForRoutePlan,
+  toGeneratedImageFileAttachment,
+} from "./generated-image-attachments.js";
+import {
+  isPendingImageMessage,
+  shouldRenderConversationMessage,
+} from "./conversation-message-visibility.js";
+import {
+  formatTraceDetail,
+  formatTraceSummary,
+  formatTraceTitle,
+  getVisibleTraceItems,
+  isNoisyTraceText,
+  shouldOpenMessageTrace,
+} from "./message-trace-formatting.js";
 import { isQuickInteractionLocked } from "./interaction-lock.js";
 import {
   createAnnotatedImageAttachment,
@@ -155,6 +234,7 @@ import type {
   ConversationMessageAttachment,
   ConversationMessageImage,
   ConversationMessageProfile,
+  ConversationMessageStructuredInput,
   ConversationMessageTraceItem,
   ConversationMessage,
   ConversationSummary,
@@ -186,6 +266,11 @@ import {
   toggleEnabledCodexSkillId,
 } from "../codex-skill-settings.js";
 import {
+  findCompanionAppForPlugin,
+  getPluginConnectionState,
+  isPluginMentionRouteable,
+} from "../plugin-connection-availability.js";
+import {
   deleteCustomSiteSuggestion,
   inferCustomSiteSuggestionCards,
   listCustomSiteSuggestionsForTab,
@@ -196,11 +281,22 @@ import {
   shouldShowScrollToBottomButton,
   shouldStickToBottomAfterRender,
 } from "./chat-scroll-controls.js";
-import { shouldShowAuthOnboarding, shouldShowUsageNoticeOnboarding } from "./onboarding.js";
+import {
+  calculateNextChatMessageWindowSize,
+  CHAT_MESSAGE_WINDOW_INCREMENT,
+  DEFAULT_CHAT_MESSAGE_WINDOW_SIZE,
+  getChatMessageWindow,
+  shouldExpandChatMessageWindowOnScroll,
+} from "./chat-message-window.js";
+import {
+  resolveAuthOnboardingReadiness,
+  shouldShowAuthOnboarding,
+  shouldShowUsageNoticeOnboarding,
+} from "./onboarding.js";
 import { createStreamingDeltaBuffer } from "./streaming-delta-buffer.js";
 import { renderUiIcon, type UiIconName } from "./ui-icons.js";
 
-type MainView = "chat" | "context" | "workspace";
+type MainView = "chat" | "context" | "skills" | "plugins" | "workspace";
 const MAX_TRACE_ITEMS = 12;
 
 type ProfileEditorState = {
@@ -225,6 +321,12 @@ type NativeTextDialogState = {
   confirmLabel: string;
   cancelLabel: string;
   inputType: "text" | "password";
+  afterSubmit?: {
+    kind: "retry-prompt";
+    message: string;
+    displayMessage: string;
+    resetThread?: boolean;
+  };
   error?: string;
   submitting?: boolean;
 };
@@ -235,6 +337,16 @@ type NativeConfirmationDialogState = {
   confirmLabel: string;
   cancelLabel: string;
   tone: "default" | "danger";
+};
+
+type PluginConnectionDialogState = {
+  kind: "app" | "plugin";
+  id: string;
+  name: string;
+  description: string;
+  installUrl?: string;
+  iconUrl?: string;
+  accountEmail?: string;
 };
 
 type ImageAnnotationEditorState =
@@ -260,6 +372,50 @@ type SmokeAttachmentSeed = {
   mimeType: string;
   base64: string;
   lastModified?: number;
+};
+
+type OnlineImagePromptExtraction = {
+  imageUrl: string;
+  alt?: string;
+  pageTitle?: string;
+  pageUrl?: string;
+  attachment?: UserFileAttachment;
+};
+
+type SidepanelBridgeEvent = {
+  type: string;
+  itemId?: string;
+  delta?: string;
+  text?: string;
+  previewRef?: string;
+  alt?: string;
+  sdp?: string;
+  role?: string;
+  item?: Record<string, unknown>;
+  sessionId?: string | null;
+  transport?: "webrtc" | "websocket";
+  audio?: RealtimeOutputAudioChunk;
+  message?: string;
+  reason?: string | null;
+  threadId?: string;
+  turnId?: string;
+  activeTurn?: CodexActiveTurn;
+  phase?: PromptActivityPhase;
+  clientRequestId?: string;
+  workflow?: unknown;
+  imageIndex?: unknown;
+  attempt?: number;
+  maxAttempts?: number;
+  rateLimits?: CodexRateLimits | null;
+  plan?: CodexTurnPlan;
+  diff?: CodexTurnDiff;
+  reroute?: CodexModelReroute;
+  kind?: ConversationMessageTraceItem["kind"];
+  title?: string;
+  detail?: string;
+  status?: "running" | "completed";
+  timestampMs?: number;
+  conversationId?: string;
 };
 
 type PendingVoiceAnswer = {
@@ -443,14 +599,34 @@ const PROFILE_EDITOR_ICONS = [
 const DEFAULT_PROFILE_VISUAL_COLOR = "#8b5cf6";
 const DEFAULT_PROFILE_VISUAL_ICON = DEFAULT_PROFILE_ICON_ID;
 const MAX_PROFILE_IMAGE_BYTES = 180_000;
+const EXTERNAL_IMAGE_PREVIEW_OBJECT_URL_REVOKE_MS = 60_000;
+const EMPTY_ASSISTANT_RESPONSE_NOTICE_DELAY_MS = 900;
 const autoSavedImageAssetRefs = new Set<string>();
-type ImageWorkflowPlaceholderKind = "image-edit" | "infographic" | "slide-images" | "generated-image";
 const pendingImageWorkflowMessageIdsByRequest = new Map<string, string>();
 const completedImageWorkflowMessageIdsByRequest = new Map<string, string>();
 const streamedImagePreviewRefsByRequest = new Map<string, string[]>();
+const promptRequestConversationIds = new Map<string, string>();
+const conversationMessagesById = new Map<string, ConversationMessage[]>();
+const conversationThreadIdsById = new Map<string, string>();
+const conversationProfilesById = new Map<string, string>();
+const conversationModelsById = new Map<string, string | undefined>();
+const promptActivitiesByConversationId = new Map<string, PromptActivityState>();
+const activePromptUserMessageIdsByConversationId = new Map<string, string>();
+const activeTurnsByConversationId = new Map<string, CodexActiveTurn>();
+const streamingAssistantMessageIdsByConversationId = new Map<string, Set<string>>();
 const contextCompactionNoticeIdsByKey = new Map<string, string>();
+const messageTraceOpenByMessageId = new Map<string, boolean>();
+const assistantResponseMessageIdsByGroupKey = new Map<string, string>();
+const assistantResponseGroupKeysByItemId = new Map<string, string>();
+const assistantResponseGroupKeysByTurnKey = new Map<string, string>();
+const assistantResponseItemOrderByMessageId = new Map<string, string[]>();
+const assistantResponseItemTextsByMessageId = new Map<string, Map<string, string>>();
+const unresolvedConversationBridgeEventsByThreadId = new Map<string, SidepanelBridgeEvent[]>();
+const pendingEmptyAssistantResponseNoticeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const profileQuestionStreamBuffers = new Map<string, string>();
+let profileQuestionCardRenderRequested = false;
 let contextCompactionNoticeCounter = 0;
+const MAX_UNRESOLVED_CONVERSATION_BRIDGE_EVENTS_PER_THREAD = 200;
 
 const rootElement = document.querySelector<HTMLDivElement>("#app");
 if (!rootElement) {
@@ -515,6 +691,7 @@ const state = {
   profileEditor: null as null | ProfileEditorState,
   nativeTextDialog: null as null | NativeTextDialogState,
   nativeConfirmationDialog: null as null | NativeConfirmationDialogState,
+  pluginConnectionDialog: null as null | PluginConnectionDialogState,
   pendingProfileQuestion: null as PendingProfileQuestionState | null,
   selectedTabIds: [] as number[],
   openTabOptions: [] as OpenTabContext[],
@@ -523,8 +700,10 @@ const state = {
   historyQuery: "",
   historyItems: [] as Array<{ title: string; url: string }>,
   messages: [] as ConversationMessage[],
+  chatMessageWindowSize: DEFAULT_CHAT_MESSAGE_WINDOW_SIZE,
   editingMessageId: null as string | null,
   mentionQuery: null as string | null,
+  mentionActiveIndex: 0,
   slashQuery: null as string | null,
   slashActiveIndex: 0,
   voiceEnabled: false,
@@ -562,10 +741,12 @@ const state = {
   appServerSkills: [] as CodexSkillOption[],
   connectedApps: [] as CodexAppOption[],
   appServerPlugins: [] as CodexPluginOption[],
+  mcpServers: [] as CodexMcpServerOption[],
   recentChats: [] as ConversationSummary[],
   serverThreads: [] as CodexThreadSummary[],
   currentConversationId: "",
   threadId: "",
+  activePromptUserMessageId: "",
   currentTabContextDismissedKey: "",
   structuredInputs: [] as CodexStructuredInput[],
   activeTurn: null as CodexActiveTurn | null,
@@ -622,6 +803,7 @@ let composerVoiceInputWaveformLevels = createSilentComposerVoiceWaveform();
 let composerVoiceInputAudioData: Uint8Array<ArrayBuffer> | null = null;
 let systemThemeMediaQuery: MediaQueryList | null = null;
 let systemThemeListenerInstalled = false;
+let composerDropHandlersInstalled = false;
 let composerVoiceInputFinalTranscript = "";
 let composerVoiceInputInterimTranscript = "";
 let composerVoiceInputCommitPromise: Promise<void> | null = null;
@@ -643,9 +825,17 @@ const voiceTranscriptMirror = createVoiceTranscriptMirrorState();
 let nativeConfirmationResolver: ((approved: boolean) => void) | null = null;
 let initializePromise: Promise<void> | null = null;
 let initializeQueued = false;
+let initializeQueuedForceCatalog = false;
+let pendingPluginConnectionCatalogRefresh = false;
 let composerCompositionInProgress = false;
+let composerCompositionStartDraft = "";
+let renderDeferredDuringComposerComposition = false;
 let smokeDryRunSubmissions: string[] = [];
+let promptSubmissionBootstrapInFlight = false;
 let chatScrollUserOverrideUntil = 0;
+let pendingChatScrollToBottom = false;
+let pendingChatScrollAnchor: { previousScrollTop: number; previousScrollHeight: number } | null = null;
+let lastRenderedActiveView: MainView | null = null;
 const completedTurnIds = new Set<string>();
 const cancelledPromptRequestIds = new Set<string>();
 const REALTIME_AUDIO_CHUNK_MS = 240;
@@ -656,6 +846,16 @@ const REALTIME_VOICE_CONTEXT_SNAPSHOT_TTL_MS = 5000;
 const COMPOSER_VOICE_WAVEFORM_BAR_COUNT = 46;
 const COMPOSER_VOICE_WAVEFORM_REFRESH_MS = 90;
 const COMPOSER_VOICE_STOP_FINALIZATION_TIMEOUT_MS = 1500;
+type ComposerTextareaAutosizeMetrics = {
+  lineHeight: number;
+  paddingTop: number;
+  paddingBottom: number;
+  minHeight: number;
+};
+const composerTextareaAutosizeMetricsByElement = new WeakMap<
+  HTMLTextAreaElement,
+  ComposerTextareaAutosizeMetrics
+>();
 const renderBatcher = createRenderBatcher(
   () => renderNow(),
   (callback) =>
@@ -669,12 +869,18 @@ const renderBatcher = createRenderBatcher(
 );
 const streamingDeltaBuffer = createStreamingDeltaBuffer(
   (batch) => {
+    const messageIds: string[] = [];
     for (const item of batch) {
-      upsertAssistantMessage(item.itemId, item.delta, true);
+      const messageId = upsertAssistantMessage(item.itemId, item.delta, true);
+      if (messageId) {
+        messageIds.push(messageId);
+      }
     }
     if (state.activeView === "chat") {
-      const itemIds = batch.map((item) => item.itemId);
-      if (!patchStreamingAssistantMessageDoms(itemIds)) {
+      if (profileQuestionCardRenderRequested) {
+        profileQuestionCardRenderRequested = false;
+        render();
+      } else if (!patchStreamingAssistantMessageDoms(messageIds)) {
         render();
       }
     }
@@ -702,6 +908,16 @@ window.addEventListener("pagehide", () => {
   void stopRealtimeVoiceSession({ notifyBridge: true });
 });
 
+window.addEventListener("focus", () => {
+  void refreshPendingPluginConnectionCatalog();
+});
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") {
+    void refreshPendingPluginConnectionCatalog();
+  }
+});
+
 window.addEventListener("unhandledrejection", (event) => {
   state.initError = toUserFacingRuntimeError(event.reason);
   render();
@@ -714,60 +930,107 @@ chrome.runtime.onMessage.addListener((message) => {
     return;
   }
 
+  if (message.type === "ui.image-prompt.extract") {
+    void handleOnlineImagePromptExtraction(message.extraction);
+    return;
+  }
+
+  if (message.type === "ui.image-prompt.error") {
+    void handleOnlineImagePromptError(message.error);
+    return;
+  }
+
+  if (message.type === "ui.image-attachment.pending") {
+    void takePendingContextMenuImageAttachment();
+    return;
+  }
+
+  if (message.type === "ui.context-menu-action.pending") {
+    void takePendingContextMenuAction();
+    return;
+  }
+
   if (message.type !== "bridge.event") {
     return;
   }
 
-  const event = message.event as {
-    type: string;
-    itemId?: string;
-    delta?: string;
-    text?: string;
-    previewRef?: string;
-    alt?: string;
-    sdp?: string;
-    role?: string;
-    sessionId?: string | null;
-    transport?: "webrtc" | "websocket";
-    audio?: RealtimeOutputAudioChunk;
-    message?: string;
-    reason?: string | null;
-    threadId?: string;
-    turnId?: string;
-    activeTurn?: CodexActiveTurn;
-    phase?: PromptActivityPhase;
-    clientRequestId?: string;
-    workflow?: unknown;
-    imageIndex?: unknown;
-    attempt?: number;
-    maxAttempts?: number;
-    rateLimits?: CodexRateLimits | null;
-    plan?: CodexTurnPlan;
-    diff?: CodexTurnDiff;
-    reroute?: CodexModelReroute;
-    kind?: ConversationMessageTraceItem["kind"];
-    title?: string;
-    detail?: string;
-    status?: "running" | "completed";
-    timestampMs?: number;
-  };
+  const event = message.event as SidepanelBridgeEvent;
   let shouldRender = false;
+  const eventConversationId = resolveBridgeEventConversationId(event);
+  const unresolvedEventBelongsToCurrentConversation = shouldTreatUnresolvedBridgeEventAsCurrent(event, eventConversationId);
+  if (unresolvedEventBelongsToCurrentConversation) {
+    rememberCurrentConversationThreadForBridgeEvent(event);
+  }
+  const isCurrentConversationEvent =
+    unresolvedEventBelongsToCurrentConversation || isBridgeEventForCurrentConversation(eventConversationId, event.type);
+  if (
+    !unresolvedEventBelongsToCurrentConversation &&
+    shouldDropUnresolvedConversationScopedBridgeEvent(event.type, eventConversationId)
+  ) {
+    bufferUnresolvedConversationScopedBridgeEvent(event);
+    return;
+  }
 
   if (event.type === "message.delta") {
+    cancelEmptyAssistantResponseNotice(event.threadId ?? "", event.turnId ?? "", eventConversationId);
+    if (!isCurrentConversationEvent) {
+      if (eventConversationId) {
+        const itemId = event.itemId ?? "assistant";
+        upsertAssistantMessageForConversation(eventConversationId, itemId, event.delta ?? "", true);
+        const streamingIds = streamingAssistantMessageIdsByConversationId.get(eventConversationId) ?? new Set<string>();
+        streamingIds.add(itemId);
+        streamingAssistantMessageIdsByConversationId.set(eventConversationId, streamingIds);
+        renderConversationListIfVisible();
+      }
+      return;
+    }
     const itemId = event.itemId ?? "assistant";
-    state.streamingAssistantMessageIds.add(itemId);
-    state.promptActivity = null;
+    const previousPromptActivity = state.promptActivity;
+    state.promptActivity = promotePromptActivityForAssistantProgress({
+      current: state.promptActivity,
+      activeTurn: state.activeTurn,
+    }) ?? {
+      clientRequestId: `stream:${itemId}`,
+      phase: "responding",
+    };
+    state.streamingAssistantMessageIds.add(resolveAssistantResponseMessageId(itemId, event));
+    if (state.promptActivity !== previousPromptActivity) {
+      shouldRender = state.activeView === "chat";
+    }
     streamingDeltaBuffer.push(itemId, event.delta ?? "");
   }
   if (event.type === "message.completed") {
     const itemId = event.itemId ?? "assistant";
-    flushStreamingAssistantDeltas();
-    state.promptActivity = null;
-    markActiveTurnTraceItemsCompleted();
-    if ((event.text ?? "").length > 0 || !state.messages.some((message) => message.id === itemId)) {
-      upsertAssistantMessage(itemId, event.text ?? "", false);
+    cancelEmptyAssistantResponseNotice(event.threadId ?? "", event.turnId ?? "", eventConversationId);
+    if (!isCurrentConversationEvent && eventConversationId) {
+      upsertAssistantMessageForConversation(eventConversationId, itemId, event.text ?? "", false);
+      clearEmptyAssistantResponseNoticeForTurn(event.threadId ?? "", event.turnId ?? "", eventConversationId);
+      clearResolvedEmptyAssistantResponseNotices(getDetachedConversationMessages(eventConversationId));
+      completeTurnTraceForConversation(eventConversationId, event.threadId ?? "", event.turnId ?? "");
+      clearConversationActivity(eventConversationId);
+      renderConversationListIfVisible();
+      void persistDetachedConversation(eventConversationId);
+      return;
     }
-    state.streamingAssistantMessageIds.delete(itemId);
+    const messageId = resolveAssistantResponseMessageId(itemId, event);
+    flushStreamingAssistantDeltas();
+    if (
+      shouldClearPromptActivityOnMessageCompleted({
+        current: state.promptActivity,
+        activeTurn: state.activeTurn,
+      })
+    ) {
+      state.promptActivity = null;
+    }
+    markActiveTurnTraceItemsCompleted();
+    if ((event.text ?? "").length > 0 || !state.messages.some((message) => message.id === messageId)) {
+      upsertAssistantMessage(itemId, event.text ?? "", false, event);
+    }
+    clearEmptyAssistantResponseNoticeForTurn(event.threadId ?? "", event.turnId ?? "", eventConversationId);
+    clearResolvedEmptyAssistantResponseNotices(state.messages);
+    if (!state.promptActivity && !state.activeTurn?.turnId) {
+      state.streamingAssistantMessageIds.delete(messageId);
+    }
     if (state.voiceEnabled && browserVoiceFallbackActive) {
       speak(event.text ?? "");
     }
@@ -775,13 +1038,25 @@ chrome.runtime.onMessage.addListener((message) => {
     shouldRender = state.activeView === "chat";
   }
   if (event.type === "message.image" && event.previewRef) {
+    cancelEmptyAssistantResponseNotice(event.threadId ?? "", event.turnId ?? "", eventConversationId);
+    clearEmptyAssistantResponseNoticeForTurn(event.threadId ?? "", event.turnId ?? "", eventConversationId);
+    if (!isCurrentConversationEvent && eventConversationId) {
+      renderConversationListIfVisible();
+      void hydrateImageForDetachedConversation({
+        conversationId: eventConversationId,
+        itemId: event.itemId ?? `generated-image-${Date.now()}`,
+        previewRef: event.previewRef,
+        alt: event.alt ?? stringsForState().images.generated,
+      });
+      return;
+    }
     flushStreamingAssistantDeltas();
     const workflow = normalizeImageGenerateWorkflow(event.workflow);
     const imageIndex = Number(event.imageIndex);
     void handleBridgeImageEvent({
       itemId: event.itemId ?? `generated-image-${Date.now()}`,
       previewRef: event.previewRef,
-      alt: event.alt ?? (state.uiLocale === "ko" ? "생성된 이미지" : "Generated image"),
+      alt: event.alt ?? stringsForState().images.generated,
       ...(typeof event.clientRequestId === "string" ? { clientRequestId: event.clientRequestId } : {}),
       ...(workflow ? { workflow } : {}),
       ...(Number.isFinite(imageIndex) ? { imageIndex } : {}),
@@ -789,9 +1064,21 @@ chrome.runtime.onMessage.addListener((message) => {
     return;
   }
   if (event.type === "prompt.retrying") {
+    if (!isCurrentConversationEvent && eventConversationId) {
+      promptActivitiesByConversationId.set(eventConversationId, {
+        clientRequestId: event.clientRequestId ?? "",
+        phase: "reconnecting",
+        retryAttempt: Math.max(1, Math.floor(Number(event.attempt) || 1)),
+        retryMax: Math.max(1, Math.floor(Number(event.maxAttempts) || 5)),
+        retryReason: event.reason ?? "",
+      });
+      renderConversationListIfVisible();
+      return;
+    }
     if (!state.promptActivity || !event.clientRequestId || state.promptActivity.clientRequestId === event.clientRequestId) {
       streamingDeltaBuffer.clear();
       profileQuestionStreamBuffers.clear();
+      profileQuestionCardRenderRequested = false;
       state.messages = state.messages.filter((message) => !state.streamingAssistantMessageIds.has(message.id));
       state.streamingAssistantMessageIds.clear();
       state.activeTurn = null;
@@ -860,6 +1147,10 @@ chrome.runtime.onMessage.addListener((message) => {
     }
     shouldRender = state.activeView === "chat";
   }
+  if (event.type === "voice.item_added") {
+    void handleRealtimeVoiceItemAdded(event.item, event.threadId);
+    return;
+  }
   if (event.type === "voice.error") {
     handleRealtimeVoiceDisconnect(event.message ?? getUiStrings(state.uiLocale).errors.voiceUpdate, true);
     shouldRender = true;
@@ -872,15 +1163,48 @@ chrome.runtime.onMessage.addListener((message) => {
     shouldRender = true;
   }
   if (event.type === "turn.completed" && event.threadId) {
+    if (!isCurrentConversationEvent && eventConversationId) {
+      completeTurnTraceForConversation(eventConversationId, event.threadId, event.turnId ?? "");
+      scheduleEmptyAssistantResponseNotice({
+        conversationId: eventConversationId,
+        threadId: event.threadId,
+        turnId: event.turnId ?? "",
+        activeUserMessageId: activePromptUserMessageIdsByConversationId.get(eventConversationId) ?? null,
+      });
+      activeTurnsByConversationId.delete(eventConversationId);
+      promptActivitiesByConversationId.delete(eventConversationId);
+      activePromptUserMessageIdsByConversationId.delete(eventConversationId);
+      streamingAssistantMessageIdsByConversationId.delete(eventConversationId);
+      rememberConversationThreadId(eventConversationId, event.threadId);
+      renderConversationListIfVisible();
+      void persistDetachedConversation(eventConversationId);
+      return;
+    }
     flushStreamingAssistantDeltas();
     completeTurnTrace(event.threadId, event.turnId ?? "");
-    if (state.promptActivity?.phase !== "reconnecting" || state.activeTurn?.turnId === event.turnId) {
+    scheduleEmptyAssistantResponseNotice({
+      conversationId: state.currentConversationId || null,
+      threadId: event.threadId,
+      turnId: event.turnId ?? "",
+      activeUserMessageId: state.activePromptUserMessageId || null,
+    });
+    if (
+      shouldClearPromptActivityOnTurnCompleted({
+        current: state.promptActivity,
+        activeTurn: state.activeTurn,
+        completedTurnId: event.turnId,
+      })
+    ) {
       state.promptActivity = null;
     }
     state.streamingAssistantMessageIds.clear();
     state.threadId = event.threadId;
     if (event.turnId) {
       completedTurnIds.add(event.turnId);
+    }
+    const completedCurrentPromptAnchor = !state.activeTurn?.turnId || !event.turnId || state.activeTurn.turnId === event.turnId;
+    if (completedCurrentPromptAnchor) {
+      clearActivePromptUserMessageId();
     }
     if (state.activeTurn?.turnId === event.turnId) {
       state.activeTurn = null;
@@ -889,32 +1213,56 @@ chrome.runtime.onMessage.addListener((message) => {
     shouldRender = true;
   }
   if (event.type === "turn.started" && event.activeTurn) {
-    state.activeTurn = event.activeTurn;
-    if (state.promptActivity) {
-      state.promptActivity = {
-        ...state.promptActivity,
-        phase: "responding",
-      };
+    if (!isCurrentConversationEvent && eventConversationId) {
+      activeTurnsByConversationId.set(eventConversationId, event.activeTurn);
+      rememberConversationThreadId(eventConversationId, event.activeTurn.threadId);
+      const activity = promotePromptActivityForAssistantProgress({
+        current: promptActivitiesByConversationId.get(eventConversationId) ?? null,
+        activeTurn: event.activeTurn,
+      });
+      if (activity) {
+        promptActivitiesByConversationId.set(eventConversationId, activity);
+      } else {
+        promptActivitiesByConversationId.delete(eventConversationId);
+      }
+      renderConversationListIfVisible();
+      return;
     }
+    state.activeTurn = event.activeTurn;
+    rememberAssistantResponseTurnGroup(event.activeTurn);
+    state.promptActivity = promotePromptActivityForAssistantProgress({
+      current: state.promptActivity,
+      activeTurn: state.activeTurn,
+    });
     shouldRender = true;
   }
   if (event.type === "prompt.status" && event.phase) {
+    const eventClientRequestId = normalizePromptStatusClientRequestId(event.clientRequestId);
+    const resolvedClientRequestId = resolvePromptStatusClientRequestId(eventClientRequestId);
+    if (!isCurrentConversationEvent && eventConversationId) {
+      promptActivitiesByConversationId.set(eventConversationId, {
+        clientRequestId: resolvedClientRequestId,
+        phase: event.phase,
+      });
+      renderConversationListIfVisible();
+      return;
+    }
     if (event.phase === "compacting") {
       upsertContextCompactionNotice(
-        createContextCompactionNoticeKey(event.clientRequestId ? { clientRequestId: event.clientRequestId } : {}),
+        createContextCompactionNoticeKey(resolvedClientRequestId ? { clientRequestId: resolvedClientRequestId } : {}),
         "running",
       );
       scheduleConversationPersist();
       shouldRender = state.activeView === "chat";
     } else if (
       isImageWorkflowPromptActivityPhase(event.phase) &&
-      (!event.clientRequestId || state.promptActivity?.clientRequestId !== event.clientRequestId)
+      (!resolvedClientRequestId || !isPromptStatusForActiveRequest(eventClientRequestId, resolvedClientRequestId))
     ) {
       // Image placeholders are bound to a concrete prompt. Ignore stale or anonymous
       // image status events so a previous image turn cannot leak into a text answer.
-    } else if (!state.promptActivity || !event.clientRequestId || state.promptActivity.clientRequestId === event.clientRequestId) {
+    } else if (!state.promptActivity || !eventClientRequestId || state.promptActivity.clientRequestId === eventClientRequestId) {
       state.promptActivity = {
-        clientRequestId: event.clientRequestId ?? state.promptActivity?.clientRequestId ?? "",
+        clientRequestId: resolvedClientRequestId,
         phase: event.phase,
       };
       if (isImageWorkflowPromptActivityPhase(event.phase)) {
@@ -927,11 +1275,19 @@ chrome.runtime.onMessage.addListener((message) => {
     }
   }
   if (event.type === "context.compaction.started") {
+    if (!isCurrentConversationEvent) {
+      renderConversationListIfVisible();
+      return;
+    }
     upsertContextCompactionNotice(createContextCompactionNoticeKey(event), "running");
     scheduleConversationPersist();
     shouldRender = state.activeView === "chat";
   }
   if (event.type === "context.compaction.completed") {
+    if (!isCurrentConversationEvent) {
+      renderConversationListIfVisible();
+      return;
+    }
     if (state.promptActivity?.phase === "compacting") {
       state.promptActivity = null;
     }
@@ -941,6 +1297,43 @@ chrome.runtime.onMessage.addListener((message) => {
     shouldRender = state.activeView === "chat";
   }
   if (event.type === "turn.activity" && event.threadId && event.turnId) {
+    if (!isCurrentConversationEvent && eventConversationId) {
+      activeTurnsByConversationId.set(eventConversationId, {
+        threadId: event.threadId,
+        turnId: event.turnId,
+      });
+      rememberConversationThreadId(eventConversationId, event.threadId);
+      upsertTurnActivityTraceForConversation(eventConversationId, {
+        threadId: event.threadId,
+        turnId: event.turnId,
+        itemId: event.itemId ?? `activity-${Date.now()}`,
+        kind: normalizeTraceEventKind(event.kind),
+        title: event.title ?? "",
+        detail: event.detail ?? "",
+        status: event.status === "completed" ? "completed" : "running",
+        timestampMs: Number.isFinite(event.timestampMs) ? Number(event.timestampMs) : Date.now(),
+      });
+      renderConversationListIfVisible();
+      return;
+    }
+    if (!completedTurnIds.has(event.turnId)) {
+      if (!state.activeTurn || state.activeTurn.turnId !== event.turnId) {
+        state.activeTurn = {
+          threadId: event.threadId,
+          turnId: event.turnId,
+        };
+      }
+      rememberAssistantResponseTurnGroup(state.activeTurn);
+      state.promptActivity = promotePromptActivityForTurnActivity({
+        current: state.promptActivity,
+        activeTurn: state.activeTurn,
+        kind: event.kind,
+        status: event.status === "completed" ? "completed" : "running",
+      });
+      if (event.kind === "image" && state.promptActivity?.clientRequestId) {
+        ensurePendingImageWorkflowMessage(state.promptActivity.clientRequestId, "generated-image");
+      }
+    }
     upsertTurnActivityTrace({
       threadId: event.threadId,
       turnId: event.turnId,
@@ -948,17 +1341,33 @@ chrome.runtime.onMessage.addListener((message) => {
       kind: normalizeTraceEventKind(event.kind),
       title: event.title ?? "",
       detail: event.detail ?? "",
-      status: event.status === "completed" ? "completed" : "running",
+      status: completedTurnIds.has(event.turnId) || event.status === "completed" ? "completed" : "running",
       timestampMs: Number.isFinite(event.timestampMs) ? Number(event.timestampMs) : Date.now(),
     });
     shouldRender = state.activeView === "chat";
   }
   if (event.type === "turn.plan.updated" && event.plan) {
+    if (!isCurrentConversationEvent) {
+      if (eventConversationId) {
+        rememberConversationThreadId(eventConversationId, event.plan.threadId);
+        upsertTurnPlanTraceForConversation(eventConversationId, event.plan);
+      }
+      renderConversationListIfVisible();
+      return;
+    }
     state.latestPlan = event.plan;
     upsertTurnPlanTrace(event.plan);
     shouldRender = state.activeView === "workspace" || state.activeView === "chat";
   }
   if (event.type === "turn.diff.updated" && event.diff) {
+    if (!isCurrentConversationEvent) {
+      if (eventConversationId) {
+        rememberConversationThreadId(eventConversationId, event.diff.threadId);
+        upsertTurnDiffTraceForConversation(eventConversationId, event.diff);
+      }
+      renderConversationListIfVisible();
+      return;
+    }
     state.latestDiff = event.diff;
     upsertTurnDiffTrace(event.diff);
     shouldRender = state.activeView === "workspace" || state.activeView === "chat";
@@ -968,6 +1377,10 @@ chrome.runtime.onMessage.addListener((message) => {
     shouldRender = state.activeView === "workspace";
   }
   if (event.type === "model.rerouted" && event.reroute) {
+    if (!isCurrentConversationEvent) {
+      renderConversationListIfVisible();
+      return;
+    }
     state.latestReroute = event.reroute;
     shouldRender = state.activeView !== "context";
   }
@@ -996,16 +1409,278 @@ function applyActiveTabUpdate(message: {
   state.actionCards = normalizeSidepanelCollections({ actionCards: message.actionCards ?? [] }).actionCards;
   sanitizeUnavailableCurrentPageState();
   render();
+  void installActiveTabImagePromptExtractor();
 }
 
-async function initialize(): Promise<void> {
+async function installActiveTabImagePromptExtractor(): Promise<void> {
+  if (!state.currentPageSupport.available) {
+    return;
+  }
+  const response = await sendRuntimeMessage<Record<string, unknown>>({ type: "page.image-prompt-hover.install" }).catch(
+    () => null,
+  );
+  const permissionPlan = response ? getPermissionRequestForRuntimeResponse(response) : null;
+  if (!permissionPlan) {
+    return;
+  }
+  state.pendingPermission = {
+    plan: permissionPlan,
+    errorMessage: "",
+  };
+  state.actionStatus = "";
+  render();
+}
+
+async function takePendingOnlineImagePromptExtraction(): Promise<void> {
+  const result = await sendRuntimeMessage<{ extraction?: unknown }>({
+    type: "image.prompt.pending.take",
+  }).catch(() => null);
+  if (result?.extraction) {
+    await handleOnlineImagePromptExtraction(result.extraction);
+  }
+}
+
+async function takePendingOnlineImagePromptError(): Promise<void> {
+  const result = await sendRuntimeMessage<{ error?: unknown }>({
+    type: "image.prompt.error.pending.take",
+  }).catch(() => null);
+  if (result?.error) {
+    await handleOnlineImagePromptError(result.error);
+  }
+}
+
+async function takePendingContextMenuImageAttachment(): Promise<void> {
+  const result = await sendRuntimeMessage<{ attachment?: unknown }>({
+    type: "image.attachment.pending.take",
+  }).catch(() => null);
+  const attachment = createContextMenuImageAttachment(result?.attachment);
+  if (!attachment) {
+    return;
+  }
+
+  const plan = planAttachmentSelection(state.fileAttachments, [attachment]);
+  const acceptedFingerprints = new Set(plan.accepted.map((item) => createAttachmentFingerprint(item)));
+  const acceptedAttachments = [attachment].filter((item) => acceptedFingerprints.has(createAttachmentFingerprint(item)));
+  state.activeView = "chat";
+  state.fileAttachments = [...state.fileAttachments, ...acceptedAttachments];
+  state.actionStatus = summarizeRejectedFiles(plan.rejected, stringsForState());
+  render();
+}
+
+type PendingContextMenuAction = "summarize-page" | "summarize-video";
+
+async function takePendingContextMenuAction(): Promise<void> {
+  const result = await sendRuntimeMessage<{ action?: unknown }>({
+    type: "context.menu.pending.take",
+  }).catch(() => null);
+  const action = normalizePendingContextMenuAction(result?.action);
+  if (!action) {
+    return;
+  }
+  await handleActionCard(action);
+}
+
+function normalizePendingContextMenuAction(value: unknown): PendingContextMenuAction | null {
+  return value === "summarize-page" || value === "summarize-video" ? value : null;
+}
+
+function createContextMenuImageAttachment(value: unknown): UserFileAttachment | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const input = value as Record<string, unknown>;
+  const imageUrl = typeof input.imageUrl === "string" ? input.imageUrl.trim() : "";
+  if (isHttpUrl(imageUrl)) {
+    return createRemoteImageAttachment(imageUrl);
+  }
+  const dataUrl = parseContextMenuImageDataUrl(imageUrl);
+  if (!dataUrl) {
+    return null;
+  }
+  return {
+    id: `context-menu-image-${Date.now()}`,
+    name: `context-menu-image.${extensionForImageMimeType(dataUrl.mimeType)}`,
+    mimeType: dataUrl.mimeType,
+    sizeBytes: estimateBase64ByteLength(dataUrl.base64),
+    lastModified: Date.now(),
+    base64: dataUrl.base64,
+    kind: "image",
+  };
+}
+
+function parseContextMenuImageDataUrl(value: string): { mimeType: string; base64: string } | null {
+  const match = /^data:(image\/[a-z0-9.+-]+);base64,([a-z0-9+/=\s]+)$/iu.exec(value.trim());
+  if (!match?.[1] || !match[2]) {
+    return null;
+  }
+  return {
+    mimeType: match[1],
+    base64: match[2].replace(/\s+/gu, ""),
+  };
+}
+
+function extensionForImageMimeType(mimeType: string): string {
+  return mimeType === "image/jpeg" || mimeType === "image/jpg"
+    ? "jpg"
+    : mimeType === "image/webp"
+      ? "webp"
+      : mimeType === "image/gif"
+        ? "gif"
+        : "png";
+}
+
+function estimateBase64ByteLength(base64: string): number {
+  const normalized = base64.replace(/\s+/gu, "");
+  if (!normalized) {
+    return 0;
+  }
+  const padding = normalized.endsWith("==") ? 2 : normalized.endsWith("=") ? 1 : 0;
+  return Math.max(0, Math.floor((normalized.length * 3) / 4) - padding);
+}
+
+function normalizeOnlineImagePromptExtraction(value: unknown): OnlineImagePromptExtraction | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const input = value as Record<string, unknown>;
+  const imageUrl = typeof input.imageUrl === "string" ? input.imageUrl.trim() : "";
+  const attachment = normalizeOnlineImagePromptAttachment(input.attachment);
+  if (!isSupportedImagePromptSource(imageUrl) || !(attachment || isHttpUrl(imageUrl))) {
+    return null;
+  }
+  return {
+    imageUrl,
+    ...(attachment ? { attachment } : {}),
+    ...(typeof input.alt === "string" && input.alt.trim() ? { alt: input.alt.trim().slice(0, 240) } : {}),
+    ...(typeof input.pageTitle === "string" && input.pageTitle.trim()
+      ? { pageTitle: input.pageTitle.trim().slice(0, 240) }
+      : {}),
+    ...(typeof input.pageUrl === "string" && input.pageUrl.trim() ? { pageUrl: input.pageUrl.trim() } : {}),
+  };
+}
+
+function normalizeOnlineImagePromptAttachment(value: unknown): UserFileAttachment | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const input = value as Record<string, unknown>;
+  const id = typeof input.id === "string" ? input.id.trim().slice(0, 160) : "";
+  const name = typeof input.name === "string" ? input.name.trim().slice(0, 180) : "";
+  const mimeType = typeof input.mimeType === "string" ? input.mimeType.trim().slice(0, 120) : "image/png";
+  const base64 = typeof input.base64 === "string" ? input.base64.trim() : "";
+  if (!id || !name || !base64 || input.kind !== "image") {
+    return null;
+  }
+  return {
+    id,
+    name,
+    mimeType: mimeType.startsWith("image/") ? mimeType : "image/png",
+    sizeBytes: Math.max(0, Number(input.sizeBytes) || 0),
+    lastModified: Math.max(0, Number(input.lastModified) || Date.now()),
+    base64,
+    kind: "image",
+    ...(typeof input.sourceUrl === "string" && isHttpUrl(input.sourceUrl.trim()) ? { sourceUrl: input.sourceUrl.trim() } : {}),
+  };
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function isSupportedImagePromptSource(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  return isHttpUrl(value) || normalized.startsWith("blob:") || normalized.startsWith("data:image/");
+}
+
+async function handleOnlineImagePromptExtraction(value: unknown): Promise<void> {
+  const extraction = normalizeOnlineImagePromptExtraction(value);
+  if (!extraction) {
+    return;
+  }
+
+  const prompt = createOnlineImagePromptExtractionPrompt({
+    ...extraction,
+    responseLanguage: state.uiLocale || getBrowserUiLanguage(),
+  });
+  const attachment = extraction.attachment ?? (isHttpUrl(extraction.imageUrl) ? createRemoteImageAttachment(extraction.imageUrl) : null);
+  if (!attachment) {
+    await handleOnlineImagePromptError({
+      code: "attachment-unavailable",
+      imageUrl: extraction.imageUrl,
+    });
+    return;
+  }
+  await startNewChat();
+  if (!canSendCurrentComposerMessage(prompt)) {
+    state.composerDraft = prompt;
+    state.fileAttachments = [attachment];
+    render();
+    return;
+  }
+  clearVisualPromptAttachments();
+  state.fileAttachments = [attachment];
+  state.composerDraft = prompt;
+  state.activeView = "chat";
+  render();
+  await sendPrompt(prompt);
+}
+
+async function handleOnlineImagePromptError(value: unknown): Promise<void> {
+  const error = normalizeOnlineImagePromptError(value);
+  if (!error) {
+    return;
+  }
+  state.activeView = "chat";
+  state.actionStatus = describeOnlineImagePromptError(error);
+  render();
+}
+
+function normalizeOnlineImagePromptError(
+  value: unknown,
+): { code: "attachment-unavailable"; imageUrl: string } | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const input = value as Record<string, unknown>;
+  if (input.code !== "attachment-unavailable") {
+    return null;
+  }
+  const imageUrl = typeof input.imageUrl === "string" ? input.imageUrl.trim() : "";
+  if (!imageUrl) {
+    return null;
+  }
+  return {
+    code: "attachment-unavailable",
+    imageUrl,
+  };
+}
+
+function describeOnlineImagePromptError(error: { code: "attachment-unavailable"; imageUrl: string }): string {
+  if (error.code !== "attachment-unavailable") {
+    return stringsForState().status.fileAttachFailed;
+  }
+  const locale = state.uiLocale || getBrowserUiLanguage();
+  if (locale.startsWith("ko")) {
+    return "이 웹사이트의 이미지를 읽어 첨부하지 못했습니다. 사이트 차단이나 캔버스 보안 제한 때문에 프롬프트 추출을 진행할 수 없습니다.";
+  }
+  return "Chromex could not attach this page image. The site may be blocking image access or canvas export, so prompt extraction could not continue.";
+}
+
+async function initialize(options: { forceCatalog?: boolean } = {}): Promise<void> {
   installSystemThemeListener();
   state.uiLocale = detectUiLocale(getBrowserUiLanguage());
   syncDocumentLanguage();
+  const currentConversationIdBeforeInit = state.currentConversationId;
   try {
     const payload = (await sendRuntimeMessage({
       type: "ui.init",
       ...(targetWindowId ? { windowId: targetWindowId } : {}),
+      ...(options.forceCatalog ? { forceCatalog: true } : {}),
     })) as UiInitPayload & { error?: string };
     if (payload.error) {
       throw new Error(payload.error);
@@ -1044,6 +1719,7 @@ async function initialize(): Promise<void> {
     state.appServerSkills = collections.appServerSkills;
     state.connectedApps = collections.connectedApps;
     state.appServerPlugins = collections.appServerPlugins;
+    state.mcpServers = collections.mcpServers;
     state.recentChats = collections.recentChats;
     state.serverThreads = collections.serverThreads;
     state.rateLimits = payload.rateLimits;
@@ -1056,10 +1732,23 @@ async function initialize(): Promise<void> {
     if (state.selectedProfileId !== selectedProfileBeforeFallback) {
       void sendRuntimeMessage({ type: "profile.select", profileId: state.selectedProfileId });
     }
-    hydrateConversation(payload.currentConversation);
+    if (
+      shouldHydrateInitConversation({
+        currentConversationIdBeforeInit,
+        currentConversationIdNow: state.currentConversationId,
+        payloadConversationId: payload.currentConversation?.id ?? "",
+      })
+    ) {
+      hydrateConversation(payload.currentConversation);
+    }
     syncSelectedReasoningEffort();
     sanitizeUnavailableCurrentPageState();
     renderSync();
+    void installActiveTabImagePromptExtractor();
+    void takePendingOnlineImagePromptError();
+    void takePendingOnlineImagePromptExtraction();
+    void takePendingContextMenuImageAttachment();
+    void takePendingContextMenuAction();
     if (state.attachments.has("open-tabs") || state.selectedTabIds.length) {
       await loadTabs();
     }
@@ -1069,7 +1758,10 @@ async function initialize(): Promise<void> {
   }
 }
 
-function scheduleInitialize(): Promise<void> {
+function scheduleInitialize(options: { forceCatalog?: boolean } = {}): Promise<void> {
+  if (options.forceCatalog) {
+    initializeQueuedForceCatalog = true;
+  }
   if (initializePromise) {
     initializeQueued = true;
     return initializePromise;
@@ -1078,7 +1770,9 @@ function scheduleInitialize(): Promise<void> {
   initializePromise = (async () => {
     do {
       initializeQueued = false;
-      await initialize();
+      const forceCatalog = initializeQueuedForceCatalog;
+      initializeQueuedForceCatalog = false;
+      await initialize({ forceCatalog });
     } while (initializeQueued);
   })().finally(() => {
     initializePromise = null;
@@ -1088,15 +1782,19 @@ function scheduleInitialize(): Promise<void> {
 }
 
 function hydrateConversation(conversation: SavedConversation | null): void {
+  flushStreamingAssistantDeltas();
+  rememberCurrentConversationSnapshot();
   resetVoiceTranscriptMirrorState(voiceTranscriptMirror);
   streamingDeltaBuffer.clear();
   profileQuestionStreamBuffers.clear();
+  profileQuestionCardRenderRequested = false;
   state.streamingAssistantMessageIds.clear();
   state.pendingProfileQuestion = null;
   const normalized = normalizePanelConversation(conversation);
   if (!normalized) {
     state.currentConversationId = "";
     state.threadId = "";
+    state.activePromptUserMessageId = "";
     state.messages = [];
     state.attachments = new Set();
     state.selectedTabIds = [];
@@ -1104,12 +1802,20 @@ function hydrateConversation(conversation: SavedConversation | null): void {
     state.currentReadStrategy = "auto";
     state.fileAttachments = [];
     state.structuredInputs = [];
+    state.chatMessageWindowSize = DEFAULT_CHAT_MESSAGE_WINDOW_SIZE;
+    pendingChatScrollToBottom = false;
+    pendingChatScrollAnchor = null;
     return;
   }
 
   state.currentConversationId = normalized.id;
   state.threadId = normalized.threadId ?? "";
-  state.messages = normalized.messages;
+  state.activePromptUserMessageId = activePromptUserMessageIdsByConversationId.get(normalized.id) ?? "";
+  state.messages = cloneConversationMessages(conversationMessagesById.get(normalized.id) ?? normalized.messages);
+  state.chatMessageWindowSize = DEFAULT_CHAT_MESSAGE_WINDOW_SIZE;
+  pendingChatScrollToBottom = true;
+  pendingChatScrollAnchor = null;
+  chatScrollUserOverrideUntil = 0;
   state.attachments = new Set();
   state.selectedTabIds = [];
   state.historyQuery = "";
@@ -1117,7 +1823,450 @@ function hydrateConversation(conversation: SavedConversation | null): void {
   state.fileAttachments = [];
   syncSelectedReasoningEffort();
   state.structuredInputs = [];
+  rememberConversationMetadata(normalized);
+  state.promptActivity = promptActivitiesByConversationId.get(normalized.id) ?? null;
+  state.activeTurn = activeTurnsByConversationId.get(normalized.id) ?? null;
+  state.streamingAssistantMessageIds = new Set(streamingAssistantMessageIdsByConversationId.get(normalized.id) ?? []);
   void restoreConversationImagePreviews();
+}
+
+function rememberCurrentConversationSnapshot(): void {
+  if (!state.currentConversationId) {
+    return;
+  }
+  conversationMessagesById.set(state.currentConversationId, cloneConversationMessages(state.messages));
+  conversationProfilesById.set(state.currentConversationId, state.selectedProfileId || DEFAULT_PROFILE_ID);
+  conversationModelsById.set(state.currentConversationId, state.selectedModel || undefined);
+  if (state.threadId) {
+    rememberConversationThreadId(state.currentConversationId, state.threadId);
+  }
+  if (state.promptActivity) {
+    promptActivitiesByConversationId.set(state.currentConversationId, state.promptActivity);
+  } else {
+    promptActivitiesByConversationId.delete(state.currentConversationId);
+  }
+  if (state.activePromptUserMessageId) {
+    activePromptUserMessageIdsByConversationId.set(state.currentConversationId, state.activePromptUserMessageId);
+  } else {
+    activePromptUserMessageIdsByConversationId.delete(state.currentConversationId);
+  }
+  if (state.activeTurn) {
+    activeTurnsByConversationId.set(state.currentConversationId, state.activeTurn);
+  } else {
+    activeTurnsByConversationId.delete(state.currentConversationId);
+  }
+  if (state.streamingAssistantMessageIds.size) {
+    streamingAssistantMessageIdsByConversationId.set(
+      state.currentConversationId,
+      new Set(state.streamingAssistantMessageIds),
+    );
+  } else {
+    streamingAssistantMessageIdsByConversationId.delete(state.currentConversationId);
+  }
+}
+
+function rememberConversationMetadata(conversation: SavedConversation): void {
+  conversationProfilesById.set(conversation.id, conversation.profileId || DEFAULT_PROFILE_ID);
+  conversationModelsById.set(conversation.id, conversation.model);
+  if (conversation.threadId) {
+    rememberConversationThreadId(conversation.id, conversation.threadId);
+  }
+  conversationMessagesById.set(conversation.id, cloneConversationMessages(conversation.messages));
+}
+
+function rememberConversationThreadId(conversationId: string, threadId: string | undefined): void {
+  const normalizedConversationId = conversationId.trim();
+  const normalizedThreadId = threadId?.trim() ?? "";
+  if (!normalizedConversationId || !normalizedThreadId) {
+    return;
+  }
+  conversationThreadIdsById.set(normalizedConversationId, normalizedThreadId);
+  flushBufferedConversationBridgeEvents(normalizedConversationId, normalizedThreadId);
+}
+
+function bufferUnresolvedConversationScopedBridgeEvent(event: SidepanelBridgeEvent): void {
+  const threadId = getBridgeEventThreadId(event);
+  if (!threadId) {
+    return;
+  }
+  const events = unresolvedConversationBridgeEventsByThreadId.get(threadId) ?? [];
+  events.push({ ...event });
+  if (events.length > MAX_UNRESOLVED_CONVERSATION_BRIDGE_EVENTS_PER_THREAD) {
+    events.splice(0, events.length - MAX_UNRESOLVED_CONVERSATION_BRIDGE_EVENTS_PER_THREAD);
+  }
+  unresolvedConversationBridgeEventsByThreadId.set(threadId, events);
+}
+
+function flushBufferedConversationBridgeEvents(conversationId: string, threadId: string): void {
+  const events = unresolvedConversationBridgeEventsByThreadId.get(threadId);
+  if (!events?.length) {
+    return;
+  }
+  unresolvedConversationBridgeEventsByThreadId.delete(threadId);
+  for (const event of events) {
+    applyBufferedConversationBridgeEvent(conversationId, event);
+  }
+  renderConversationListIfVisible();
+}
+
+function applyBufferedConversationBridgeEvent(conversationId: string, event: SidepanelBridgeEvent): void {
+  switch (event.type) {
+    case "message.delta": {
+      cancelEmptyAssistantResponseNotice(event.threadId ?? "", event.turnId ?? "", conversationId);
+      upsertAssistantMessageForConversation(conversationId, event.itemId ?? "assistant", event.delta ?? "", true);
+      break;
+    }
+    case "message.completed": {
+      cancelEmptyAssistantResponseNotice(event.threadId ?? "", event.turnId ?? "", conversationId);
+      upsertAssistantMessageForConversation(conversationId, event.itemId ?? "assistant", event.text ?? "", false);
+      clearEmptyAssistantResponseNoticeForTurn(event.threadId ?? "", event.turnId ?? "", conversationId);
+      completeTurnTraceForConversation(conversationId, event.threadId ?? "", event.turnId ?? "");
+      clearConversationActivity(conversationId);
+      void persistDetachedConversation(conversationId);
+      break;
+    }
+    case "turn.started": {
+      if (event.activeTurn) {
+        activeTurnsByConversationId.set(conversationId, event.activeTurn);
+      }
+      break;
+    }
+    case "turn.completed": {
+      completeTurnTraceForConversation(conversationId, event.threadId ?? "", event.turnId ?? "");
+      scheduleEmptyAssistantResponseNotice({
+        conversationId,
+        threadId: event.threadId ?? "",
+        turnId: event.turnId ?? "",
+        activeUserMessageId: activePromptUserMessageIdsByConversationId.get(conversationId) ?? null,
+      });
+      clearConversationActivity(conversationId);
+      void persistDetachedConversation(conversationId);
+      break;
+    }
+    case "turn.activity": {
+      if (!event.threadId || !event.turnId) {
+        break;
+      }
+      activeTurnsByConversationId.set(conversationId, {
+        threadId: event.threadId,
+        turnId: event.turnId,
+      });
+      upsertTurnActivityTraceForConversation(conversationId, {
+        threadId: event.threadId,
+        turnId: event.turnId,
+        itemId: event.itemId ?? `activity-${Date.now()}`,
+        kind: normalizeTraceEventKind(event.kind),
+        title: event.title ?? "",
+        detail: event.detail ?? "",
+        status: event.status === "completed" ? "completed" : "running",
+        timestampMs: Number.isFinite(event.timestampMs) ? Number(event.timestampMs) : Date.now(),
+      });
+      break;
+    }
+    case "turn.plan.updated": {
+      if (event.plan) {
+        upsertTurnPlanTraceForConversation(conversationId, event.plan);
+      }
+      break;
+    }
+    case "turn.diff.updated": {
+      if (event.diff) {
+        upsertTurnDiffTraceForConversation(conversationId, event.diff);
+      }
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+function getBridgeEventThreadId(event: SidepanelBridgeEvent): string {
+  return (
+    event.threadId ??
+    event.activeTurn?.threadId ??
+    event.plan?.threadId ??
+    event.diff?.threadId ??
+    event.reroute?.threadId ??
+    ""
+  ).trim();
+}
+
+function cloneConversationMessages(messages: ConversationMessage[]): ConversationMessage[] {
+  return messages.map((message) => ({
+    ...message,
+    ...(message.notice ? { notice: { ...message.notice } } : {}),
+    ...(message.voice ? { voice: { ...message.voice } } : {}),
+    ...(message.images ? { images: message.images.map((image) => ({ ...image })) } : {}),
+    ...(message.attachments ? { attachments: message.attachments.map((attachment) => ({ ...attachment })) } : {}),
+    ...(message.profile ? { profile: { ...message.profile } } : {}),
+    ...(message.trace ? { trace: message.trace.map((item) => ({ ...item })) } : {}),
+  }));
+}
+
+function resolveBridgeEventConversationId(event: {
+  conversationId?: string;
+  clientRequestId?: string;
+  threadId?: string;
+  activeTurn?: CodexActiveTurn;
+  plan?: { threadId?: string };
+  diff?: { threadId?: string };
+  reroute?: { threadId?: string };
+}): string | null {
+  if (event.conversationId?.trim()) {
+    return event.conversationId.trim();
+  }
+  if (event.clientRequestId) {
+    const conversationId = promptRequestConversationIds.get(event.clientRequestId);
+    if (conversationId) {
+      return conversationId;
+    }
+  }
+  const threadId =
+    event.threadId ??
+    event.activeTurn?.threadId ??
+    event.plan?.threadId ??
+    event.diff?.threadId ??
+    event.reroute?.threadId;
+  if (threadId) {
+    for (const [conversationId, candidateThreadId] of conversationThreadIdsById.entries()) {
+      if (candidateThreadId === threadId) {
+        return conversationId;
+      }
+    }
+  }
+  return null;
+}
+
+function isBridgeEventForCurrentConversation(conversationId: string | null, eventType = ""): boolean {
+  if (isConversationScopedBridgeEventType(eventType)) {
+    return Boolean(conversationId && (!state.currentConversationId || conversationId === state.currentConversationId));
+  }
+  return !conversationId || !state.currentConversationId || conversationId === state.currentConversationId;
+}
+
+function shouldDropUnresolvedConversationScopedBridgeEvent(eventType: string, conversationId: string | null): boolean {
+  return isConversationScopedBridgeEventType(eventType) && !conversationId;
+}
+
+function shouldTreatUnresolvedBridgeEventAsCurrent(
+  event: SidepanelBridgeEvent,
+  conversationId: string | null,
+): boolean {
+  if (conversationId || !state.currentConversationId || !isConversationScopedBridgeEventType(event.type)) {
+    return false;
+  }
+  if (!hasCurrentPromptInFlight()) {
+    return false;
+  }
+  const threadId = getBridgeEventThreadId(event);
+  if (!threadId) {
+    return true;
+  }
+  const claimedThreadId = getCurrentClaimedBridgeEventThreadId();
+  if (claimedThreadId) {
+    return threadId === claimedThreadId;
+  }
+  return Boolean(state.promptActivity || promptSubmissionBootstrapInFlight);
+}
+
+function hasCurrentPromptInFlight(): boolean {
+  return Boolean(
+    promptSubmissionBootstrapInFlight ||
+      state.promptActivity ||
+      state.activeTurn ||
+      state.streamingAssistantMessageIds.size > 0,
+  );
+}
+
+function getCurrentClaimedBridgeEventThreadId(): string {
+  if (state.activeTurn?.threadId) {
+    return state.activeTurn.threadId;
+  }
+  if (state.streamingAssistantMessageIds.size > 0 && state.threadId) {
+    return state.threadId;
+  }
+  return "";
+}
+
+function rememberCurrentConversationThreadForBridgeEvent(event: SidepanelBridgeEvent): void {
+  const threadId = getBridgeEventThreadId(event);
+  if (!threadId || !state.currentConversationId) {
+    return;
+  }
+  rememberConversationThreadId(state.currentConversationId, threadId);
+  if (!state.threadId) {
+    state.threadId = threadId;
+  }
+}
+
+function isConversationScopedBridgeEventType(eventType: string): boolean {
+  switch (eventType) {
+    case "message.delta":
+    case "message.completed":
+    case "message.image":
+    case "prompt.retrying":
+    case "prompt.status":
+    case "context.compaction.started":
+    case "context.compaction.completed":
+    case "turn.started":
+    case "turn.completed":
+    case "turn.activity":
+    case "turn.plan.updated":
+    case "turn.diff.updated":
+    case "model.rerouted":
+      return true;
+    default:
+      return false;
+  }
+}
+
+function getDetachedConversationMessages(conversationId: string): ConversationMessage[] {
+  const existing = conversationMessagesById.get(conversationId);
+  if (existing) {
+    return existing;
+  }
+  const messages: ConversationMessage[] = [];
+  conversationMessagesById.set(conversationId, messages);
+  return messages;
+}
+
+function upsertAssistantMessageForConversation(
+  conversationId: string,
+  itemId: string,
+  fragment: string,
+  append: boolean,
+): void {
+  const messages = getDetachedConversationMessages(conversationId);
+  const existing = messages.find((message) => message.id === itemId);
+  if (!existing && !fragment.trim()) {
+    return;
+  }
+  if (!existing) {
+    messages.push({
+      id: itemId,
+      role: "assistant",
+      text: fragment,
+    });
+    return;
+  }
+  existing.text = append ? `${existing.text}${fragment}` : fragment;
+}
+
+function upsertAssistantImageForConversation(
+  conversationId: string,
+  itemId: string,
+  image: ConversationMessageImage,
+): void {
+  const messages = getDetachedConversationMessages(conversationId);
+  let message = messages.find((entry) => entry.id === itemId);
+  if (!message) {
+    message = {
+      id: itemId,
+      role: "assistant",
+      text: stringsForState().images.generatedResult,
+      images: [],
+    };
+    messages.push(message);
+  }
+  const images = [...(message.images ?? [])];
+  const existingIndex = images.findIndex((candidate) => isSameConversationImage(candidate, image));
+  if (existingIndex >= 0) {
+    images[existingIndex] = image;
+  } else {
+    images.push(image);
+  }
+  message.images = images;
+}
+
+async function hydrateImageForDetachedConversation(input: {
+  conversationId: string;
+  itemId: string;
+  previewRef: string;
+  alt: string;
+}): Promise<void> {
+  upsertAssistantImageForConversation(
+    input.conversationId,
+    input.itemId,
+    createPendingConversationImage(input.previewRef, input.alt),
+  );
+  try {
+    const image = await createConversationImageFromPreviewRef(input.previewRef, input.alt);
+    upsertAssistantImageForConversation(input.conversationId, input.itemId, image);
+  } catch {
+    upsertAssistantImageForConversation(
+      input.conversationId,
+      input.itemId,
+      createFailedConversationImage(input.previewRef, input.alt),
+    );
+  }
+  clearConversationActivity(input.conversationId);
+  await persistDetachedConversation(input.conversationId);
+}
+
+async function hydrateGeneratedImagesForDetachedConversation(
+  conversationId: string,
+  messageId: string,
+  previewRefs: string[],
+  baseAlt: string,
+): Promise<void> {
+  const refs = normalizeImagePreviewRefs(previewRefs, undefined);
+  if (!refs.length) {
+    clearConversationActivity(conversationId);
+    await persistDetachedConversation(conversationId);
+    return;
+  }
+  await Promise.allSettled(
+    refs.map((previewRef, index) =>
+      hydrateImageForDetachedConversation({
+        conversationId,
+        itemId: messageId,
+        previewRef,
+        alt: createGeneratedImageAlt(baseAlt, index, refs.length),
+      }),
+    ),
+  );
+}
+
+function clearConversationActivity(conversationId: string): void {
+  promptActivitiesByConversationId.delete(conversationId);
+  activePromptUserMessageIdsByConversationId.delete(conversationId);
+  activeTurnsByConversationId.delete(conversationId);
+  streamingAssistantMessageIdsByConversationId.delete(conversationId);
+}
+
+async function persistDetachedConversation(conversationId: string): Promise<void> {
+  if (!conversationId || conversationId === state.currentConversationId) {
+    scheduleConversationPersist();
+    return;
+  }
+  const messages = conversationMessagesById.get(conversationId);
+  if (!messages) {
+    return;
+  }
+  const result = await sendRuntimeMessage<{ conversation: SavedConversation }>({
+    type: "conversation.save",
+    conversation: {
+      id: conversationId,
+      title: "",
+      profileId: conversationProfilesById.get(conversationId) ?? DEFAULT_PROFILE_ID,
+      model: conversationModelsById.get(conversationId),
+      threadId: conversationThreadIdsById.get(conversationId) || undefined,
+      messages: serializeConversationMessagesForStorage(messages),
+      attachments: [],
+      structuredInputs: [],
+      selectedTabIds: [],
+      historyQuery: "",
+      readStrategyOverride: "auto",
+      updatedAt: Date.now(),
+    },
+  });
+  state.recentChats = upsertRecentChat(state.recentChats, {
+    id: result.conversation.id,
+    title: result.conversation.title,
+    profileId: result.conversation.profileId,
+    updatedAt: result.conversation.updatedAt,
+  });
+  renderConversationListIfVisible();
 }
 
 function getSelectedModelOption(): CodexModelOption | null {
@@ -1152,98 +2301,77 @@ function getSelectedModelReasoningEfforts(): string[] {
 }
 
 function render(): void {
+  if (composerCompositionInProgress) {
+    renderDeferredDuringComposerComposition = true;
+    return;
+  }
   renderBatcher.request();
 }
 
 function renderSync(): void {
+  if (composerCompositionInProgress) {
+    renderDeferredDuringComposerComposition = true;
+    return;
+  }
   renderBatcher.flush();
 }
 
+function flushDeferredComposerCompositionRender(): void {
+  if (!renderDeferredDuringComposerComposition || composerCompositionInProgress) {
+    return;
+  }
+  renderDeferredDuringComposerComposition = false;
+  render();
+}
+
 function renderNow(): void {
+  if (composerCompositionInProgress) {
+    renderDeferredDuringComposerComposition = true;
+    return;
+  }
+
   ensureComposerProfileSelection();
   const strings = getUiStrings(state.uiLocale);
-  const mentionOptions =
-    state.mentionQuery !== null
-      ? listMentionOptions(state.mentionQuery, state.uiLocale, {
-          apps: state.connectedApps,
-          plugins: state.appServerPlugins,
-          skills: state.appServerSkills,
-        }).slice(0, 12)
-      : [];
-  const tabMentionOptions =
-    state.mentionQuery !== null && state.openTabOptionsState === "ready"
-      ? listTabMentionOptions(state.openTabOptions, state.mentionQuery, 30)
-      : [];
+  const mentionOptions = getMentionOptionsForState();
+  const tabMentionOptions = getTabMentionOptionsForState();
+  const mentionKeyboardOptions = getMentionKeyboardOptionsForState(tabMentionOptions, mentionOptions);
+  const mentionActiveIndex = clampMentionOptionIndex(state.mentionActiveIndex, mentionKeyboardOptions.length);
   const slashOptions = getSlashOptionsForState();
   const composerSuggestionsOpen =
     state.slashQuery !== null || state.mentionQuery !== null || state.attachmentMenuOpen || state.composerModelMenuOpen;
   const isPopup = panelMode === "popup";
   const currentTurnActive = isCurrentTurnActive();
-  const canStopCurrentWork = currentTurnActive || Boolean(state.promptActivity);
-  const canSendMessage = canSendComposerMessage({
-    turnActive: currentTurnActive,
-    promptActivityActive: Boolean(state.promptActivity),
-    streamingAssistantActive: state.streamingAssistantMessageIds.size > 0,
-  });
-  const composerPrimaryAction = resolveComposerPrimaryAction({
-    composerDraft: state.composerDraft,
-    currentWorkActive: canStopCurrentWork,
-    liveActive: state.voiceEnabled,
-  });
-  const composerPrimaryActionId =
-    composerPrimaryAction === "stop-turn"
-      ? "stop-turn"
-      : composerPrimaryAction === "send"
-        ? "send-prompt"
-        : composerPrimaryAction === "stop-live"
-          ? "stop-live"
-        : "live-toggle";
-  const composerPrimaryActionLabel =
-    composerPrimaryAction === "stop-turn"
-      ? strings.actions.stop
-      : composerPrimaryAction === "send"
-        ? strings.actions.send
-        : composerPrimaryAction === "stop-live"
-          ? strings.actions.stopLive
-          : strings.actions.live;
-  const composerPrimaryActionDisabled =
-    composerPrimaryAction === "send"
-      ? !canSendMessage
-      : composerPrimaryAction === "stop-turn"
-        ? false
-        : state.pendingAction === "voice" || state.voiceInputActive;
-  const composerPrimaryActionClass = [
-    "send-button",
-    composerPrimaryAction === "stop-turn" ? "stop" : "",
-    composerPrimaryAction === "start-live" || composerPrimaryAction === "stop-live" ? "live" : "",
-    composerPrimaryAction === "stop-live" ? "live-active" : "",
-  ]
-    .filter(Boolean)
-    .join(" ");
-  const composerPrimaryActionIcon =
-    composerPrimaryAction === "stop-turn"
-      ? renderUiIcon("stop")
-      : composerPrimaryAction === "send"
-        ? renderUiIcon("send")
-        : renderUiIcon("audio-lines");
-  const composerPrimaryActionContent =
-    composerPrimaryAction === "stop-live"
-      ? `<span class="live-button-icon">${composerPrimaryActionIcon}</span><span class="live-button-label">${escapeHtml(strings.actions.stopLive)}</span>`
-      : composerPrimaryActionIcon;
   const quickInteractionLocked = isQuickInteractionLocked({
     turnActive: currentTurnActive,
     promptActivityActive: Boolean(state.promptActivity),
   });
   const selectedModelOption = getSelectedModelOption();
   const isEmptyChat = state.activeView === "chat" && state.messages.length === 0;
+  const nativeHostHealth = getNativeHostHealth({
+    modelCatalogState: state.modelCatalogState,
+    modelCatalogErrorMessage: state.modelCatalogErrorMessage,
+  });
+  const codexBinaryHealth = getCodexBinaryHealth({
+    nativeHostStatus: nativeHostHealth.status,
+    runtimeConfig: state.runtimeConfig,
+    modelCatalogState: state.modelCatalogState,
+  });
   const showAuthOnboarding = shouldShowAuthOnboarding(state.accountStatus);
   const showUsageNoticeOnboarding = shouldShowUsageNoticeOnboarding({
     accountStatus: state.accountStatus,
     usageNoticeAccepted: state.settings.usageNoticeAccepted,
   });
-  const showOnboarding = !smokeTestMode && (showAuthOnboarding || showUsageNoticeOnboarding);
+  const showOnboarding =
+    !smokeTestMode && state.activeView === "chat" && (showAuthOnboarding || showUsageNoticeOnboarding);
   const scrollState = captureScrollPositions();
   const composerState = captureComposerRenderState();
+  const returningToChatView =
+    state.activeView === "chat" && lastRenderedActiveView !== null && lastRenderedActiveView !== "chat";
+  if (returningToChatView) {
+    pendingChatScrollToBottom = true;
+    pendingChatScrollAnchor = null;
+    chatScrollUserOverrideUntil = 0;
+  }
 
   syncDocumentLanguage();
   root.innerHTML = `
@@ -1282,13 +2410,17 @@ function renderNow(): void {
         ${
           showOnboarding
             ? showAuthOnboarding
-              ? renderAuthOnboarding(strings)
+              ? renderAuthOnboarding(strings, nativeHostHealth, codexBinaryHealth)
               : renderUsageNoticeOnboarding(strings)
             : state.activeView === "chat"
             ? renderChatView(strings)
             : state.activeView === "context"
               ? renderContextView(strings)
-              : renderWorkspaceView(strings)
+              : state.activeView === "skills"
+                ? renderSkillsView(strings)
+                : state.activeView === "plugins"
+                  ? renderPluginMcpView(strings)
+                  : renderWorkspaceView(strings)
         }
       </main>
 
@@ -1326,7 +2458,7 @@ function renderNow(): void {
                 state.slashQuery !== null
                   ? renderSlashCommandPopover(strings, slashOptions, clampSlashCommandIndex(state.slashActiveIndex, slashOptions.length))
                   : state.mentionQuery !== null
-                    ? renderMentionTabPicker(strings, tabMentionOptions, mentionOptions)
+                    ? renderMentionTabPicker(strings, tabMentionOptions, mentionOptions, mentionActiveIndex)
                     : ""
               }
                 <div class="composer-bar composer-control-bar">
@@ -1352,15 +2484,7 @@ function renderNow(): void {
                     >
                       ${renderUiIcon("mic")}
                     </button>
-                    <button
-                      id="${composerPrimaryActionId}"
-                      class="${composerPrimaryActionClass}"
-                      aria-label="${escapeAttribute(composerPrimaryActionLabel)}"
-                      title="${escapeAttribute(composerPrimaryActionLabel)}"
-                      ${composerPrimaryActionDisabled ? "disabled" : ""}
-                    >
-                      ${composerPrimaryActionContent}
-                    </button>
+                    ${renderComposerPrimaryActionButton(strings)}
                   </div>
                 </div>`
           }
@@ -1378,6 +2502,175 @@ function renderNow(): void {
   restoreScrollPositions(scrollState);
   updateScrollToBottomButtonVisibility();
   restoreComposerRenderState(composerState);
+  lastRenderedActiveView = state.activeView;
+}
+
+function resolveComposerPrimaryActionButton(strings: ReturnType<typeof getUiStrings>): {
+  id: "send-prompt" | "stop-turn" | "stop-live" | "live-toggle";
+  className: string;
+  label: string;
+  disabled: boolean;
+  content: string;
+} {
+  const currentWorkActive = isCurrentPromptWorkActive();
+  const canStopCurrentWork = currentWorkActive;
+  const canSendMessage = canSendComposerMessage({
+    draft: state.composerDraft,
+    turnActive: currentWorkActive,
+    promptActivityActive: Boolean(state.promptActivity),
+    streamingAssistantActive: state.streamingAssistantMessageIds.size > 0,
+    submissionStartingActive: promptSubmissionBootstrapInFlight,
+  });
+  const action = resolveComposerPrimaryAction({
+    composerDraft: state.composerDraft,
+    currentWorkActive: canStopCurrentWork,
+    liveActive: state.voiceEnabled,
+  });
+  const id =
+    action === "stop-turn"
+      ? "stop-turn"
+      : action === "send"
+        ? "send-prompt"
+        : action === "stop-live"
+          ? "stop-live"
+          : "live-toggle";
+  const label =
+    action === "stop-turn"
+      ? strings.actions.stop
+      : action === "send"
+        ? strings.actions.send
+        : action === "stop-live"
+          ? strings.actions.stopLive
+          : strings.actions.live;
+  const disabled =
+    action === "send"
+      ? !canSendMessage
+      : action === "stop-turn"
+        ? false
+        : state.pendingAction === "voice" || state.voiceInputActive;
+  const className = [
+    "send-button",
+    action === "stop-turn" ? "stop" : "",
+    action === "start-live" || action === "stop-live" ? "live" : "",
+    action === "stop-live" ? "live-active" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const icon =
+    action === "stop-turn" ? renderUiIcon("stop-filled") : action === "send" ? renderUiIcon("send") : renderUiIcon("audio-lines");
+  const content =
+    action === "stop-live"
+      ? `<span class="live-button-icon">${icon}</span><span class="live-button-label">${escapeHtml(strings.actions.stopLive)}</span>`
+      : icon;
+
+  return {
+    id,
+    className,
+    label,
+    disabled,
+    content,
+  };
+}
+
+function renderComposerPrimaryActionButton(strings: ReturnType<typeof getUiStrings> = stringsForState()): string {
+  const button = resolveComposerPrimaryActionButton(strings);
+  return `
+    <button
+      id="${button.id}"
+      class="${button.className}"
+      aria-label="${escapeAttribute(button.label)}"
+      title="${escapeAttribute(button.label)}"
+      ${button.disabled ? "disabled" : ""}
+    >
+      ${button.content}
+    </button>
+  `;
+}
+
+function syncComposerPrimaryActionButton(): void {
+  const existing = root.querySelector<HTMLButtonElement>("#send-prompt, #stop-turn, #live-toggle, #stop-live");
+  if (!existing) {
+    return;
+  }
+
+  const template = document.createElement("template");
+  template.innerHTML = renderComposerPrimaryActionButton().trim();
+  const next = template.content.firstElementChild;
+  if (!(next instanceof HTMLButtonElement)) {
+    return;
+  }
+
+  existing.replaceWith(next);
+  bindComposerPrimaryActionButton(next);
+}
+
+function bindComposerPrimaryActionButton(button: HTMLButtonElement): void {
+  if (button.id === "send-prompt") {
+    button.addEventListener("click", () => {
+      void sendPrompt();
+    });
+    return;
+  }
+
+  if (button.id === "stop-turn") {
+    button.addEventListener("click", () => {
+      void cancelActivePromptFromComposer();
+    });
+    return;
+  }
+
+  if (button.id === "live-toggle" || button.id === "stop-live") {
+    button.addEventListener("click", () => {
+      void toggleRealtimeVoiceFromComposer();
+    });
+  }
+}
+
+async function cancelActivePromptFromComposer(): Promise<void> {
+  const activePromptRequestId = state.promptActivity?.clientRequestId;
+  const activeTurn = state.activeTurn;
+  if (!activeTurn && !activePromptRequestId) {
+    return;
+  }
+  if (activePromptRequestId) {
+    cancelledPromptRequestIds.add(activePromptRequestId);
+  }
+  await chrome.runtime.sendMessage({
+    type: "prompt.cancel",
+    clientRequestId: activePromptRequestId,
+    threadId: activeTurn?.threadId,
+    turnId: activeTurn?.turnId,
+  });
+  state.activeTurn = null;
+  state.promptActivity = null;
+  state.streamingAssistantMessageIds.clear();
+  render();
+}
+
+async function toggleRealtimeVoiceFromComposer(): Promise<void> {
+  if (voiceStartPromise) {
+    return;
+  }
+  state.initError = "";
+  state.actionStatus = "";
+  state.pendingAction = "voice";
+  render();
+  try {
+    if (!state.voiceEnabled) {
+      voiceStartPromise = startRealtimeVoiceSession();
+      await voiceStartPromise;
+    } else {
+      await stopRealtimeVoiceSession({ notifyBridge: true });
+    }
+  } catch (error) {
+    state.initError = error instanceof Error ? error.message : stringsForState().errors.voiceUpdate;
+    cleanupRealtimeVoiceResources();
+    state.voiceEnabled = false;
+  } finally {
+    voiceStartPromise = null;
+    state.pendingAction = "";
+    render();
+  }
 }
 
 function renderFloatingNotifications(): string {
@@ -1458,6 +2751,11 @@ function installGlobalFloatingSurfaceDismissal(): void {
   );
 
   document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && state.pluginConnectionDialog) {
+      event.preventDefault();
+      closePluginConnectionDialog();
+      return;
+    }
     if (event.key === "Escape" && state.nativeTextDialog) {
       event.preventDefault();
       closeNativeTextDialog();
@@ -1523,6 +2821,7 @@ function isInsideFloatingSurfaceInteraction(target: Element): boolean {
 function closeFloatingSurfaces(): boolean {
   const wasOpen = hasOpenFloatingSurface();
   state.mentionQuery = null;
+  state.mentionActiveIndex = 0;
   state.slashQuery = null;
   state.slashActiveIndex = 0;
   state.attachmentMenuOpen = false;
@@ -1534,7 +2833,7 @@ function closeFloatingSurfaces(): boolean {
 
 function renderAppMenu(isPopup: boolean, disabled = false): string {
   const labels = getAppMenuLabels(state.uiLocale);
-  const recentChats = listAppMenuRecentChats(state.recentChats, state.appMenuRecentChatLimit);
+  const recentChats = getRecentChatDisplayItems(state.appMenuRecentChatLimit);
   const moreVisible = hasAppMenuMoreRecentChats(state.recentChats, state.appMenuRecentChatLimit);
   const disabledAttribute = disabled ? "disabled" : "";
   return `
@@ -1560,15 +2859,21 @@ function renderAppMenu(isPopup: boolean, disabled = false): string {
             ? recentChats
                 .map(
                   (chat) => `
-                    <div class="app-menu-chat-row">
+                    <div class="app-menu-chat-row ${chat.selected ? "selected" : ""}">
                       <button
-                        class="app-menu-row recent-chat ${chat.id === state.currentConversationId ? "selected" : ""}"
+                        class="app-menu-row recent-chat ${chat.selected ? "selected" : ""}"
                         data-chat-id="${escapeAttribute(chat.id)}"
                         role="menuitem"
                         ${disabledAttribute}
                       >
                         <span class="app-menu-icon list" aria-hidden="true">${renderAppMenuListIcon()}</span>
-                        <span class="app-menu-label">${escapeHtml(chat.title || labels.chat)}</span>
+                        <span class="recent-chat-copy">
+                          <span class="app-menu-label">${escapeHtml(chat.title || labels.chat)}</span>
+                        </span>
+                        <span class="recent-chat-meta" aria-hidden="true">
+                          ${renderRecentChatProgressIndicator(chat.busy)}
+                          <span class="recent-chat-time">${escapeHtml(chat.relativeTime)}</span>
+                        </span>
                       </button>
                       <button
                         class="app-menu-delete-button"
@@ -1577,7 +2882,7 @@ function renderAppMenu(isPopup: boolean, disabled = false): string {
                         aria-label="${escapeAttribute(labels.deleteChat)}"
                         title="${escapeAttribute(labels.deleteChat)}"
                         ${disabledAttribute}
-                      >${renderUiIcon("x")}</button>
+                      >${renderUiIcon("trash")}</button>
                     </div>
                   `,
                 )
@@ -1603,9 +2908,14 @@ function renderAppMenu(isPopup: boolean, disabled = false): string {
         <span class="app-menu-icon list" aria-hidden="true">${renderAppMenuListIcon()}</span>
         <span class="app-menu-label">${escapeHtml(labels.compactConversation)}</span>
       </button>
-      <button class="app-menu-row" data-menu-view="context" role="menuitem" ${disabledAttribute}>
-        <span class="app-menu-icon" aria-hidden="true">${renderAppMenuContextIcon()}</span>
-        <span class="app-menu-label">${escapeHtml(labels.context)}</span>
+      <button class="app-menu-row" data-menu-view="skills" role="menuitem" ${disabledAttribute}>
+        <span class="app-menu-icon" aria-hidden="true">${renderAppMenuSkillsIcon()}</span>
+        <span class="app-menu-label">${escapeHtml(labels.skills)}</span>
+        <span class="app-menu-chevron" aria-hidden="true">${renderUiIcon("chevron-right")}</span>
+      </button>
+      <button class="app-menu-row" data-menu-view="plugins" role="menuitem" ${disabledAttribute}>
+        <span class="app-menu-icon" aria-hidden="true">${renderAppMenuPluginMcpIcon()}</span>
+        <span class="app-menu-label">${escapeHtml(labels.pluginMcp)}</span>
         <span class="app-menu-chevron" aria-hidden="true">${renderUiIcon("chevron-right")}</span>
       </button>
       <button class="app-menu-row" data-menu-view="workspace" role="menuitem" ${disabledAttribute}>
@@ -1615,6 +2925,54 @@ function renderAppMenu(isPopup: boolean, disabled = false): string {
       </button>
     </div>
   `;
+}
+
+function getRecentChatDisplayItems(limit?: number) {
+  return createRecentChatDisplayItems({
+    recentChats: state.recentChats,
+    currentConversationId: state.currentConversationId,
+    busyConversationIds: getBusyConversationIds(),
+    now: Date.now(),
+    locale: state.uiLocale || getBrowserUiLanguage(),
+    ...(typeof limit === "number" ? { limit } : {}),
+  });
+}
+
+function renderRecentChatProgressIndicator(busy: boolean): string {
+  if (!busy) {
+    return "";
+  }
+
+  return `<span class="recent-chat-progress" role="progressbar"></span>`;
+}
+
+function getBusyConversationIds(): Set<string> {
+  const busyConversationIds = new Set<string>();
+  if (
+    state.currentConversationId &&
+    (Boolean(state.promptActivity) || isCurrentTurnActive() || state.streamingAssistantMessageIds.size > 0)
+  ) {
+    busyConversationIds.add(state.currentConversationId);
+  }
+
+  for (const conversationId of promptActivitiesByConversationId.keys()) {
+    busyConversationIds.add(conversationId);
+  }
+  for (const conversationId of activeTurnsByConversationId.keys()) {
+    busyConversationIds.add(conversationId);
+  }
+  for (const [conversationId, messageIds] of streamingAssistantMessageIdsByConversationId) {
+    if (messageIds.size) {
+      busyConversationIds.add(conversationId);
+    }
+  }
+  return busyConversationIds;
+}
+
+function renderConversationListIfVisible(): void {
+  if (state.appMenuOpen || state.activeView === "workspace") {
+    render();
+  }
 }
 
 const BROWSER_ACTION_PERMISSION_MODES: BrowserActionPermissionMode[] = ["ask", "auto-review", "full"];
@@ -1736,13 +3094,13 @@ function renderBrowserActionPermissionSettings(strings: ReturnType<typeof getUiS
 }
 
 function renderTopQuickActions(disabled = false): string {
-  const ko = state.uiLocale === "ko";
+  const strings = stringsForState();
   const disabledAttribute = disabled ? "disabled" : "";
-  const summarizeTitle = ko ? "현재 페이지 요약" : "Summarize current page";
-  const infographicTitle = ko ? "현재 페이지로 인포그래픽 만들기" : "Create infographic from current page";
+  const summarizeTitle = strings.prompts.summarizePage;
+  const infographicTitle = strings.prompts.createInfographicFromPage;
 
   return `
-    <div class="top-quick-actions" aria-label="${escapeAttribute(ko ? "퀵 메뉴" : "Quick actions")}">
+    <div class="top-quick-actions" aria-label="${escapeAttribute(strings.labels.quickActions)}">
       <button
         class="top-quick-action"
         type="button"
@@ -1789,11 +3147,29 @@ function renderAppMenuContextIcon(): string {
   return renderUiIcon("panel");
 }
 
+function renderAppMenuSkillsIcon(): string {
+  return renderUiIcon("zap");
+}
+
+function renderAppMenuPluginMcpIcon(): string {
+  return renderUiIcon("globe");
+}
+
 function renderAppMenuSettingsIcon(): string {
   return renderUiIcon("settings");
 }
 
-function renderAuthOnboarding(strings: ReturnType<typeof getUiStrings>): string {
+function renderAuthOnboarding(
+  strings: ReturnType<typeof getUiStrings>,
+  nativeHostHealth: NativeHostHealth,
+  codexBinaryHealth: CodexBinaryHealth,
+): string {
+  const readiness = resolveAuthOnboardingReadiness({
+    nativeHostStatus: nativeHostHealth.status,
+    codexBinaryStatus: codexBinaryHealth.status,
+  });
+  const disabledAttribute = readiness.canStartAuth ? "" : " disabled aria-disabled=\"true\"";
+
   return `
     <section class="auth-onboarding" aria-labelledby="auth-onboarding-title">
       <div class="auth-onboarding-card">
@@ -1802,12 +3178,39 @@ function renderAuthOnboarding(strings: ReturnType<typeof getUiStrings>): string 
           <h1 id="auth-onboarding-title">${escapeHtml(strings.onboarding.title)}</h1>
           <p>${escapeHtml(strings.onboarding.subtitle)}</p>
         </div>
+        <div class="auth-onboarding-readiness" aria-label="${escapeAttribute(strings.onboarding.runtimeTitle)}">
+          <div class="auth-onboarding-readiness-title">${escapeHtml(strings.onboarding.runtimeTitle)}</div>
+          ${readiness.steps
+            .map((step) => renderAuthOnboardingRuntimeStep(strings, step, nativeHostHealth, codexBinaryHealth))
+            .join("")}
+        </div>
+        ${
+          readiness.canStartAuth
+            ? ""
+            : `<p class="auth-onboarding-warning">${escapeHtml(strings.onboarding.authDisabled)}</p>`
+        }
+        <div class="auth-onboarding-install">
+          <div class="auth-onboarding-install-title">${escapeHtml(strings.onboarding.installTitle)}</div>
+          <p>${escapeHtml(strings.onboarding.installBody)}</p>
+          <code>${escapeHtml(strings.onboarding.sourceInstallCommand)}</code>
+          <p>${escapeHtml(strings.onboarding.webOnlyUnavailable)}</p>
+        </div>
         <div class="auth-onboarding-actions">
-          <button id="onboarding-chatgpt-login" class="auth-onboarding-primary" type="button">
+          <button id="onboarding-chatgpt-login" class="auth-onboarding-primary" type="button"${disabledAttribute}>
             ${escapeHtml(strings.onboarding.chatgptCta)}
           </button>
-          <button id="onboarding-apikey-login" class="auth-onboarding-link" type="button">
+          <button id="onboarding-apikey-login" class="auth-onboarding-link" type="button"${disabledAttribute}>
             ${escapeHtml(strings.onboarding.apiCta)}
+          </button>
+        </div>
+        <div class="auth-onboarding-runtime-actions">
+          <button id="onboarding-reconnect" class="auth-onboarding-secondary" type="button">
+            ${renderUiIcon("refresh")}
+            <span>${escapeHtml(strings.onboarding.reconnectCta)}</span>
+          </button>
+          <button id="onboarding-open-settings" class="auth-onboarding-secondary" type="button">
+            ${renderUiIcon("settings")}
+            <span>${escapeHtml(strings.onboarding.settingsCta)}</span>
           </button>
         </div>
         <p class="auth-onboarding-note">${escapeHtml(strings.onboarding.bridgeNote)}</p>
@@ -1815,6 +3218,52 @@ function renderAuthOnboarding(strings: ReturnType<typeof getUiStrings>): string 
       </div>
     </section>
   `;
+}
+
+function renderAuthOnboardingRuntimeStep(
+  strings: ReturnType<typeof getUiStrings>,
+  step: { id: "native-host" | "codex-binary" | "account"; state: "ready" | "blocked" | "pending" },
+  nativeHostHealth: NativeHostHealth,
+  codexBinaryHealth: CodexBinaryHealth,
+): string {
+  const icon = step.state === "ready" ? "check" : step.state === "blocked" ? "shield-alert" : "refresh";
+  return `
+    <div class="auth-runtime-step ${step.state}">
+      <span class="auth-runtime-step-icon" aria-hidden="true">${renderUiIcon(icon)}</span>
+      <span class="auth-runtime-step-label">${escapeHtml(
+        getAuthOnboardingRuntimeStepLabel(strings, step.id, nativeHostHealth, codexBinaryHealth),
+      )}</span>
+    </div>
+  `;
+}
+
+function getAuthOnboardingRuntimeStepLabel(
+  strings: ReturnType<typeof getUiStrings>,
+  stepId: "native-host" | "codex-binary" | "account",
+  nativeHostHealth: NativeHostHealth,
+  codexBinaryHealth: CodexBinaryHealth,
+): string {
+  if (stepId === "native-host") {
+    if (nativeHostHealth.status === "setup-needed") {
+      return strings.onboarding.nativeHostSetup;
+    }
+    if (nativeHostHealth.status === "reconnect") {
+      return strings.onboarding.nativeHostReconnect;
+    }
+    return strings.onboarding.nativeHostReady;
+  }
+
+  if (stepId === "codex-binary") {
+    if (codexBinaryHealth.status === "not-detected") {
+      return strings.onboarding.codexBinaryMissing;
+    }
+    if (codexBinaryHealth.status === "pending") {
+      return strings.onboarding.codexBinaryPending;
+    }
+    return strings.onboarding.codexBinaryReady;
+  }
+
+  return strings.onboarding.accountStep;
 }
 
 function renderUsageNoticeOnboarding(strings: ReturnType<typeof getUiStrings>): string {
@@ -1890,16 +3339,10 @@ function renderPendingPermissionPrompt(strings: ReturnType<typeof getUiStrings>)
 
   const message = toUserFacingPermissionRationale(state.pendingPermission.plan.rationale);
   const detail = state.pendingPermission.errorMessage
-    ? state.uiLocale === "ko"
-      ? `Chrome이 자동 권한 요청을 열지 못했습니다: ${state.pendingPermission.errorMessage}`
-      : `Chrome could not open the permission prompt automatically: ${state.pendingPermission.errorMessage}`
+    ? strings.status.permissionPromptFailed(state.pendingPermission.errorMessage)
     : state.pendingPermission.retryMessage
-      ? state.uiLocale === "ko"
-        ? "권한을 허용하면 방금 요청을 자동으로 다시 전송합니다."
-        : "Allow access and Codex will retry the request automatically."
-    : state.uiLocale === "ko"
-      ? "아래 버튼을 눌러 Chrome 권한 프롬프트를 직접 여세요."
-      : "Click the button below to open the Chrome permission prompt.";
+      ? strings.status.permissionRetryAfterGrant
+      : strings.status.permissionOpenManually;
 
   return `
     <section class="permission-prompt" role="status">
@@ -1915,7 +3358,89 @@ function renderPendingPermissionPrompt(strings: ReturnType<typeof getUiStrings>)
 }
 
 function renderNativeDialogs(strings: ReturnType<typeof getUiStrings>): string {
-  return [renderNativeTextDialog(strings), renderNativeConfirmationDialog()].filter(Boolean).join("");
+  return [renderPluginConnectionDialog(strings), renderNativeTextDialog(strings), renderNativeConfirmationDialog()]
+    .filter(Boolean)
+    .join("");
+}
+
+function renderPluginConnectionDialog(strings: ReturnType<typeof getUiStrings>): string {
+  const dialog = state.pluginConnectionDialog;
+  if (!dialog) {
+    return "";
+  }
+
+  const icon = renderPluginConnectionDialogIcon(dialog);
+  const actionLabel = dialog.installUrl ? strings.actions.connect : strings.actions.reload;
+  return `
+    <div class="plugin-connect-backdrop" role="presentation" data-plugin-connect-backdrop>
+      <section class="plugin-connect-modal" role="dialog" aria-modal="true" aria-labelledby="plugin-connect-title">
+        <button
+          class="icon-button plugin-connect-close"
+          type="button"
+          data-plugin-connect-close
+          aria-label="${escapeAttribute(strings.actions.closeProfileEditor)}"
+        >
+          ${renderUiIcon("x")}
+        </button>
+        <div class="plugin-connect-hero" aria-hidden="true">
+          <span class="plugin-connect-brand">${renderUiIcon("code")}</span>
+          <span class="plugin-connect-dots">•••</span>
+          ${icon}
+        </div>
+        <header class="plugin-connect-title">
+          <p>${escapeHtml(dialog.kind === "app" ? strings.labels.apps : strings.labels.plugins)}</p>
+          <h2 id="plugin-connect-title">${escapeHtml(dialog.name)}</h2>
+        </header>
+        <div class="plugin-connect-policy">
+          ${renderPluginConnectionNotice(strings.usageNotice.contextTitle, strings.usageNotice.contextBody)}
+          ${renderPluginConnectionNotice(strings.usageNotice.sensitiveTitle, strings.usageNotice.sensitiveBody)}
+          ${renderPluginConnectionNotice(strings.usageNotice.permissionsTitle, strings.usageNotice.permissionsBody)}
+          ${renderPluginConnectionNotice(strings.usageNotice.safetyTitle, strings.usageNotice.safetyBody)}
+          ${
+            dialog.description
+              ? renderPluginConnectionNotice(strings.labels.pluginMcp, dialog.description)
+              : ""
+          }
+          ${renderPluginConnectionAccountNotice(dialog, strings)}
+        </div>
+        <footer class="plugin-connect-actions">
+          <button class="plugin-connect-primary" type="button" data-plugin-connect-confirm>
+            ${escapeHtml(actionLabel)}
+          </button>
+        </footer>
+      </section>
+    </div>
+  `;
+}
+
+function renderPluginConnectionNotice(title: string, body: string): string {
+  return `
+    <section class="plugin-connect-notice">
+      <strong>${escapeHtml(title)}</strong>
+      <p>${escapeHtml(body)}</p>
+    </section>
+  `;
+}
+
+function renderPluginConnectionAccountNotice(
+  dialog: PluginConnectionDialogState,
+  strings: ReturnType<typeof getUiStrings>,
+): string {
+  if (!dialog.installUrl || !dialog.accountEmail) {
+    return "";
+  }
+  return renderPluginConnectionNotice(
+    strings.usageNotice.appConnectionAccountTitle,
+    strings.usageNotice.appConnectionAccountBody(dialog.accountEmail),
+  );
+}
+
+function renderPluginConnectionDialogIcon(dialog: PluginConnectionDialogState): string {
+  if (dialog.iconUrl && isSafeMessageImageUrl(dialog.iconUrl)) {
+    return `<span class="plugin-connect-app-icon image"><img src="${escapeAttribute(dialog.iconUrl)}" alt="" loading="lazy" /></span>`;
+  }
+  const icon = dialog.kind === "app" ? "globe" : "code";
+  return `<span class="plugin-connect-app-icon">${renderUiIcon(icon)}</span>`;
 }
 
 function renderNativeTextDialog(strings: ReturnType<typeof getUiStrings>): string {
@@ -2049,9 +3574,9 @@ function renderComposerModelDropdown(
   efforts: string[],
   selectedServiceTier: string,
 ): string {
-  const intelligenceLabel = state.uiLocale === "ko" ? "인텔리전스" : "Intelligence";
-  const speedLabel = state.uiLocale === "ko" ? "속도" : "Speed";
-  const modelSectionLabel = state.uiLocale === "ko" ? "모델" : "Model";
+  const intelligenceLabel = strings.labels.intelligence;
+  const speedLabel = strings.labels.speed;
+  const modelSectionLabel = strings.labels.model;
   const reasoningDescriptions = new Map(
     (selectedModelOption?.reasoningEffortOptions ?? []).map((option) => [option.effort, option.description]),
   );
@@ -2184,53 +3709,79 @@ function renderMentionTabPicker(
   strings: ReturnType<typeof getUiStrings>,
   tabs: OpenTabContext[],
   mentionOptions: ReturnType<typeof listMentionOptions>,
+  activeIndex: number,
 ): string {
   const header = renderTabMentionHeader(strings);
-  const openTabsOption = mentionOptions.find((option) => option.contextId === "open-tabs");
+  const openTabsOption = mentionOptions.find(
+    (option): option is Extract<MentionOption, { kind: "context" }> =>
+      option.kind === "context" && option.contextId === "open-tabs",
+  );
+  const structuredMentionOptions = mentionOptions.filter(isStructuredMentionOption);
+  const structuredSearchHint = structuredMentionOptions.length ? "" : renderMentionStructuredSearchHint(strings);
 
   if (state.openTabOptionsState === "loading") {
-    return `<div class="suggestions tab-mention-popover">${header}<div class="tab-mention-status">${escapeHtml(strings.status.tabPickerLoading)}</div></div>`;
+    return `<div class="suggestions tab-mention-popover">${header}<div class="tab-mention-status">${escapeHtml(strings.status.tabPickerLoading)}</div>${structuredSearchHint}${renderMentionStructuredSections(strings, structuredMentionOptions, activeIndex, 0)}</div>`;
   }
 
   if (state.openTabOptionsState === "permission" || state.openTabOptionsState === "idle") {
+    const actionHtml = openTabsOption
+      ? `<button class="tab-mention-action${getMentionKeyboardActiveClass(0, activeIndex)}" data-tab-picker-action="grant" aria-selected="${0 === activeIndex ? "true" : "false"}">
+          <strong>${escapeHtml(`@${openTabsOption.contextId}`)}</strong>
+          <span>${escapeHtml(strings.status.tabPickerPermission)}</span>
+        </button>`
+      : "";
+    const pluginStartIndex = openTabsOption ? 1 : 0;
+    const emptyStatus =
+      !actionHtml && !structuredMentionOptions.length ? `<div class="tab-mention-status">${escapeHtml(strings.status.tabPickerEmpty)}</div>` : "";
     return `
       <div class="suggestions tab-mention-popover">
         ${header}
-        <button class="tab-mention-action" data-tab-picker-action="grant">
-          <strong>${escapeHtml(openTabsOption ? `@${openTabsOption.contextId}` : strings.labels.openTabs)}</strong>
-          <span>${escapeHtml(strings.status.tabPickerPermission)}</span>
-        </button>
+        ${actionHtml}
+        ${emptyStatus}
+        ${structuredSearchHint}
+        ${renderMentionStructuredSections(strings, structuredMentionOptions, activeIndex, pluginStartIndex)}
       </div>
     `;
   }
 
   if (state.openTabOptionsState === "error") {
+    const actionHtml = openTabsOption
+      ? `<button class="tab-mention-action${getMentionKeyboardActiveClass(0, activeIndex)}" data-tab-picker-action="grant" aria-selected="${0 === activeIndex ? "true" : "false"}">
+          <strong>${escapeHtml(strings.actions.refresh)}</strong>
+          <span>${escapeHtml(state.openTabOptionsError || strings.status.tabPickerEmpty)}</span>
+        </button>`
+      : "";
+    const pluginStartIndex = openTabsOption ? 1 : 0;
+    const emptyStatus =
+      !actionHtml && !structuredMentionOptions.length ? `<div class="tab-mention-status">${escapeHtml(strings.status.tabPickerEmpty)}</div>` : "";
     return `
       <div class="suggestions tab-mention-popover">
         ${header}
-        <button class="tab-mention-action" data-tab-picker-action="grant">
-          <strong>${escapeHtml(strings.actions.refresh)}</strong>
-          <span>${escapeHtml(state.openTabOptionsError || strings.status.tabPickerEmpty)}</span>
-        </button>
+        ${actionHtml}
+        ${emptyStatus}
+        ${structuredSearchHint}
+        ${renderMentionStructuredSections(strings, structuredMentionOptions, activeIndex, pluginStartIndex)}
       </div>
     `;
   }
 
   if (tabs.length === 0) {
-    return `<div class="suggestions tab-mention-popover">${header}<div class="tab-mention-status">${escapeHtml(strings.status.tabPickerEmpty)}</div></div>`;
+    const emptyStatus = structuredMentionOptions.length ? "" : `<div class="tab-mention-status">${escapeHtml(strings.status.tabPickerEmpty)}</div>`;
+    return `<div class="suggestions tab-mention-popover">${header}${emptyStatus}${structuredSearchHint}${renderMentionStructuredSections(strings, structuredMentionOptions, activeIndex, 0)}</div>`;
   }
 
   return `
     <div class="suggestions tab-mention-popover">
       ${header}
       ${tabs
-        .map((tab) => {
+        .map((tab, rowIndex) => {
           const selected = state.selectedTabIds.includes(tab.tabId);
           return `
             <button
-              class="tab-mention-row ${selected ? "selected" : ""}"
+              class="tab-mention-row ${selected ? "selected" : ""}${getMentionKeyboardActiveClass(rowIndex, activeIndex)}"
               data-tab-mention-id="${tab.tabId}"
               aria-pressed="${selected ? "true" : "false"}"
+              aria-selected="${rowIndex === activeIndex ? "true" : "false"}"
             >
               ${renderTabMentionIcon(tab)}
               <span class="tab-mention-copy">
@@ -2242,21 +3793,117 @@ function renderMentionTabPicker(
           `;
         })
         .join("")}
+      ${structuredSearchHint}
+      ${renderMentionStructuredSections(strings, structuredMentionOptions, activeIndex, tabs.length)}
     </div>
   `;
 }
 
+function renderMentionStructuredSearchHint(strings: ReturnType<typeof getUiStrings>): string {
+  if ((state.mentionQuery ?? "").trim()) {
+    return "";
+  }
+  return `<div class="tab-mention-structured-hint">${escapeHtml(`${strings.labels.apps} / ${strings.labels.plugins} / ${strings.roles.skill} · @${strings.actions.search}`)}</div>`;
+}
+
+function renderMentionStructuredSections(
+  strings: ReturnType<typeof getUiStrings>,
+  options: StructuredMentionOption[],
+  activeIndex: number,
+  startIndex: number,
+): string {
+  if (!options.length) {
+    return "";
+  }
+  let rowIndex = startIndex;
+  return groupStructuredMentionOptions(options)
+    .map((group) => {
+      const label = getStructuredMentionKindLabel(group.kind, strings);
+      return `
+        <div class="tab-mention-structured-section" aria-label="${escapeAttribute(label)}">
+          <div class="tab-mention-structured-hint">${escapeHtml(label)}</div>
+          ${group.options
+            .map((option) => {
+              const currentIndex = rowIndex;
+              rowIndex += 1;
+              return `
+                <button
+                  class="tab-mention-row structured-mention-row ${escapeAttribute(option.kind)}${getMentionKeyboardActiveClass(currentIndex, activeIndex)}"
+                  data-mention-option-id="${escapeAttribute(option.id)}"
+                  data-mention-kind="${escapeAttribute(option.kind)}"
+                  aria-selected="${currentIndex === activeIndex ? "true" : "false"}"
+                >
+                  ${renderMentionStructuredIcon(option)}
+                  <span class="tab-mention-copy">
+                    <strong>${escapeHtml(option.label)}</strong>
+                    <span>${escapeHtml(option.description)}</span>
+                  </span>
+                  <span class="tab-mention-check" aria-hidden="true">${renderUiIcon("plus")}</span>
+                </button>
+              `;
+            })
+            .join("")}
+        </div>
+      `;
+    })
+    .join("");
+}
+
+function getMentionKeyboardActiveClass(index: number, activeIndex: number): string {
+  return index === activeIndex ? " keyboard-active" : "";
+}
+
+function groupStructuredMentionOptions(
+  options: StructuredMentionOption[],
+): Array<{ kind: StructuredMentionOption["kind"]; options: StructuredMentionOption[] }> {
+  const groups: Array<{ kind: StructuredMentionOption["kind"]; options: StructuredMentionOption[] }> = [];
+  for (const option of options) {
+    const group = groups.find((item) => item.kind === option.kind);
+    if (group) {
+      group.options.push(option);
+    } else {
+      groups.push({ kind: option.kind, options: [option] });
+    }
+  }
+  return groups;
+}
+
+function getStructuredMentionKindLabel(
+  kind: StructuredMentionOption["kind"],
+  strings: ReturnType<typeof getUiStrings>,
+): string {
+  switch (kind) {
+    case "app":
+      return strings.roles.app;
+    case "plugin":
+      return strings.roles.plugin;
+    case "skill":
+      return strings.roles.skill;
+    default:
+      return strings.labels.attachedContext;
+  }
+}
+
+function renderMentionStructuredIcon(option: StructuredMentionOption): string {
+  const iconUrl = option.structuredInput.type === "mention" ? (option.structuredInput.iconUrl ?? "") : "";
+  if (iconUrl && isSafeMessageImageUrl(iconUrl)) {
+    return `
+      <span class="tab-mention-icon image" aria-hidden="true">
+        <img src="${escapeAttribute(iconUrl)}" alt="" loading="lazy" />
+      </span>
+    `;
+  }
+  const icon = option.kind === "app" ? "globe" : option.kind === "skill" ? "zap" : "code";
+  return `<span class="tab-mention-icon fallback-web" aria-hidden="true">${renderUiIcon(icon)}</span>`;
+}
+
 function renderTabMentionHeader(strings: ReturnType<typeof getUiStrings>): string {
   const selectedCount = state.selectedTabIds.length;
-  const doneLabel = state.uiLocale === "ko" ? "완료" : "Done";
+  const doneLabel = strings.actions.done;
   const countLabel =
     selectedCount > 0
-      ? state.uiLocale === "ko"
-        ? `${selectedCount}개 선택됨`
-        : `${selectedCount} selected`
-      : state.uiLocale === "ko"
-        ? "여러 탭 선택 가능"
-        : "Select multiple tabs";
+      ? strings.status.selectedCount(selectedCount)
+      : strings.labels.multipleTabsSelectable;
   return `
     <div class="tab-mention-header">
       <span>${escapeHtml(strings.labels.recentTabs)}</span>
@@ -2336,7 +3983,7 @@ function renderComposerCommandPills(): string {
 }
 
 function renderComposerDictationPanel(strings: ReturnType<typeof getUiStrings>): string {
-  const doneLabel = state.uiLocale === "ko" ? "완료" : "Done";
+  const doneLabel = strings.actions.done;
   return `
     <div class="composer-dictation-panel" role="group" aria-label="${escapeAttribute(strings.actions.voiceInput)}">
       <span class="composer-dictation-plus" aria-hidden="true">${renderUiIcon("plus")}</span>
@@ -2455,7 +4102,7 @@ function renderPinnedActionSuggestions(strings: ReturnType<typeof getUiStrings>,
             <button class="site-suggestion action-card" data-action="${escapeAttribute(card.id)}" ${disabledAttribute}>
               ${renderSuggestionCardIcon(card)}
               <span class="site-suggestion-copy">
-                <strong>${escapeHtml(renderActionCardTitle(card))}</strong>
+                <strong title="${escapeAttribute(card.prompt ?? renderActionCardTitle(strings, card))}">${escapeHtml(renderActionCardTitle(strings, card))}</strong>
               </span>
             </button>
           `,
@@ -2476,15 +4123,30 @@ function getPinnedSuggestionCards(): ActionCard[] {
     state.currentTabReference,
     state.settings.customSiteSuggestions,
   );
-  return mergeProfileAndSiteSuggestionCards(profileCards, [...customCards, ...state.actionCards], 4);
+  const imageCards = createImageAttachmentSuggestionCards({
+    attachments: state.fileAttachments,
+    locale: state.uiLocale,
+  });
+  return mergeProfileAndSiteSuggestionCards([...imageCards, ...profileCards], [...customCards, ...state.actionCards], 4);
 }
 
 function renderSuggestionCardIcon(card: ActionCard): string {
+  if (isImageAttachmentSuggestionCard(card)) {
+    return `
+      <span class="site-suggestion-site-icon attachment-image" aria-hidden="true">
+        ${renderUiIcon("image")}
+      </span>
+    `;
+  }
   if (getSuggestionCardSource(card) === "profile") {
     const selectedProfile = state.profiles.find((profile) => profile.id === state.selectedProfileId) ?? null;
     return renderProfileSuggestionIcon(selectedProfile);
   }
   return renderSiteSuggestionIcon(state.currentTabReference);
+}
+
+function isImageAttachmentSuggestionCard(card: Pick<ActionCard, "id">): boolean {
+  return card.id === IMAGE_ATTACHMENT_PROMPT_EXTRACT_ACTION_ID || card.id === IMAGE_ATTACHMENT_DESCRIBE_ACTION_ID;
 }
 
 function renderProfileSuggestionIcon(profile: ProfileTemplate | null): string {
@@ -2528,21 +4190,14 @@ function isYouTubeLikeUrl(url: string): boolean {
   }
 }
 
-function renderActionCardTitle(card: ActionCard): string {
-  if (state.uiLocale !== "ko") {
-    return card.title;
-  }
-  const titles: Record<string, string> = {
-    "summarize-page": "요약하기",
-    "summarize-video": "영상 요약",
-    "summarize-current-timestamp": "현재 장면 설명",
-    "draft-blog-post": "글 초안 만들기",
-  };
-  return titles[card.id] ?? card.title;
+function renderActionCardTitle(strings: ReturnType<typeof getUiStrings>, card: ActionCard): string {
+  const localizedTitle = (strings.actionCards as Record<string, string | undefined>)[card.id];
+  return localizedTitle?.trim() || card.title;
 }
 
 function renderChatView(strings: ReturnType<typeof getUiStrings>): string {
-  const visibleMessages = state.messages.filter(shouldRenderConversationMessage);
+  const renderableMessages = state.messages.filter(shouldRenderConversationMessage);
+  const { visibleMessages, hiddenCount } = getChatMessageWindow(renderableMessages, state.chatMessageWindowSize);
   const pendingProfileQuestionHtml = renderPendingProfileQuestionCard({
     pending: state.pendingProfileQuestion,
     uiLocale: state.uiLocale,
@@ -2551,7 +4206,7 @@ function renderChatView(strings: ReturnType<typeof getUiStrings>): string {
   });
   const isEmpty = visibleMessages.length === 0 && !pendingProfileQuestionHtml;
   const promptActivityHtml = renderPromptActivity();
-  const { mainMessages, supplementMessages } = partitionPromptActivitySupplementMessages(visibleMessages);
+  const { beforePromptActivityMessages, afterPromptActivityMessages } = partitionPromptActivityMessages(visibleMessages);
 
   return `
     <div class="chat-view ${isEmpty ? "empty" : ""}">
@@ -2573,10 +4228,15 @@ function renderChatView(strings: ReturnType<typeof getUiStrings>): string {
           !isEmpty
             ? `
               <section class="message-stream" id="messages">
-                ${mainMessages.map((message) => renderConversationMessage(message)).join("")}
+                ${
+                  hiddenCount > 0
+                    ? `<div class="older-messages-sentinel" data-older-messages-hidden="${hiddenCount}" aria-hidden="true"></div>`
+                    : ""
+                }
+                ${beforePromptActivityMessages.map((message) => renderConversationMessage(message)).join("")}
                 ${promptActivityHtml}
                 ${pendingProfileQuestionHtml}
-                ${supplementMessages.map((message) => renderConversationMessage(message)).join("")}
+                ${afterPromptActivityMessages.map((message) => renderConversationMessage(message)).join("")}
               </section>
             `
             : ""
@@ -2586,27 +4246,120 @@ function renderChatView(strings: ReturnType<typeof getUiStrings>): string {
   `;
 }
 
-function partitionPromptActivitySupplementMessages(messages: ConversationMessage[]): {
-  mainMessages: ConversationMessage[];
-  supplementMessages: ConversationMessage[];
+function partitionPromptActivityMessages(messages: ConversationMessage[]): {
+  beforePromptActivityMessages: ConversationMessage[];
+  afterPromptActivityMessages: ConversationMessage[];
 } {
-  if (!state.promptActivity) {
-    return { mainMessages: messages, supplementMessages: [] };
+  if (!getCurrentPromptActivityForRender()) {
+    return { beforePromptActivityMessages: messages, afterPromptActivityMessages: [] };
   }
-  const mainMessages: ConversationMessage[] = [];
-  const supplementMessages: ConversationMessage[] = [];
+  const promptAnchorIndex = findPromptActivityAnchorIndex(messages);
+  if (promptAnchorIndex >= 0) {
+    return {
+      beforePromptActivityMessages: messages.slice(0, promptAnchorIndex + 1),
+      afterPromptActivityMessages: messages.slice(promptAnchorIndex + 1),
+    };
+  }
+
+  const beforePromptActivityMessages: ConversationMessage[] = [];
+  const afterPromptActivityMessages: ConversationMessage[] = [];
   for (const message of messages) {
     if (isPromptActivitySupplementMessage(message)) {
-      supplementMessages.push(message);
+      afterPromptActivityMessages.push(message);
     } else {
-      mainMessages.push(message);
+      beforePromptActivityMessages.push(message);
     }
   }
-  return { mainMessages, supplementMessages };
+  return { beforePromptActivityMessages, afterPromptActivityMessages };
 }
 
-function isPromptActivitySupplementMessage(message: ConversationMessage): boolean {
-  return isCurrentPromptActivityPendingImageMessage(message);
+function findPromptActivityAnchorIndex(messages: ConversationMessage[]): number {
+  if (state.activePromptUserMessageId) {
+    const activeIndex = messages.findIndex((message) => message.id === state.activePromptUserMessageId);
+    if (activeIndex >= 0) {
+      return activeIndex;
+    }
+  }
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === "user") {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function isPromptActivitySupplementMessage(
+  message: ConversationMessage,
+): boolean {
+  return isActiveTurnTraceMessage(message) || isCurrentPromptActivityPendingImageMessage(message) || isCurrentStreamingAssistantMessage(message);
+}
+
+function isCurrentStreamingAssistantMessage(message: ConversationMessage): boolean {
+  return message.role === "assistant" && state.streamingAssistantMessageIds.has(message.id);
+}
+
+function resolveActivePromptUserMessageIdForSend(userMessageId: string, sendAsTurnSteer: boolean): string {
+  if (!sendAsTurnSteer) {
+    return userMessageId;
+  }
+  if (state.activePromptUserMessageId && state.messages.some((message) => message.id === state.activePromptUserMessageId)) {
+    return state.activePromptUserMessageId;
+  }
+  return findLatestUserMessageId(state.messages) ?? userMessageId;
+}
+
+function findLatestUserMessageId(messages: ConversationMessage[]): string | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role === "user") {
+      return message.id;
+    }
+  }
+  return null;
+}
+
+function setActivePromptUserMessageId(messageId: string): void {
+  state.activePromptUserMessageId = messageId;
+  if (state.currentConversationId) {
+    activePromptUserMessageIdsByConversationId.set(state.currentConversationId, messageId);
+  }
+}
+
+function clearActivePromptUserMessageId(): void {
+  const conversationId = state.currentConversationId;
+  state.activePromptUserMessageId = "";
+  if (conversationId) {
+    activePromptUserMessageIdsByConversationId.delete(conversationId);
+  }
+}
+
+function isActiveTurnTraceMessage(message: ConversationMessage): boolean {
+  const activeTurn = state.activeTurn;
+  if (!activeTurn?.threadId || !activeTurn.turnId || !isTraceOnlyAssistantMessage(message)) {
+    return false;
+  }
+  return message.id === createTurnTraceMessageId(activeTurn.threadId, activeTurn.turnId);
+}
+
+function normalizePromptStatusClientRequestId(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function resolvePromptStatusClientRequestId(eventClientRequestId: string): string {
+  return eventClientRequestId || state.promptActivity?.clientRequestId || "";
+}
+
+function isPromptStatusForActiveRequest(eventClientRequestId: string, resolvedClientRequestId: string): boolean {
+  if (!resolvedClientRequestId) {
+    return false;
+  }
+  if (!state.promptActivity) {
+    return Boolean(eventClientRequestId);
+  }
+  if (eventClientRequestId && state.promptActivity.clientRequestId !== eventClientRequestId) {
+    return false;
+  }
+  return state.promptActivity.clientRequestId === resolvedClientRequestId;
 }
 
 function isCurrentPromptActivityPendingImageMessage(message: ConversationMessage): boolean {
@@ -2690,7 +4443,7 @@ function createContextCompactionNoticeMessage(
 }
 
 function renderScrollToBottomButton(): string {
-  const label = state.uiLocale === "ko" ? "최신 메시지로 이동" : "Jump to latest message";
+  const label = stringsForState().actions.jumpToLatest;
   return `
     <button
       id="scroll-to-bottom"
@@ -2706,12 +4459,13 @@ function renderScrollToBottomButton(): string {
 }
 
 function renderPromptActivity(): string {
-  if (!state.promptActivity) {
+  const activity = getCurrentPromptActivityForRender();
+  if (!activity) {
     return "";
   }
 
-  const label = formatPromptActivityLabel(state.promptActivity, state.uiLocale);
-  const detail = getPromptActivityDetail(state.promptActivity.phase, state.uiLocale);
+  const label = formatPromptActivityLabel(activity, state.uiLocale);
+  const detail = getPromptActivityDetail(activity.phase, state.uiLocale);
 
   return `
     <article class="message-row assistant prompt-activity-row" aria-live="polite">
@@ -2728,30 +4482,18 @@ function renderPromptActivity(): string {
   `;
 }
 
+function getCurrentPromptActivityForRender(): PromptActivityState | null {
+  return getEffectivePromptActivityForActiveWork({
+    current: state.promptActivity,
+    activeTurn: isCurrentTurnActive() ? state.activeTurn : null,
+    streamingAssistantMessageIds: state.streamingAssistantMessageIds,
+  });
+}
+
 function createVoiceTranscriptMessageId(role: string | undefined): string {
   voiceTranscriptMessageCounter += 1;
   const normalizedRole = role === "user" ? "user" : "assistant";
   return `voice-${normalizedRole}-${Date.now()}-${voiceTranscriptMessageCounter}`;
-}
-
-function shouldRenderConversationMessage(message: ConversationMessage): boolean {
-  if (message.notice) {
-    return true;
-  }
-  if (message.text.trim()) {
-    return true;
-  }
-  if (message.attachments?.length) {
-    return true;
-  }
-  if (message.trace?.length) {
-    return true;
-  }
-  return (message.images ?? []).some((image) => image.src || image.assetRef || image.status === "loading" || image.status === "error");
-}
-
-function isPendingImageMessage(message: ConversationMessage): boolean {
-  return message.role === "assistant" && (message.images ?? []).some((image) => image.status === "loading");
 }
 
 function renderConversationMessage(message: ConversationMessage): string {
@@ -2761,13 +4503,16 @@ function renderConversationMessage(message: ConversationMessage): string {
   const strings = stringsForState();
   const imageHtml = renderConversationMessageImages(message.id, message.images);
   const attachmentHtml = renderConversationMessageAttachments(message.attachments);
-  const traceHtml = renderMessageTrace(message.trace);
+  const structuredInputHtml =
+    message.role === "user" ? renderConversationMessageStructuredInputs(message.structuredInputs) : "";
+  const traceHtml = renderMessageTrace(message.id, message.trace);
   const editing = message.role === "user" && state.editingMessageId === message.id;
   const editingClass = editing ? "editing" : "";
   const voiceClass = message.delivery === "voice" ? "voice-message" : "";
   const imageResultClass = isImageResultAssistantMessage(message) ? "image-result" : "";
   const actionsHtml = renderMessageActions(message, strings);
   const profileHtml = message.role === "user" ? renderMessageProfileBadge(message.profile) : "";
+  const userMetaHtml = message.role === "user" ? renderMessageMetaPills(profileHtml, structuredInputHtml) : "";
   const voiceMetaHtml = message.delivery === "voice" ? renderVoiceMessageMeta(message) : "";
   const hasTextBody = editing || message.delivery === "voice" || Boolean(message.text.trim());
   const messageBodyHtml =
@@ -2778,10 +4523,10 @@ function renderConversationMessage(message: ConversationMessage): string {
       : `<div class="message-content">${renderMessageContentHtml(message.text, {
           enableYouTubeTimestampLinks: shouldRenderYouTubeTimestampLinks(),
         })}</div>`;
-  const cardHtml = hasTextBody || traceHtml || imageHtml
+  const cardHtml = hasTextBody || traceHtml || imageHtml || userMetaHtml
     ? `
     <div class="message-card ${message.role} ${editingClass} ${voiceClass} ${imageResultClass}">
-      ${profileHtml}
+      ${userMetaHtml}
       ${traceHtml}
       ${
         editing
@@ -2811,6 +4556,48 @@ function renderConversationMessage(message: ConversationMessage): string {
       ${actionsHtml}
     </article>
   `;
+}
+
+function renderMessageMetaPills(profileHtml: string, structuredInputHtml: string): string {
+  const pills = `${profileHtml}${structuredInputHtml}`.trim();
+  if (!pills) {
+    return "";
+  }
+  return `<div class="message-meta-pills">${pills}</div>`;
+}
+
+function renderConversationMessageStructuredInputs(
+  inputs: ConversationMessage["structuredInputs"] | undefined,
+): string {
+  const items = (inputs ?? []).filter((input) => input.id && input.name && input.path);
+  if (!items.length) {
+    return "";
+  }
+  return `
+    <div class="conversation-structured-inputs">
+      ${items
+        .map(
+          (input) => `
+            <span
+              class="summary-chip subtle conversation-structured-input"
+              title="${escapeAttribute(input.description || input.path)}"
+            >
+              ${renderStructuredInputIcon(input)}
+              <span>${escapeHtml(input.name)}</span>
+            </span>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function renderStructuredInputIcon(input: ConversationMessageStructuredInput): string {
+  if (input.iconUrl && isSafeMessageImageUrl(input.iconUrl)) {
+    return `<span class="summary-chip-icon image" aria-hidden="true"><img src="${escapeAttribute(input.iconUrl)}" alt="" loading="lazy" /></span>`;
+  }
+  const icon = input.type === "skill" || input.path.startsWith("plugin://") ? "code" : "globe";
+  return `<span class="summary-chip-icon" aria-hidden="true">${renderUiIcon(icon)}</span>`;
 }
 
 function renderConversationNoticeMessage(message: ConversationMessage): string {
@@ -2893,48 +4680,27 @@ function renderConversationMessageAttachmentRole(attachment: ConversationMessage
   }
   const label =
     attachment.role === "target"
-      ? state.uiLocale === "ko"
-        ? "대상"
-        : "Target"
-      : state.uiLocale === "ko"
-        ? "참조"
-        : "Reference";
+      ? stringsForState().labels.attachmentTarget
+      : stringsForState().labels.attachmentReference;
   return `<span class="message-attachment-role ${escapeAttribute(attachment.role)}">${escapeHtml(label)}</span>`;
 }
 
 function formatConversationAttachmentKindLabel(attachment: ConversationMessageAttachment): string {
-  if (state.uiLocale !== "ko") {
-    switch (attachment.kind) {
-      case "image":
-        return "Image";
-      case "pdf":
-        return "PDF";
-      case "docx":
-        return "Document";
-      case "spreadsheet":
-        return "Spreadsheet";
-      case "text":
-        return "Text";
-      case "binary":
-      default:
-        return "File";
-    }
-  }
-
+  const labels = stringsForState().labels;
   switch (attachment.kind) {
     case "image":
-      return "이미지";
+      return labels.image;
     case "pdf":
-      return "PDF";
+      return labels.pdf;
     case "docx":
-      return "문서";
+      return labels.document;
     case "spreadsheet":
-      return "스프레드시트";
+      return labels.spreadsheet;
     case "text":
-      return "텍스트";
+      return labels.textFile;
     case "binary":
     default:
-      return "파일";
+      return labels.file;
   }
 }
 
@@ -2951,16 +4717,20 @@ function formatConversationAttachmentSize(sizeBytes: number): string {
   return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function renderMessageTrace(trace: ConversationMessage["trace"] | undefined): string {
-  const items = (trace ?? []).slice(-MAX_TRACE_ITEMS);
+function renderMessageTrace(messageId: string, trace: ConversationMessage["trace"] | undefined): string {
+  const items = getVisibleTraceItems(trace, MAX_TRACE_ITEMS);
   if (!items.length) {
     return "";
   }
-  const shouldOpen = items.some((item) => item.status === "running");
+  const shouldOpenByDefault = shouldOpenMessageTrace(items);
+  if (shouldOpenByDefault && !messageTraceOpenByMessageId.has(messageId)) {
+    messageTraceOpenByMessageId.set(messageId, true);
+  }
+  const shouldOpen = messageTraceOpenByMessageId.get(messageId) ?? shouldOpenByDefault;
   return `
-    <details class="message-trace-text"${shouldOpen ? " open" : ""}>
+    <details class="message-trace-text"${shouldOpen ? " open" : ""} data-message-trace-id="${escapeAttribute(messageId)}">
       <summary class="message-trace-summary">
-        <span>${escapeHtml(formatTraceSummary(items))}</span>
+        <span>${escapeHtml(formatTraceSummary(items, stringsForState().trace, formatTraceCount))}</span>
         <span class="message-trace-caret" aria-hidden="true">${renderUiIcon("chevron-down")}</span>
       </summary>
       <div class="message-trace-lines" role="list">
@@ -2971,7 +4741,7 @@ function renderMessageTrace(trace: ConversationMessage["trace"] | undefined): st
 }
 
 function renderMessageTraceItem(item: NonNullable<ConversationMessage["trace"]>[number]): string {
-  const title = formatTraceTitle(item);
+  const title = formatTraceTitle(item, stringsForState().trace);
   const detail = formatTraceDetail(item, title);
   return `
     <div class="message-trace-line ${escapeAttribute(item.kind)} ${escapeAttribute(item.status)}" role="listitem">
@@ -2983,83 +4753,8 @@ function renderMessageTraceItem(item: NonNullable<ConversationMessage["trace"]>[
   `;
 }
 
-function formatTraceSummary(items: NonNullable<ConversationMessage["trace"]>): string {
-  const ko = state.uiLocale === "ko";
-  const fileCount = items.filter((item) => item.kind === "file").length;
-  const webCount = items.filter((item) => item.kind === "web").length;
-  const imageCount = items.filter((item) => item.kind === "image").length;
-  const commandCount = items.filter((item) => item.kind === "command").length;
-  const browserCount = items.filter((item) => item.kind === "browser").length;
-  const toolCount = items.filter((item) => item.kind === "tool").length;
-  const running = items.some((item) => item.status === "running");
-  const parts: string[] = [];
-
-  if (ko) {
-    if (fileCount) parts.push(`파일 ${fileCount}개`);
-    if (webCount) parts.push(`검색 ${webCount}건`);
-    if (imageCount) parts.push(`이미지 ${imageCount}개`);
-    if (commandCount) parts.push(`명령 ${commandCount}회`);
-    if (browserCount) parts.push(`브라우저 ${browserCount}회`);
-    if (toolCount) parts.push(`도구 ${toolCount}회`);
-    return `${parts.length ? parts.join(", ") : `작업 ${items.length}개`} ${running ? "탐색 중" : "탐색 마침"}`;
-  }
-
-  if (fileCount) parts.push(`${fileCount} file${fileCount === 1 ? "" : "s"}`);
-  if (webCount) parts.push(`${webCount} search${webCount === 1 ? "" : "es"}`);
-  if (imageCount) parts.push(`${imageCount} image${imageCount === 1 ? "" : "s"}`);
-  if (commandCount) parts.push(`${commandCount} command${commandCount === 1 ? "" : "s"}`);
-  if (browserCount) parts.push(`${browserCount} browser step${browserCount === 1 ? "" : "s"}`);
-  if (toolCount) parts.push(`${toolCount} tool${toolCount === 1 ? "" : "s"}`);
-  return `${parts.length ? parts.join(", ") : `${items.length} step${items.length === 1 ? "" : "s"}`} ${running ? "exploring" : "explored"}`;
-}
-
-function formatTraceDetail(item: NonNullable<ConversationMessage["trace"]>[number], title: string): string {
-  const detail = item.detail.trim();
-  if (!detail || detail === item.title.trim() || detail === title || isNoisyTraceText(detail)) {
-    return "";
-  }
-  return detail;
-}
-
-function formatTraceTitle(item: NonNullable<ConversationMessage["trace"]>[number]): string {
-  const ko = state.uiLocale === "ko";
-  const completed = item.status === "completed";
-  const explicitTitle = item.title.trim();
-  if (item.kind === "reasoning" && explicitTitle && !isNoisyTraceText(explicitTitle)) {
-    return explicitTitle;
-  }
-  switch (item.kind) {
-    case "reasoning":
-      return ko ? "작업 계획" : "Plan";
-    case "web":
-      return ko ? (completed ? "웹 검색 완료" : "웹 검색 중") : completed ? "Web search complete" : "Searching the web";
-    case "file":
-      return ko ? (completed ? "파일 탐색 완료" : "파일 탐색 중") : completed ? "File exploration complete" : "Exploring files";
-    case "command":
-      return ko ? (completed ? "명령 실행 완료" : "명령 실행 중") : completed ? "Command complete" : "Running command";
-    case "browser":
-      return ko ? (completed ? "브라우저 컨텍스트 확인 완료" : "브라우저 컨텍스트 확인 중") : completed ? "Browser context ready" : "Inspecting browser context";
-    case "image":
-      return ko ? (completed ? "이미지 작업 완료" : "이미지 작업 중") : completed ? "Image work complete" : "Working on image";
-    case "response":
-      return ko ? (completed ? "최종 응답 준비 완료" : "최종 응답 작성 중") : completed ? "Final answer ready" : "Writing final answer";
-    case "tool":
-    default:
-      return ko ? (completed ? "도구 실행 완료" : "도구 실행 중") : completed ? "Tool result ready" : "Using tool";
-  }
-}
-
-function isNoisyTraceText(value: string): boolean {
-  const normalized = value.replace(/\s+/gu, " ").trim().toLowerCase();
-  if (!normalized) {
-    return false;
-  }
-  return (
-    normalized === "reviewing the request and planning the next step." ||
-    normalized === "preparing the user-facing response." ||
-    normalized.includes("without exposing hidden chain-of-thought") ||
-    normalized.includes("final answer preparation")
-  );
+function formatTraceCount(count: number, label: string): string {
+  return stringsForState().status.itemCount(count, label);
 }
 
 function isImageResultAssistantMessage(message: ConversationMessage): boolean {
@@ -3081,7 +4776,7 @@ function renderVoiceConversationBody(message: ConversationMessage): string {
   return `
     <div class="voice-assistant-label">
       <span class="voice-message-icon" aria-hidden="true">${renderVoiceMessageIcon("mic")}</span>
-      <span>${escapeHtml(state.uiLocale === "ko" ? "음성 응답" : "Voice response")}</span>
+      <span>${escapeHtml(stringsForState().labels.voiceResponse)}</span>
     </div>
     <div class="message-content voice-transcript-content">${renderMessageContentHtml(message.text, {
       enableYouTubeTimestampLinks: shouldRenderYouTubeTimestampLinks(),
@@ -3093,9 +4788,7 @@ function renderVoiceMessageMeta(message: ConversationMessage): string {
   const label =
     message.role === "user"
       ? formatVoiceDurationLabel(getVoiceMessageDurationMs(message))
-      : state.uiLocale === "ko"
-        ? "실시간 음성"
-        : "Realtime voice";
+      : stringsForState().labels.realtimeVoice;
 
   return `
     <div class="voice-message-meta ${message.role}">
@@ -3146,7 +4839,7 @@ function renderMessageEditComposer(
   message: ConversationMessage,
   strings: ReturnType<typeof getUiStrings>,
 ): string {
-  const disabled = canSendCurrentComposerMessage() ? "" : "disabled";
+  const disabled = canStartMessageReplayInteraction() ? "" : "disabled";
   return `
     <div class="message-edit-box">
       <textarea data-message-edit-input="${escapeAttribute(message.id)}">${escapeHtml(message.text)}</textarea>
@@ -3166,24 +4859,11 @@ function getMessageActionTooltip(
   action: "copy" | "copied" | "edit" | "regenerate",
   strings: ReturnType<typeof getUiStrings>,
 ): string {
-  if (state.uiLocale === "ko") {
-    switch (action) {
-      case "copy":
-        return "메시지 복사";
-      case "copied":
-        return "복사됨";
-      case "edit":
-        return "메시지 수정";
-      case "regenerate":
-        return "다시 생성";
-    }
-  }
-
   switch (action) {
     case "copy":
-      return "Copy message";
+      return strings.actions.copyMessage;
     case "copied":
-      return "Copied";
+      return strings.actions.copiedMessage;
     case "edit":
       return strings.actions.editMessage;
     case "regenerate":
@@ -3226,7 +4906,7 @@ function renderMessageActions(
     return "";
   }
 
-  const disabled = canSendCurrentComposerMessage() ? "" : "disabled";
+  const disabled = canStartMessageReplayInteraction() ? "" : "disabled";
   if (message.role === "assistant") {
     if (
       !shouldRenderAssistantMessageActions({
@@ -3273,6 +4953,7 @@ function renderMessageActions(
 }
 
 function renderConversationMessageImages(messageId: string, images: ConversationMessage["images"] | undefined): string {
+  const strings = stringsForState();
   const renderableImages = (images ?? [])
     .map((image, index) => ({ image, index }))
     .filter(
@@ -3295,14 +4976,14 @@ function renderConversationMessageImages(messageId: string, images: Conversation
                   data-image-followup="1"
                   data-image-message-id="${escapeAttribute(messageId)}"
                   data-image-index="${index}"
-                  title="${escapeAttribute(state.uiLocale === "ko" ? "이 이미지 후속 편집" : "Follow-up edit this image")}"
-                  aria-label="${escapeAttribute(state.uiLocale === "ko" ? "이 이미지 후속 편집" : "Follow-up edit this image")}"
+                  title="${escapeAttribute(strings.actions.followUpEditImage)}"
+                  aria-label="${escapeAttribute(strings.actions.followUpEditImage)}"
                 >
-                  <img src="${escapeAttribute(image.src)}" alt="${escapeAttribute(image.alt || "Image")}" loading="lazy" />
+                  <img src="${escapeAttribute(image.src)}" alt="${escapeAttribute(image.alt || strings.images.image)}" loading="lazy" />
                 </button>
                 <figcaption class="message-image-overlay-actions">
                   <button type="button" class="image-action-button overlay edit" data-image-followup="1" data-image-message-id="${escapeAttribute(messageId)}" data-image-index="${index}">
-                    ${escapeHtml(state.uiLocale === "ko" ? "편집" : "Edit")}
+                    ${escapeHtml(strings.actions.edit)}
                   </button>
                   <button
                     type="button"
@@ -3321,21 +5002,14 @@ function renderConversationMessageImages(messageId: string, images: Conversation
           }
           const status = image.status ?? "loading";
           if (status === "loading") {
-            const detail = image.alt || (state.uiLocale === "ko" ? "이미지 생성 중" : "Generating image");
+            const detail = image.alt || strings.images.generating;
             return `
               <figure class="message-image-frame pending loading" aria-label="${escapeAttribute(detail)}">
                 <div class="message-image-skeleton" aria-hidden="true"></div>
               </figure>
             `;
           }
-          const label =
-            status === "deleted"
-              ? state.uiLocale === "ko"
-                ? "삭제된 이미지입니다. 원본 파일이 없어 미리보기를 복원할 수 없습니다."
-                : "Deleted image. The original file is no longer available."
-              : state.uiLocale === "ko"
-                ? "이미지 미리보기를 불러오지 못했습니다."
-                : "Image preview could not be loaded.";
+          const label = status === "deleted" ? strings.images.deleted : strings.images.previewFailed;
           return `
             <figure class="message-image-frame pending ${status}">
               <div class="message-image-placeholder">
@@ -3360,38 +5034,13 @@ function renderContextView(strings: ReturnType<typeof getUiStrings>): string {
       ${renderBackToChatHeader(strings, "context")}
       <section class="surface stack">
         <div class="stack-header">
-          <h2>${escapeHtml(strings.labels.attachedContext)}</h2>
+          <h2>${escapeHtml(strings.labels.openTabsPanel)}</h2>
         </div>
+        <p class="stack-copy">${escapeHtml(strings.help.contextRefine)}</p>
         <div class="chips source-chips">
           ${renderContextReferenceChip("open-tabs", renderOpenTabsLabel(strings))}
         </div>
-        ${
-          state.attachments.size || state.fileAttachments.length || state.structuredInputs.length
-            ? `<div class="context-summary">${renderAttachedContextSummary(strings)}</div>`
-            : `<p class="empty-state">${escapeHtml(strings.help.emptyConversation)}</p>`
-        }
       </section>
-
-      ${
-        state.structuredInputs.length
-          ? `<section class="surface stack">
-              <div class="stack-header">
-                <h2>${escapeHtml(strings.labels.attachedContext)}</h2>
-              </div>
-              <div class="chips secondary">
-                ${state.structuredInputs
-                  .map(
-                    (input) => `
-                      <button class="chip active structured-chip" data-structured-id="${escapeAttribute(input.id)}">
-                        ${escapeHtml(structuredInputRoleLabel(input, strings))}: ${escapeHtml(input.name)}
-                      </button>
-                    `,
-                  )
-                  .join("")}
-              </div>
-            </section>`
-          : ""
-      }
 
       ${
         hasPageContext
@@ -3442,7 +5091,14 @@ function renderContextView(strings: ReturnType<typeof getUiStrings>): string {
             </section>`
           : ""
       }
+    </div>
+  `;
+}
 
+function renderSkillsView(strings: ReturnType<typeof getUiStrings>): string {
+  return `
+    <div class="view-scroll context-view skills-view" data-scroll-key="skills-view">
+      ${renderBackToChatHeader(strings, "skills")}
       <section class="surface stack">
         <div class="stack-header">
           <h2>${escapeHtml(strings.labels.codexSkills)}</h2>
@@ -3460,7 +5116,69 @@ function renderContextView(strings: ReturnType<typeof getUiStrings>): string {
   `;
 }
 
-function renderBackToChatHeader(strings: ReturnType<typeof getUiStrings>, view: "context" | "settings"): string {
+function renderPluginMcpView(strings: ReturnType<typeof getUiStrings>): string {
+  const apps = getRenderableConnectedApps();
+  const plugins = getRenderableAppServerPlugins();
+
+  return `
+    <div class="view-scroll context-view plugins-view" data-scroll-key="plugins-view">
+      ${renderBackToChatHeader(strings, "plugins")}
+      <section class="surface stack">
+        <div class="stack-header">
+          <h2>${escapeHtml(strings.labels.apps)}</h2>
+        </div>
+        <p class="stack-copy">${escapeHtml(strings.help.pluginMcp)}</p>
+        <div class="codex-skill-list">
+          ${apps.map((app) => renderConnectedAppToggle(app)).join("")}
+        </div>
+        ${apps.length ? "" : `<p class="empty-state">${escapeHtml(strings.help.emptyApps)}</p>`}
+      </section>
+
+      <section class="surface stack">
+        <div class="stack-header">
+          <h2>${escapeHtml(strings.labels.plugins)}</h2>
+          <button id="reload-plugin-catalog" class="ghost-button small">${escapeHtml(strings.actions.reload)}</button>
+        </div>
+        <div class="codex-skill-list">
+          ${plugins.map((plugin) => renderAppServerPluginToggle(plugin)).join("")}
+        </div>
+        ${plugins.length ? "" : `<p class="empty-state">${escapeHtml(strings.help.emptyPlugins)}</p>`}
+      </section>
+
+      <section class="surface stack">
+        <div class="stack-header">
+          <h2>${escapeHtml(strings.labels.mcpServers)}</h2>
+          <button id="reload-mcp-servers" class="ghost-button small">${escapeHtml(strings.actions.reload)}</button>
+        </div>
+        <div class="codex-skill-list">
+          ${state.mcpServers.map((server) => renderMcpServerRow(server, strings)).join("")}
+        </div>
+        ${state.mcpServers.length ? "" : `<p class="empty-state">${escapeHtml(strings.help.emptyMcpServers)}</p>`}
+      </section>
+    </div>
+  `;
+}
+
+function getRenderableConnectedApps(): CodexAppOption[] {
+  return state.connectedApps.filter((app) => app.isAccessible && app.isEnabled);
+}
+
+function isConnectedAppMentionAvailable(app: CodexAppOption): boolean {
+  return app.isAccessible && app.isEnabled;
+}
+
+function getRenderableAppServerPlugins(): CodexPluginOption[] {
+  return state.appServerPlugins.filter((plugin) => plugin.installed && plugin.enabled);
+}
+
+function isAppServerPluginMentionAvailable(plugin: CodexPluginOption): boolean {
+  return isPluginMentionRouteable(plugin, state.connectedApps);
+}
+
+function renderBackToChatHeader(
+  strings: ReturnType<typeof getUiStrings>,
+  view: "context" | "skills" | "plugins" | "settings",
+): string {
   return `
     <div class="view-return-header ${view}" data-view-return-header="${escapeAttribute(view)}">
       <button class="settings-back" data-view="chat" type="button">
@@ -3469,6 +5187,112 @@ function renderBackToChatHeader(strings: ReturnType<typeof getUiStrings>, view: 
       </button>
     </div>
   `;
+}
+
+function renderConnectedAppToggle(app: CodexAppOption): string {
+  const strings = stringsForState();
+  const selected = isStructuredInputSelected(app.id);
+  const detail = app.description || app.path;
+  return `
+    <label
+      class="codex-skill-toggle mention-toggle ${selected ? "enabled" : ""}"
+    >
+      ${renderPluginMcpRowIcon(app.iconUrl, "globe")}
+      <span class="codex-skill-copy">
+        <strong>${escapeHtml(app.name)}</strong>
+        <span>${escapeHtml(detail)}</span>
+      </span>
+      <span class="settings-switch codex-skill-switch">
+        <input
+          type="checkbox"
+          data-app-id="${escapeAttribute(app.id)}"
+          aria-label="${escapeAttribute(app.name)}"
+          ${selected ? "checked" : ""}
+        />
+        <span aria-hidden="true"></span>
+      </span>
+    </label>
+  `;
+}
+
+function renderAppServerPluginToggle(plugin: CodexPluginOption): string {
+  const strings = stringsForState();
+  const connectionState = getPluginConnectionState(plugin, state.connectedApps);
+  const connectionRequired = connectionState === "connection-required";
+  const detail =
+    connectionRequired
+      ? strings.status.setupNeeded
+      : plugin.description || plugin.marketplaceName || plugin.path;
+  return `
+    <div
+      class="codex-skill-toggle mention-toggle ${connectionRequired ? "connection-required" : ""}"
+    >
+      ${renderPluginMcpRowIcon(plugin.iconUrl, "code")}
+      <span class="codex-skill-copy">
+        <strong>${escapeHtml(plugin.name)}</strong>
+        <span>${escapeHtml(detail)}</span>
+      </span>
+      ${connectionRequired ? renderPluginConnectionButton(plugin, strings) : renderPluginAvailabilityPill(connectionState, strings)}
+    </div>
+  `;
+}
+
+function renderPluginConnectionButton(plugin: CodexPluginOption, strings: ReturnType<typeof getUiStrings>): string {
+  return `
+    <button
+      class="plugin-connect-row-action"
+      type="button"
+      data-plugin-settings-id="${escapeAttribute(plugin.id)}"
+    >
+      ${escapeHtml(strings.actions.connect)}
+    </button>
+  `;
+}
+
+function renderPluginAvailabilityPill(
+  connectionState: ReturnType<typeof getPluginConnectionState>,
+  strings: ReturnType<typeof getUiStrings>,
+): string {
+  const label = connectionState === "available" ? strings.status.connected : strings.status.workspaceActive;
+  return `<span class="plugin-connect-row-action plugin-connect-row-action-muted" aria-hidden="true">${escapeHtml(label)}</span>`;
+}
+
+function renderPluginMcpRowIcon(iconUrl: string | undefined, fallbackIcon: UiIconName): string {
+  if (iconUrl && isSafeMessageImageUrl(iconUrl)) {
+    return `<span class="runtime-skill-icon image" aria-hidden="true"><img src="${escapeAttribute(iconUrl)}" alt="" loading="lazy" /></span>`;
+  }
+  return `<span class="runtime-skill-icon" aria-hidden="true">${renderUiIcon(fallbackIcon)}</span>`;
+}
+
+function renderMcpServerRow(server: CodexMcpServerOption, strings: ReturnType<typeof getUiStrings>): string {
+  const needsLogin = server.authStatus === "notLoggedIn" || server.authStatus === "oauth";
+  return `
+    <div class="codex-skill-toggle mcp-server-row ${server.isAuthenticated ? "enabled" : ""}">
+      <span class="runtime-skill-icon" aria-hidden="true">${renderUiIcon("globe")}</span>
+      <span class="codex-skill-copy">
+        <strong>${escapeHtml(server.name)}</strong>
+        <span>${escapeHtml(server.description || server.path)}</span>
+      </span>
+      <span class="runtime-skill-actions">
+        <span class="runtime-skill-status ${server.isAuthenticated ? "ready" : "missing"}">
+          ${escapeHtml(server.isAuthenticated ? strings.status.connected : strings.status.setupNeeded)}
+        </span>
+        ${
+          needsLogin && !server.isAuthenticated
+            ? `<button
+                type="button"
+                class="ghost-button small"
+                data-mcp-oauth-server="${escapeAttribute(server.name)}"
+              >${escapeHtml(strings.actions.connect)}</button>`
+            : ""
+        }
+      </span>
+    </div>
+  `;
+}
+
+function isStructuredInputSelected(inputId: string): boolean {
+  return state.structuredInputs.some((input) => input.id === inputId);
 }
 
 function renderCodexSkillToggle(skill: CodexSkillOption): string {
@@ -3700,6 +5524,7 @@ function renderWorkspaceView(strings: ReturnType<typeof getUiStrings>): string {
               strings.accountHelp,
               `<div class="settings-action-cluster account-settings-actions">
                 <span class="settings-status-pill accent">${escapeHtml(renderAccountBadge())}</span>
+                ${renderAccountEmailPill()}
                 ${state.rateLimits ? `<span class="settings-status-pill">${escapeHtml(renderRateLimitBadge(state.rateLimits))}</span>` : ""}
                 ${!isLoggedIn ? `<button id="chatgpt-login">${escapeHtml(strings.actions.chatgptLogin)}</button>` : ""}
                 <button id="apikey-login">${escapeHtml(strings.actions.apiKeyFallback)}</button>
@@ -3731,7 +5556,7 @@ function renderWorkspaceView(strings: ReturnType<typeof getUiStrings>): string {
               `<div class="settings-action-cluster">
                 <span class="settings-status-pill neutral">${escapeHtml(
                   state.imageAssetFolder.assetCount
-                    ? `${state.imageAssetFolder.assetCount} ${state.uiLocale === "ko" ? "개" : "files"}`
+                    ? formatTraceCount(state.imageAssetFolder.assetCount, strings.labels.file)
                     : strings.status.noGeneratedImages,
                 )}</span>
                 <button id="refresh-image-folder">${escapeHtml(strings.actions.refresh)}</button>
@@ -3744,7 +5569,7 @@ function renderWorkspaceView(strings: ReturnType<typeof getUiStrings>): string {
               `<div class="settings-action-cluster">
                 <span class="settings-status-pill neutral">${escapeHtml(
                   state.diagnosticLogFolder.files.length
-                    ? `${state.diagnosticLogFolder.files.length} ${state.uiLocale === "ko" ? "개" : "files"}`
+                    ? formatTraceCount(state.diagnosticLogFolder.files.length, strings.labels.file)
                     : strings.status.pending,
                 )}</span>
                 <button id="refresh-log-folder">${escapeHtml(strings.actions.refresh)}</button>
@@ -3816,17 +5641,14 @@ function getSelectedProfile(): ProfileTemplate | null {
 
 function renderCustomSiteSuggestionSettings(strings: ReturnType<typeof getUiStrings>): string {
   const siteKey = state.currentTabReference ? resolveCustomSiteSuggestionKey(state.currentTabReference.url) : null;
-  const siteLabel = siteKey ?? (state.uiLocale === "ko" ? "일반 웹사이트에서 사용할 수 있습니다" : "Available on normal web sites");
+  const siteLabel = siteKey ?? strings.status.customSiteSuggestionGenericSite;
   const suggestions = listCustomSiteSuggestionsForTab(
     state.currentTabReference,
     state.settings.customSiteSuggestions,
   ).slice(0, 6);
   const disabledAttribute = siteKey ? "" : "disabled";
   const placeholder = strings.prompts.customSiteSuggestion;
-  const emptyLabel =
-    state.uiLocale === "ko"
-      ? "이 사이트에 저장된 추천 명령어가 없습니다."
-      : "No custom suggestions saved for this site.";
+  const emptyLabel = strings.status.customSiteSuggestionEmpty;
 
   return `
     <div class="custom-site-suggestion-control">
@@ -3946,6 +5768,19 @@ function createMessageProfileSnapshot(): ConversationMessageProfile | undefined 
     color: normalizeProfileColorForUi(profile.visual?.color),
     icon: profile.visual?.icon ?? DEFAULT_PROFILE_VISUAL_ICON,
   };
+}
+
+function createConversationMessageStructuredInputs(
+  inputs: CodexStructuredInput[],
+): ConversationMessageStructuredInput[] {
+  return inputs.map((input) => ({
+    id: input.id,
+    type: input.type,
+    name: input.name,
+    path: input.path,
+    ...(input.description ? { description: input.description } : {}),
+    ...("iconUrl" in input && input.iconUrl ? { iconUrl: input.iconUrl } : {}),
+  }));
 }
 
 function createProfileEditorState(mode: "create" | "edit", profile?: ProfileTemplate | null): ProfileEditorState {
@@ -4135,25 +5970,29 @@ function closeProfileEditor(): void {
   render();
 }
 
-function createNativeTextDialog(kind: NativeTextDialogState["kind"]): NativeTextDialogState {
+function createNativeTextDialog(
+  kind: NativeTextDialogState["kind"],
+  options: Partial<Pick<NativeTextDialogState, "afterSubmit" | "description">> = {},
+): NativeTextDialogState {
   const strings = getUiStrings(state.uiLocale);
-  const isKo = state.uiLocale === "ko";
   return {
     kind,
     title: strings.actions.apiKeyFallback,
-    description: isKo
-      ? "API 키는 확장 프로그램 저장소에 저장하지 않고 로컬 네이티브 브리지로만 전달합니다."
-      : "The extension does not store the API key; it is only passed to the local native bridge.",
+    description: options.description ?? strings.prompts.apiKeyBridgeDescription,
     label: strings.prompts.apiKey,
     placeholder: "sk-...",
     confirmLabel: strings.actions.save,
     cancelLabel: strings.actions.cancelEdit,
     inputType: "password",
+    ...(options.afterSubmit ? { afterSubmit: options.afterSubmit } : {}),
   };
 }
 
-function openNativeTextDialog(kind: NativeTextDialogState["kind"]): void {
-  state.nativeTextDialog = createNativeTextDialog(kind);
+function openNativeTextDialog(
+  kind: NativeTextDialogState["kind"],
+  options: Partial<Pick<NativeTextDialogState, "afterSubmit" | "description">> = {},
+): void {
+  state.nativeTextDialog = createNativeTextDialog(kind, options);
   closeFloatingSurfaces();
   render();
   window.setTimeout(() => root.querySelector<HTMLInputElement>("#native-text-input")?.focus(), 0);
@@ -4185,7 +6024,7 @@ async function submitNativeTextDialog(): Promise<void> {
   if (!value) {
     state.nativeTextDialog = {
       ...dialog,
-      error: state.uiLocale === "ko" ? "값을 입력해 주세요." : "Enter a value.",
+      error: stringsForState().errors.valueRequired,
     };
     render();
     return;
@@ -4195,12 +6034,19 @@ async function submitNativeTextDialog(): Promise<void> {
   render();
 
   try {
-    await sendRuntimeMessage({ type: "account.login.start", loginType: "apiKey", apiKey: value });
+    await sendRuntimeMessage({ type: "account.login.start", loginType: "apiKey", apiKey: value, confirmed: true });
     await scheduleInitialize();
+    const afterSubmit = dialog.afterSubmit;
     state.initError = "";
     state.actionStatus = "";
     state.nativeTextDialog = null;
     render();
+    if (afterSubmit?.kind === "retry-prompt") {
+      await sendPrompt(
+        afterSubmit.message,
+        createRetrySendPromptOptions(afterSubmit.displayMessage, afterSubmit),
+      );
+    }
   } catch (error) {
     state.nativeTextDialog = {
       ...dialog,
@@ -4209,6 +6055,47 @@ async function submitNativeTextDialog(): Promise<void> {
     };
     render();
   }
+}
+
+type OAuthUsageFallbackResult = "not-applicable" | "declined" | "awaiting-api-key" | "switched";
+
+async function handleOAuthUsageFallbackRequest(
+  error: unknown,
+  retry: NonNullable<NativeTextDialogState["afterSubmit"]>,
+): Promise<OAuthUsageFallbackResult> {
+  if (
+    !shouldOfferApiKeyFallbackForError({
+      error,
+      accountStatus: state.accountStatus,
+      rateLimits: state.rateLimits,
+    })
+  ) {
+    return "not-applicable";
+  }
+
+  const strings = stringsForState();
+  const approved = await requestNativeConfirmation(strings.prompts.oauthUsageFallbackMessage, {
+    title: strings.prompts.oauthUsageFallbackTitle,
+    confirmLabel: strings.prompts.oauthUsageFallbackUseApiKey,
+  });
+  if (!approved) {
+    return "declined";
+  }
+
+  if (state.accountStatus?.openAiApiKeyConfigured) {
+    await sendRuntimeMessage({ type: "account.login.start", loginType: "apiKey", confirmed: true });
+    await scheduleInitialize();
+    state.actionStatus = strings.status.apiKeyFallbackSwitched;
+    state.initError = "";
+    return "switched";
+  }
+
+  state.actionStatus = strings.status.apiKeyFallbackNeedsKey;
+  openNativeTextDialog("api-key", {
+    description: strings.status.apiKeyFallbackNeedsKey,
+    afterSubmit: retry,
+  });
+  return "awaiting-api-key";
 }
 
 function requestNativeConfirmation(
@@ -4220,16 +6107,12 @@ function requestNativeConfirmation(
   } = {},
 ): Promise<boolean> {
   const strings = getUiStrings(state.uiLocale);
-  const labels =
-    state.uiLocale === "ko"
-      ? { title: "작업 허용", approve: "허용" }
-      : { title: "Allow action", approve: "Allow" };
 
   nativeConfirmationResolver?.(false);
   state.nativeConfirmationDialog = {
-    title: options.title ?? labels.title,
+    title: options.title ?? strings.prompts.allowAction,
     message,
-    confirmLabel: options.confirmLabel ?? labels.approve,
+    confirmLabel: options.confirmLabel ?? strings.actions.allow,
     cancelLabel: strings.actions.cancelEdit,
     tone: options.tone ?? "default",
   };
@@ -4385,10 +6268,7 @@ async function setProfileEditorImageFromFile(file: File): Promise<void> {
   if (file.size > MAX_PROFILE_IMAGE_BYTES) {
     state.profileEditor = {
       ...editor,
-      error:
-        state.uiLocale === "ko"
-          ? "프로필 이미지는 180KB 이하만 사용할 수 있습니다."
-          : "Profile images must be 180 KB or smaller.",
+      error: stringsForState().errors.profileImageTooLarge,
     };
     render();
     return;
@@ -4398,7 +6278,7 @@ async function setProfileEditorImageFromFile(file: File): Promise<void> {
   if (!/^data:image\/(?:png|jpeg|jpg|webp|gif);base64,/iu.test(dataUrl)) {
     state.profileEditor = {
       ...editor,
-      error: state.uiLocale === "ko" ? "지원하지 않는 이미지 형식입니다." : "Unsupported image format.",
+      error: stringsForState().errors.unsupportedImageFormat,
     };
     render();
     return;
@@ -4608,12 +6488,13 @@ function renderDiagnosticLogFolderDetail(strings: ReturnType<typeof getUiStrings
     return strings.settingsPanel.diagnosticLogsDescription;
   }
   const latest = state.diagnosticLogFolder.latestLogPath
-    ? `${state.uiLocale === "ko" ? "최근 로그" : "Latest log"}: ${state.diagnosticLogFolder.latestLogPath}`
+    ? `${strings.labels.latestLog}: ${state.diagnosticLogFolder.latestLogPath}`
     : strings.settingsPanel.diagnosticLogsDescription;
   return `${state.diagnosticLogFolder.rootDir} · ${latest}`;
 }
 
 function renderWorkspaceDiagnostics(strings: ReturnType<typeof getUiStrings>): string {
+  const recentChats = getRecentChatDisplayItems();
   return `
     <details class="surface stack diagnostics-panel">
       <summary>${escapeHtml(strings.labels.diagnostics)}</summary>
@@ -4627,14 +6508,17 @@ function renderWorkspaceDiagnostics(strings: ReturnType<typeof getUiStrings>): s
           }
         </div>
         ${
-          state.recentChats
+          recentChats
             .map(
               (chat) => `
                 <div class="recent-chat-row">
-                  <button class="recent-chat ${chat.id === state.currentConversationId ? "selected" : ""}" data-chat-id="${chat.id}">
-                    <strong>${escapeHtml(chat.title)}</strong>
+                  <button class="recent-chat ${chat.selected ? "selected" : ""}" data-chat-id="${chat.id}">
+                    <span class="recent-chat-heading">
+                      <strong>${escapeHtml(chat.title)}</strong>
+                      ${renderRecentChatProgressIndicator(chat.busy)}
+                    </span>
                     <span>${escapeHtml(chat.profileId)}</span>
-                    <small>${escapeHtml(formatTimestamp(chat.updatedAt))}</small>
+                    <small>${escapeHtml(chat.relativeTime)}</small>
                   </button>
                   <button
                     class="settings-compact-button danger recent-chat-delete"
@@ -4642,7 +6526,7 @@ function renderWorkspaceDiagnostics(strings: ReturnType<typeof getUiStrings>): s
                     data-delete-chat-id="${escapeAttribute(chat.id)}"
                     aria-label="${escapeAttribute(strings.actions.deleteChat)}"
                     title="${escapeAttribute(strings.actions.deleteChat)}"
-                  >${renderUiIcon("x")}</button>
+                  >${renderUiIcon("trash")}</button>
                 </div>
               `,
             )
@@ -4730,7 +6614,22 @@ function renderAttachedContextSummary(strings: ReturnType<typeof getUiStrings>):
 
   const structured = state.structuredInputs.map(
     (input) =>
-      `<span class="summary-chip subtle">${escapeHtml(structuredInputRoleLabel(input, strings))}: ${escapeHtml(input.name)}</span>`,
+      `<span
+        class="summary-chip structured-chip"
+        title="${escapeAttribute(input.description || input.path)}"
+      >
+        ${renderStructuredInputIcon(input)}
+        <span class="structured-chip-text">${escapeHtml(structuredInputRoleLabel(input, strings))}: ${escapeHtml(input.name)}</span>
+        <button
+          type="button"
+          class="summary-chip-remove"
+          data-remove-structured-input-id="${escapeAttribute(input.id)}"
+          title="${escapeAttribute(strings.actions.removeAttachment)}"
+          aria-label="${escapeAttribute(strings.actions.removeAttachment)}"
+        >
+          ${renderUiIcon("x")}
+        </button>
+      </span>`,
   );
 
   const contextReferences = [...currentTabChip, ...chips, ...structured];
@@ -4743,7 +6642,7 @@ function renderAttachedContextSummary(strings: ReturnType<typeof getUiStrings>):
     `);
   }
   if (files.length) {
-    const label = state.uiLocale === "ko" ? "파일" : "Files";
+    const label = strings.labels.files;
     sections.push(`
       <div class="composer-file-group" data-composer-file-group="files">
         <span class="composer-file-label">${escapeHtml(label)}</span>
@@ -4758,22 +6657,31 @@ function renderAttachedContextSummary(strings: ReturnType<typeof getUiStrings>):
 }
 
 function renderFileAttachmentChip(attachment: UserFileAttachment, strings: ReturnType<typeof getUiStrings>): string {
-  if (attachment.kind === "image" && isAnnotatableImageAttachment(attachment)) {
-    const label =
-      state.uiLocale === "ko"
-        ? `${attachment.name} 편집 영역 표시`
-        : `Mark edit area on ${attachment.name}`;
+  const chipLabel = createFileChipLabel(attachment);
+  const previewSrc = createImageAttachmentPreviewSrc(attachment);
+  if (attachment.kind === "image" && previewSrc) {
+    const canAnnotate = isAnnotatableImageAttachment(attachment);
+    const previewLabel = canAnnotate ? strings.prompts.markEditArea(attachment.name) : chipLabel;
+    const previewContent = `
+      <img src="${escapeAttribute(previewSrc)}" alt="" loading="lazy" referrerpolicy="no-referrer" />
+      <span class="file-chip-label">${escapeHtml(chipLabel)}</span>
+    `;
     return `
       <span class="summary-chip file-chip image-file-chip">
-        <button
-          class="file-chip-preview"
-          data-edit-file-image-id="${escapeAttribute(attachment.id)}"
-          title="${escapeAttribute(label)}"
-          aria-label="${escapeAttribute(label)}"
-        >
-          <img src="${escapeAttribute(getImageAttachmentDataUrl(attachment))}" alt="" loading="lazy" />
-          <span>${escapeHtml(createFileChipLabel(attachment))}</span>
-        </button>
+        ${
+          canAnnotate
+            ? `<button
+                class="file-chip-preview"
+                data-edit-file-image-id="${escapeAttribute(attachment.id)}"
+                title="${escapeAttribute(previewLabel)}"
+                aria-label="${escapeAttribute(previewLabel)}"
+              >${previewContent}</button>`
+            : `<span
+                class="file-chip-preview static"
+                title="${escapeAttribute(previewLabel)}"
+                aria-label="${escapeAttribute(previewLabel)}"
+              >${previewContent}</span>`
+        }
         <button
           class="file-chip-remove"
           data-remove-file-id="${escapeAttribute(attachment.id)}"
@@ -4786,7 +6694,7 @@ function renderFileAttachmentChip(attachment: UserFileAttachment, strings: Retur
 
   return `
     <button class="summary-chip file-chip" data-remove-file-id="${escapeAttribute(attachment.id)}" title="${escapeAttribute(strings.actions.removeAttachment)}" aria-label="${escapeAttribute(strings.actions.removeAttachment)}">
-      <span>${escapeHtml(createFileChipLabel(attachment))}</span>
+      <span class="file-chip-label">${escapeHtml(chipLabel)}</span>
       <span class="summary-chip-dismiss">${renderUiIcon("x")}</span>
     </button>
   `;
@@ -4801,52 +6709,12 @@ function renderImageAnnotationEditor(strings: ReturnType<typeof getUiStrings>): 
     return "";
   }
 
-  const labels =
-    state.uiLocale === "ko"
-      ? {
-          title: editorSource.mode === "followup" ? "선택 항목 편집" : "편집할 위치 표시",
-          close: "닫기",
-          done: editorSource.mode === "followup" ? "첨부" : "완료",
-          send: "보내기",
-          undo: "되돌리기",
-          clear: "전체 지우기",
-          deleteSelected: "선택 삭제",
-          select: "선택",
-          draw: "그리기",
-          arrow: "화살표",
-          text: "텍스트",
-          promptPlaceholder: "편집 내용을 설명하세요",
-          addReference: "이미지 추가",
-          zoomIn: "확대",
-          zoomOut: "축소",
-          zoomReset: "맞춤",
-          help:
-            editorSource.mode === "followup"
-              ? "생성된 이미지에서 수정할 영역을 표시한 뒤 후속 명령을 입력해 바로 편집을 요청할 수 있습니다."
-              : "이미지 위에 그리거나 화살표/텍스트를 남기면 Codex가 편집할 영역을 더 정확히 이해합니다.",
-        }
-      : {
-          title: editorSource.mode === "followup" ? "Edit selected image" : "Mark edit area",
-          close: "Close",
-          done: editorSource.mode === "followup" ? "Attach" : "Done",
-          send: "Send",
-          undo: "Undo",
-          clear: "Clear",
-          deleteSelected: "Delete selected",
-          select: "Select",
-          draw: "Draw",
-          arrow: "Arrow",
-          text: "Text",
-          promptPlaceholder: "Describe the edit",
-          addReference: "Add image",
-          zoomIn: "Zoom in",
-          zoomOut: "Zoom out",
-          zoomReset: "Fit",
-          help:
-            editorSource.mode === "followup"
-              ? "Mark the generated image and send a follow-up edit instruction directly."
-              : "Draw, add arrows, or add text on the image so Codex can understand exactly where to edit.",
-        };
+  const labels = {
+    ...strings.annotationEditor,
+    title: editorSource.mode === "followup" ? strings.annotationEditor.followupTitle : strings.annotationEditor.markTitle,
+    done: editorSource.mode === "followup" ? strings.annotationEditor.attach : strings.annotationEditor.done,
+    help: editorSource.mode === "followup" ? strings.annotationEditor.followupHelp : strings.annotationEditor.markHelp,
+  };
   const colors = ["#ff453a", "#ffcc00", "#30d158", "#0a84ff", "#ffffff"];
   return `
     <div class="image-annotation-backdrop" role="dialog" aria-modal="true" aria-label="${escapeAttribute(labels.title)}">
@@ -5098,17 +6966,6 @@ function buildConversationContextHint(): string {
     .slice(-3000);
 }
 
-function hasComposerDropPayload(dataTransfer: DataTransfer | null): boolean {
-  if (!dataTransfer) {
-    return false;
-  }
-  if (dataTransfer.files.length > 0) {
-    return true;
-  }
-  const types = Array.from(dataTransfer.types ?? []);
-  return types.some((type) => type === "text/html" || type === "text/uri-list" || type === "text/plain");
-}
-
 async function ingestSelectedFiles(fileList: FileList | File[]): Promise<void> {
   const files = Array.from(fileList);
   if (files.length === 0) {
@@ -5215,6 +7072,72 @@ function ingestRemoteImageUrls(urls: string[]): void {
   state.fileAttachments = [...state.fileAttachments, ...nextAttachments];
   state.actionStatus = summarizeRejectedFiles(plan.rejected, stringsForState());
   render();
+}
+
+function installComposerDropHandlers(): void {
+  if (composerDropHandlersInstalled) {
+    return;
+  }
+  composerDropHandlersInstalled = true;
+
+  root.addEventListener("dragenter", (event) => {
+    if (!hasComposerDropPayload(event.dataTransfer)) {
+      return;
+    }
+    event.preventDefault();
+    if (!state.composerDragActive) {
+      state.composerDragActive = true;
+      render();
+    }
+  });
+
+  root.addEventListener("dragover", (event) => {
+    if (!hasComposerDropPayload(event.dataTransfer)) {
+      return;
+    }
+    event.preventDefault();
+    event.dataTransfer!.dropEffect = "copy";
+    if (!state.composerDragActive) {
+      state.composerDragActive = true;
+      render();
+    }
+  });
+
+  root.addEventListener("dragleave", (event) => {
+    const relatedTarget = event.relatedTarget;
+    if (relatedTarget instanceof Node && root.contains(relatedTarget)) {
+      return;
+    }
+    if (state.composerDragActive) {
+      state.composerDragActive = false;
+      render();
+    }
+  });
+
+  root.addEventListener("drop", async (event) => {
+    if (!hasComposerDropPayload(event.dataTransfer)) {
+      return;
+    }
+    event.preventDefault();
+    state.composerDragActive = false;
+
+    const dataTransfer = event.dataTransfer;
+    if (!dataTransfer) {
+      render();
+      return;
+    }
+
+    const webImageUrls = extractWebImageUrlsFromDropData(dataTransfer);
+    const droppedFiles = getDroppedFiles(dataTransfer);
+    if (droppedFiles.length > 0) {
+      await ingestSelectedFiles(droppedFiles);
+      ingestRemoteImageUrls(webImageUrls);
+      return;
+    }
+
+    ingestRemoteImageUrls(webImageUrls);
+    render();
+  });
 }
 
 function installImageAnnotationEditorHandlers(): void {
@@ -6032,12 +7955,8 @@ function installImageAnnotationEditorHandlers(): void {
     }
     state.actionStatus =
       editorSource.mode === "followup"
-        ? state.uiLocale === "ko"
-          ? "선택한 생성 이미지를 다음 후속 명령의 편집 대상으로 첨부했습니다."
-          : "Selected generated image was attached as the next edit target."
-        : state.uiLocale === "ko"
-          ? "표시한 편집 영역을 첨부 이미지에 반영했습니다."
-          : "Marked edit area was applied to the attached image.";
+        ? stringsForState().status.selectedGeneratedImageAttached
+        : stringsForState().status.editRegionApplied;
     render();
   });
 
@@ -6060,9 +7979,7 @@ function installImageAnnotationEditorHandlers(): void {
         ];
       }
       state.actionStatus =
-        state.uiLocale === "ko"
-          ? "선택한 생성 이미지를 다음 후속 명령의 편집 대상으로 첨부했습니다."
-          : "Selected generated image was attached as the next edit target.";
+        stringsForState().status.selectedGeneratedImageAttached;
       render();
       focusComposerAtEnd();
       return;
@@ -6214,13 +8131,19 @@ function installSmokeHarness(): void {
         };
       }
 
-      composer.focus();
+      let currentComposer: HTMLTextAreaElement | null = composer;
+      currentComposer.focus();
       for (const character of text) {
-        composer.value += character;
-        composer.dispatchEvent(new Event("input", { bubbles: true }));
+        currentComposer = root.querySelector<HTMLTextAreaElement>("#composer");
+        if (!currentComposer) {
+          break;
+        }
+        currentComposer.focus();
+        currentComposer.value += character;
+        currentComposer.dispatchEvent(new Event("input", { bubbles: true }));
       }
 
-      const currentComposer = root.querySelector<HTMLTextAreaElement>("#composer");
+      currentComposer = root.querySelector<HTMLTextAreaElement>("#composer");
       return {
         sameNode: composer === currentComposer,
         activeId: document.activeElement?.id ?? null,
@@ -6263,6 +8186,7 @@ function installSmokeHarness(): void {
           ];
       state.composerDraft = text;
       state.mentionQuery = extractMentionQuery(text);
+      state.mentionActiveIndex = 0;
       state.slashQuery = extractSlashQuery(text);
       renderSync();
       const composer = root.querySelector<HTMLTextAreaElement>("#composer");
@@ -6387,6 +8311,7 @@ function installSmokeHarness(): void {
     setActiveTurnForTest(active: boolean) {
       state.threadId = active ? "smoke-thread" : "";
       state.activeTurn = active ? { threadId: "smoke-thread", turnId: "smoke-turn" } : null;
+      state.composerDraft = "";
       renderSync();
       const stopButton = root.querySelector<HTMLButtonElement>("#stop-turn");
       return {
@@ -6443,6 +8368,8 @@ function installSmokeHarness(): void {
     seedChatFixture(input) {
       state.activeView = "chat";
       state.messages = input.messages;
+      state.chatMessageWindowSize = DEFAULT_CHAT_MESSAGE_WINDOW_SIZE;
+      pendingChatScrollToBottom = true;
       state.actionCards = input.actionCards?.map((card) => ({ ...card })) ?? [];
       renderSync();
       return {
@@ -6588,6 +8515,15 @@ function renderAccountBadge(): string {
   return getUiStrings(state.uiLocale).status.signedOut;
 }
 
+function renderAccountEmailPill(): string {
+  const email = state.accountStatus?.email?.trim();
+  if (!email) {
+    return "";
+  }
+  const strings = getUiStrings(state.uiLocale);
+  return `<span class="settings-status-pill" title="${escapeAttribute(strings.status.appServerAccount(email))}">${escapeHtml(email)}</span>`;
+}
+
 function renderRateLimitBadge(rateLimits: CodexRateLimits): string {
   const strings = getUiStrings(state.uiLocale);
   const bucket = rateLimits.defaultBucket ?? rateLimits.buckets[0];
@@ -6611,12 +8547,45 @@ function isCurrentTurnActive(): boolean {
   return state.activeTurn.threadId === state.threadId;
 }
 
-function canSendCurrentComposerMessage(): boolean {
+function isCurrentPromptWorkActive(): boolean {
+  return isCurrentTurnActive() || Boolean(state.promptActivity) || state.streamingAssistantMessageIds.size > 0;
+}
+
+function canSendCurrentComposerMessage(
+  draft = state.composerDraft,
+  options: { allowSteer?: boolean } = {},
+): boolean {
+  const currentWorkActive = isCurrentPromptWorkActive();
+  const steerTurnActive = Boolean(options.allowSteer && isCurrentTurnActive());
+  if (currentWorkActive && !steerTurnActive) {
+    return false;
+  }
+
   return canSendComposerMessage({
-    turnActive: isCurrentTurnActive(),
+    draft,
+    turnActive: steerTurnActive,
     promptActivityActive: Boolean(state.promptActivity),
     streamingAssistantActive: state.streamingAssistantMessageIds.size > 0,
+    submissionStartingActive: promptSubmissionBootstrapInFlight,
   });
+}
+
+function canStartMessageReplayInteraction(): boolean {
+  return (
+    !promptSubmissionBootstrapInFlight &&
+    !isCurrentTurnActive() &&
+    !state.promptActivity &&
+    state.streamingAssistantMessageIds.size === 0
+  );
+}
+
+function canStartCurrentComposerWorkflow(): boolean {
+  return (
+    !promptSubmissionBootstrapInFlight &&
+    !isCurrentTurnActive() &&
+    !state.promptActivity &&
+    state.streamingAssistantMessageIds.size === 0
+  );
 }
 
 function isQuickInteractionLockedForState(): boolean {
@@ -6633,6 +8602,84 @@ function toggleStructuredInput(input: CodexStructuredInput): void {
   }
 
   state.structuredInputs = [...state.structuredInputs, input];
+}
+
+function setStructuredInputEnabled(input: CodexStructuredInput, enabled: boolean): void {
+  const existing = state.structuredInputs.some((current) => current.id === input.id);
+  if (enabled && !existing) {
+    state.structuredInputs = [...state.structuredInputs, input];
+    return;
+  }
+  if (!enabled && existing) {
+    state.structuredInputs = state.structuredInputs.filter((current) => current.id !== input.id);
+  }
+}
+
+function openPluginConnectionDialog(plugin: CodexPluginOption): void {
+  const companionApp = findCompanionAppForPlugin(plugin, state.connectedApps);
+  const iconUrl = plugin.iconUrl || companionApp?.iconUrl || "";
+  const accountEmail =
+    state.accountStatus?.authMode === "chatgpt" && state.accountStatus.email?.trim()
+      ? state.accountStatus.email.trim()
+      : "";
+  state.pluginConnectionDialog = {
+    kind: "plugin",
+    id: plugin.id,
+    name: plugin.name,
+    description: plugin.description || companionApp?.description || plugin.marketplaceName || plugin.path,
+    ...(companionApp?.installUrl ? { installUrl: companionApp.installUrl } : {}),
+    ...(iconUrl ? { iconUrl } : {}),
+    ...(accountEmail ? { accountEmail } : {}),
+  };
+  closeFloatingSurfaces();
+  render();
+}
+
+function closePluginConnectionDialog(): void {
+  state.pluginConnectionDialog = null;
+  render();
+}
+
+async function confirmPluginConnectionDialog(): Promise<void> {
+  const dialog = state.pluginConnectionDialog;
+  if (!dialog) {
+    return;
+  }
+  state.pluginConnectionDialog = null;
+  try {
+    if (dialog.installUrl) {
+      pendingPluginConnectionCatalogRefresh = true;
+      await sendRuntimeMessage({ type: "app.install.open", url: dialog.installUrl });
+      state.actionStatus = stringsForState().status.connectionRefreshPending;
+      render();
+      window.setTimeout(() => {
+        void refreshPendingPluginConnectionCatalog();
+      }, 2500);
+      return;
+    } else {
+      await sendRuntimeMessage({ type: "mcp.servers.reload" });
+    }
+    await scheduleInitialize({ forceCatalog: true });
+    state.actionStatus = stringsForState().status.connectionRefreshed;
+  } catch (error) {
+    state.actionStatus = toUserFacingRuntimeError(error);
+    render();
+  }
+}
+
+async function refreshPendingPluginConnectionCatalog(): Promise<void> {
+  if (!pendingPluginConnectionCatalogRefresh || document.visibilityState === "hidden") {
+    return;
+  }
+  pendingPluginConnectionCatalogRefresh = false;
+  try {
+    await scheduleInitialize({ forceCatalog: true });
+    state.actionStatus = stringsForState().status.connectionRefreshed;
+  } catch (error) {
+    pendingPluginConnectionCatalogRefresh = true;
+    state.actionStatus = toUserFacingRuntimeError(error);
+  }
+  render();
 }
 
 async function toggleCodexSkillEnabled(skillId: string): Promise<void> {
@@ -6712,6 +8759,7 @@ function getPromptStructuredInputs(): CodexStructuredInput[] {
     {
       playwrightAvailable: isPlaywrightRuntimeEnabled(),
     },
+    state.connectedApps,
   );
 }
 
@@ -6723,12 +8771,66 @@ async function removeComposerCommandPillSelection(pillId: string, kind: Composer
   scheduleConversationPersist();
 }
 
-function findMentionOption(id: string) {
-  return listMentionOptions(state.mentionQuery ?? "", state.uiLocale, {
+type MentionKeyboardOption =
+  | { kind: "tab-action" }
+  | { kind: "tab"; tabId: number }
+  | { kind: "structured"; optionId: string };
+
+function getMentionOptionsForState(): MentionOption[] {
+  if (state.mentionQuery === null) {
+    return [];
+  }
+
+  return listMentionOptions(state.mentionQuery, state.uiLocale, {
     apps: state.connectedApps,
     plugins: state.appServerPlugins,
-    skills: state.appServerSkills,
-  }).find((option) => option.id === id);
+    skills: state.appServerSkills.filter((skill) => !isCodexSkillRuntimeBlocked(skill)),
+  }).slice(0, 12);
+}
+
+function getTabMentionOptionsForState(): OpenTabContext[] {
+  if (state.mentionQuery === null || state.openTabOptionsState !== "ready") {
+    return [];
+  }
+
+  return listTabMentionOptions(state.openTabOptions, state.mentionQuery, 30);
+}
+
+function getMentionKeyboardOptionsForState(
+  tabs: OpenTabContext[] = getTabMentionOptionsForState(),
+  mentionOptions: MentionOption[] = getMentionOptionsForState(),
+): MentionKeyboardOption[] {
+  if (state.mentionQuery === null) {
+    return [];
+  }
+
+  const options: MentionKeyboardOption[] = [];
+  const openTabsOption = mentionOptions.find(
+    (option): option is Extract<MentionOption, { kind: "context" }> =>
+      option.kind === "context" && option.contextId === "open-tabs",
+  );
+  if (
+    openTabsOption &&
+    (state.openTabOptionsState === "permission" || state.openTabOptionsState === "idle" || state.openTabOptionsState === "error")
+  ) {
+    options.push({ kind: "tab-action" });
+  }
+
+  if (state.openTabOptionsState === "ready") {
+    options.push(...tabs.map((tab) => ({ kind: "tab" as const, tabId: tab.tabId })));
+  }
+
+  options.push(
+    ...mentionOptions
+      .filter(isStructuredMentionOption)
+      .map((option) => ({ kind: "structured" as const, optionId: option.id })),
+  );
+
+  return options;
+}
+
+function findMentionOption(id: string) {
+  return getMentionOptionsForState().find((option) => option.id === id);
 }
 
 function findSlashOption(id: string) {
@@ -6791,6 +8893,25 @@ function moveSlashCommandSelection(key: string): boolean {
   return true;
 }
 
+function moveMentionOptionSelection(key: string): boolean {
+  if (state.mentionQuery === null || !isMentionOptionArrowKey(key)) {
+    return false;
+  }
+
+  const options = getMentionKeyboardOptionsForState();
+  if (!options.length) {
+    return false;
+  }
+
+  state.mentionActiveIndex = getNextMentionOptionIndex(
+    state.mentionActiveIndex,
+    options.length,
+    key === "ArrowDown" ? "down" : "up",
+  );
+  render();
+  return true;
+}
+
 function restoreComposerFocus(preventScroll = false): void {
   const composer = root.querySelector<HTMLTextAreaElement>("#composer");
   if (!composer) {
@@ -6813,6 +8934,58 @@ async function acceptActiveSlashOptionFromComposer(): Promise<boolean> {
   renderSync();
   restoreComposerFocus(true);
   return true;
+}
+
+async function acceptActiveMentionOptionFromComposer(): Promise<boolean> {
+  const options = getMentionKeyboardOptionsForState();
+  const option = options[clampMentionOptionIndex(state.mentionActiveIndex, options.length)];
+  if (!option) {
+    return false;
+  }
+
+  await applyMentionKeyboardOption(option);
+  renderSync();
+  restoreComposerFocus(true);
+  return true;
+}
+
+async function applyMentionKeyboardOption(option: MentionKeyboardOption): Promise<void> {
+  if (option.kind === "tab-action") {
+    await refreshOpenTabSuggestions({ requestPermission: true });
+    return;
+  }
+
+  if (option.kind === "tab") {
+    toggleTabMentionSelection(option.tabId);
+    return;
+  }
+
+  const mentionOption = findMentionOption(option.optionId);
+  if (mentionOption && isStructuredMentionOption(mentionOption)) {
+    applyStructuredMentionOption(mentionOption);
+  }
+}
+
+function toggleTabMentionSelection(tabId: number): boolean {
+  if (!Number.isFinite(tabId)) {
+    return false;
+  }
+
+  state.attachments.add("open-tabs");
+  state.selectedTabIds = toggleSelectedTabId(state.selectedTabIds, tabId);
+  if (state.selectedTabIds.length === 0) {
+    state.attachments.delete("open-tabs");
+  }
+  scheduleConversationPersist();
+  return true;
+}
+
+function applyStructuredMentionOption(option: StructuredMentionOption): void {
+  toggleStructuredInput(option.structuredInput);
+  state.mentionQuery = null;
+  state.mentionActiveIndex = 0;
+  state.composerDraft = removeActiveMentionToken(state.composerDraft);
+  scheduleConversationPersist();
 }
 
 function removeActiveMentionToken(value: string): string {
@@ -6857,6 +9030,10 @@ function syncDocumentLanguage(): void {
     ? `${strings.panelDocumentTitle} · ${strings.tabs.workspace}`
     : state.activeView === "context"
       ? `${strings.panelDocumentTitle} · ${strings.tabs.context}`
+      : state.activeView === "skills"
+        ? `${strings.panelDocumentTitle} · ${strings.tabs.skills}`
+        : state.activeView === "plugins"
+          ? `${strings.panelDocumentTitle} · ${strings.tabs.pluginMcp}`
       : `${strings.panelDocumentTitle} · ${strings.tabs.chat}`;
   syncDocumentTheme();
 }
@@ -6912,6 +9089,20 @@ function captureScrollPositions(): Record<string, { scrollTop: number; stickToBo
 function restoreScrollPositions(positions: Record<string, { scrollTop: number; stickToBottom: boolean }>): void {
   root.querySelectorAll<HTMLElement>("[data-scroll-key]").forEach((node) => {
     const key = node.dataset.scrollKey ?? "";
+    if (key === "chat-scroll" && pendingChatScrollAnchor) {
+      node.scrollTop = Math.max(
+        0,
+        node.scrollHeight - pendingChatScrollAnchor.previousScrollHeight + pendingChatScrollAnchor.previousScrollTop,
+      );
+      pendingChatScrollAnchor = null;
+      return;
+    }
+    if (key === "chat-scroll" && pendingChatScrollToBottom) {
+      forceChatScrollToBottom(node);
+      pendingChatScrollToBottom = false;
+      scheduleChatScrollToBottomAfterLayout();
+      return;
+    }
     const snapshot = positions[key];
     if (!snapshot) {
       return;
@@ -6922,6 +9113,30 @@ function restoreScrollPositions(positions: Record<string, { scrollTop: number; s
     }
     node.scrollTop = snapshot.scrollTop;
   });
+}
+
+function forceChatScrollToBottom(container = root.querySelector<HTMLElement>("#chat-scroll")): void {
+  if (!container) {
+    return;
+  }
+  chatScrollUserOverrideUntil = 0;
+  container.scrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+}
+
+function scheduleChatScrollToBottomAfterLayout(): void {
+  const run = () => {
+    forceChatScrollToBottom();
+    updateScrollToBottomButtonVisibility();
+  };
+  if (typeof window.requestAnimationFrame === "function") {
+    window.requestAnimationFrame(() => {
+      run();
+      window.requestAnimationFrame(run);
+    });
+    return;
+  }
+  window.setTimeout(run, 0);
+  window.setTimeout(run, 80);
 }
 
 function updateScrollToBottomButtonVisibility(): void {
@@ -6947,6 +9162,31 @@ function isChatScrollUserOverrideActive(): boolean {
 function handleChatScroll(): void {
   const container = root.querySelector<HTMLElement>("#chat-scroll");
   if (container) {
+    const renderableMessageCount = state.messages.filter(shouldRenderConversationMessage).length;
+    const hiddenCount = Math.max(0, renderableMessageCount - state.chatMessageWindowSize);
+    if (
+      shouldExpandChatMessageWindowOnScroll(
+        {
+          scrollTop: container.scrollTop,
+          scrollHeight: container.scrollHeight,
+          clientHeight: container.clientHeight,
+        },
+        hiddenCount,
+      )
+    ) {
+      pendingChatScrollAnchor = {
+        previousScrollTop: container.scrollTop,
+        previousScrollHeight: container.scrollHeight,
+      };
+      state.chatMessageWindowSize = calculateNextChatMessageWindowSize(
+        state.chatMessageWindowSize,
+        renderableMessageCount,
+        CHAT_MESSAGE_WINDOW_INCREMENT,
+      );
+      renderSync();
+      updateScrollToBottomButtonVisibility();
+      return;
+    }
     const scrolledAwayFromLatest = shouldShowScrollToBottomButton({
       scrollTop: container.scrollTop,
       scrollHeight: container.scrollHeight,
@@ -7016,6 +9256,27 @@ function parseCssPixelValue(value: string, fallback = 0): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function getComposerTextareaAutosizeMetrics(target: HTMLTextAreaElement): ComposerTextareaAutosizeMetrics {
+  const cached = composerTextareaAutosizeMetricsByElement.get(target);
+  if (cached) {
+    return cached;
+  }
+
+  const computedStyle = getComputedStyle(target);
+  const lineHeight = parseCssPixelValue(computedStyle.lineHeight, 21);
+  const paddingTop = parseCssPixelValue(computedStyle.paddingTop);
+  const paddingBottom = parseCssPixelValue(computedStyle.paddingBottom);
+  const minHeight = parseCssPixelValue(computedStyle.minHeight, lineHeight * 2 + paddingTop + paddingBottom);
+  const metrics = {
+    lineHeight,
+    paddingTop,
+    paddingBottom,
+    minHeight,
+  };
+  composerTextareaAutosizeMetricsByElement.set(target, metrics);
+  return metrics;
+}
+
 function resizeComposerTextarea(composer?: HTMLTextAreaElement | null): void {
   const target = composer ?? root.querySelector<HTMLTextAreaElement>("#composer");
   if (!target) {
@@ -7024,11 +9285,7 @@ function resizeComposerTextarea(composer?: HTMLTextAreaElement | null): void {
 
   target.style.height = "auto";
 
-  const computedStyle = getComputedStyle(target);
-  const lineHeight = parseCssPixelValue(computedStyle.lineHeight, 21);
-  const paddingTop = parseCssPixelValue(computedStyle.paddingTop);
-  const paddingBottom = parseCssPixelValue(computedStyle.paddingBottom);
-  const minHeight = parseCssPixelValue(computedStyle.minHeight, lineHeight * 2 + paddingTop + paddingBottom);
+  const { lineHeight, paddingTop, paddingBottom, minHeight } = getComposerTextareaAutosizeMetrics(target);
   const nextSize = calculateComposerTextareaAutosize({
     scrollHeight: target.scrollHeight,
     lineHeight,
@@ -7051,6 +9308,38 @@ function rememberComposerInteraction(composer?: HTMLTextAreaElement | null): voi
   resizeComposerTextarea(target);
 }
 
+function bindPluginMcpControls(rootElement: HTMLElement): void {
+  rootElement.querySelector<HTMLButtonElement>("#reload-plugin-catalog")?.addEventListener("click", async () => {
+    const strings = stringsForState();
+    try {
+      await scheduleInitialize({ forceCatalog: true });
+      state.actionStatus = strings.status.connectionRefreshed;
+    } catch (error) {
+      state.actionStatus = toUserFacingRuntimeError(error);
+    }
+    render();
+  });
+
+  rootElement.querySelectorAll<HTMLElement>("[data-plugin-settings-id]").forEach((row) => {
+    const openSettings = (event: Event): void => {
+      const plugin = state.appServerPlugins.find((item) => item.id === row.dataset.pluginSettingsId);
+      if (!plugin) {
+        return;
+      }
+      openPluginConnectionDialog(plugin);
+    };
+
+    row.addEventListener("click", openSettings);
+    row.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") {
+        return;
+      }
+      event.preventDefault();
+      openSettings(event);
+    });
+  });
+}
+
 function bindEvents(): void {
   const strings = getUiStrings(state.uiLocale);
   resizeComposerTextarea();
@@ -7061,6 +9350,14 @@ function bindEvents(): void {
   root.querySelector<HTMLButtonElement>("#scroll-to-bottom")?.addEventListener("click", () => {
     scrollChatToBottom();
     window.setTimeout(updateScrollToBottomButtonVisibility, 220);
+  });
+  root.querySelectorAll<HTMLDetailsElement>("[data-message-trace-id]").forEach((details) => {
+    details.addEventListener("toggle", () => {
+      const messageId = details.dataset.messageTraceId?.trim();
+      if (messageId) {
+        messageTraceOpenByMessageId.set(messageId, details.open);
+      }
+    });
   });
 
   root.querySelector<HTMLButtonElement>("[data-usage-notice-accept]")?.addEventListener("click", async () => {
@@ -7222,6 +9519,7 @@ function bindEvents(): void {
     state.appMenuOpen = false;
     state.browserActionPermissionMenuOpen = false;
     state.mentionQuery = null;
+    state.mentionActiveIndex = 0;
     state.slashQuery = null;
     state.composerModelMenuOpen = !state.composerModelMenuOpen;
     renderSync();
@@ -7281,16 +9579,15 @@ function bindEvents(): void {
       });
       state.pendingPermission = null;
       state.initError = "";
+      void installActiveTabImagePromptExtractor();
       if (retryMessage && canSendCurrentComposerMessage()) {
         state.actionStatus =
-          state.uiLocale === "ko"
-            ? "사이트 접근 권한이 허용되었습니다. 요청을 다시 전송합니다."
-            : "Site access is allowed. Retrying the request.";
+          stringsForState().status.siteAccessRetry;
         render();
         await sendPrompt(retryMessage);
         return;
       }
-      state.actionStatus = state.uiLocale === "ko" ? "사이트 접근 권한이 허용되었습니다." : "Site access is allowed.";
+      state.actionStatus = stringsForState().status.siteAccessAllowed;
       render();
     }
   });
@@ -7421,6 +9718,7 @@ function bindEvents(): void {
     state.browserActionPermissionMenuOpen = false;
     state.attachmentMenuOpen = !state.attachmentMenuOpen;
     state.mentionQuery = null;
+    state.mentionActiveIndex = 0;
     state.slashQuery = null;
     render();
   });
@@ -7457,58 +9755,11 @@ function bindEvents(): void {
   });
 
   installImageAnnotationEditorHandlers();
+  installComposerDropHandlers();
 
-  const composerFrame = root.querySelector<HTMLDivElement>(".composer-frame");
-  composerFrame?.addEventListener("dragenter", (event) => {
-    if (!hasComposerDropPayload(event.dataTransfer)) {
-      return;
-    }
-    event.preventDefault();
-    state.composerDragActive = true;
-    render();
-  });
-
-  composerFrame?.addEventListener("dragover", (event) => {
-    if (!hasComposerDropPayload(event.dataTransfer)) {
-      return;
-    }
-    event.preventDefault();
-    event.dataTransfer!.dropEffect = "copy";
-    if (!state.composerDragActive) {
-      state.composerDragActive = true;
-      render();
-    }
-  });
-
-  composerFrame?.addEventListener("dragleave", (event) => {
-    const relatedTarget = event.relatedTarget;
-    if (relatedTarget instanceof Node && composerFrame.contains(relatedTarget)) {
-      return;
-    }
-    state.composerDragActive = false;
-    render();
-  });
-
-  composerFrame?.addEventListener("drop", async (event) => {
-    event.preventDefault();
-    state.composerDragActive = false;
-    const dataTransfer = event.dataTransfer;
-    if (!dataTransfer) {
-      render();
-      return;
-    }
-    const webImageUrls = extractWebImageUrlsFromDropData(dataTransfer);
-    if (dataTransfer.files.length > 0) {
-      await ingestSelectedFiles(dataTransfer.files);
-    } else {
-      ingestRemoteImageUrls(webImageUrls);
-    }
-    render();
-  });
-
-  root.querySelectorAll<HTMLButtonElement>("[data-structured-id]").forEach((button) => {
+  root.querySelectorAll<HTMLButtonElement>("[data-remove-structured-input-id]").forEach((button) => {
     button.addEventListener("click", async () => {
-      const id = button.dataset.structuredId;
+      const id = button.dataset.removeStructuredInputId;
       if (!id) {
         return;
       }
@@ -7531,6 +9782,7 @@ function bindEvents(): void {
     state.composerModelMenuOpen = false;
     state.browserActionPermissionMenuOpen = false;
     state.mentionQuery = null;
+    state.mentionActiveIndex = 0;
     state.slashQuery = null;
     const nextOpen = !state.appMenuOpen;
     state.appMenuOpen = nextOpen;
@@ -7550,6 +9802,7 @@ function bindEvents(): void {
       state.composerModelMenuOpen = false;
       state.browserActionPermissionMenuOpen = false;
       state.mentionQuery = null;
+      state.mentionActiveIndex = 0;
       state.slashQuery = null;
       const action = button.dataset.topQuickAction;
       if (action === "summarize-page") {
@@ -7619,14 +9872,37 @@ function bindEvents(): void {
 
   root.querySelectorAll<HTMLButtonElement>("#chatgpt-login, #onboarding-chatgpt-login").forEach((button) => {
     button.addEventListener("click", () => {
+      if (button.disabled) {
+        return;
+      }
       void startCodexOauthLogin();
     });
   });
 
   root.querySelectorAll<HTMLButtonElement>("#apikey-login, #onboarding-apikey-login").forEach((button) => {
     button.addEventListener("click", () => {
+      if (button.disabled) {
+        return;
+      }
       openNativeTextDialog("api-key");
     });
+  });
+
+  root.querySelector<HTMLButtonElement>("#onboarding-open-settings")?.addEventListener("click", () => {
+    state.activeView = "workspace";
+    render();
+  });
+
+  root.querySelector<HTMLButtonElement>("#onboarding-reconnect")?.addEventListener("click", async () => {
+    try {
+      await scheduleInitialize();
+      state.actionStatus = strings.status.connectionRefreshed;
+      state.initError = "";
+      render();
+    } catch (error) {
+      state.initError = toUserFacingRuntimeError(error);
+      render();
+    }
   });
 
   root.querySelector<HTMLButtonElement>("#logout")?.addEventListener("click", async () => {
@@ -7671,8 +9947,7 @@ function bindEvents(): void {
         type: "image.asset.folder.open",
         folder: state.imageAssetFolder.latestFolder || state.imageAssetFolder.rootDir,
       });
-      state.actionStatus =
-        state.uiLocale === "ko" ? `이미지 폴더를 열었습니다: ${result.folder}` : `Opened image folder: ${result.folder}`;
+    state.actionStatus = stringsForState().status.imageFolderOpened(result.folder);
       state.initError = "";
       render();
     } catch (error) {
@@ -7700,8 +9975,7 @@ function bindEvents(): void {
         type: "diagnostics.log.folder.open",
         folder: state.diagnosticLogFolder.rootDir,
       });
-      state.actionStatus =
-        state.uiLocale === "ko" ? `로그 폴더를 열었습니다: ${result.folder}` : `Opened log folder: ${result.folder}`;
+    state.actionStatus = stringsForState().status.logFolderOpened(result.folder);
       state.initError = "";
       render();
     } catch (error) {
@@ -7712,23 +9986,43 @@ function bindEvents(): void {
 
   root.querySelector<HTMLTextAreaElement>("#composer")?.addEventListener("input", (event) => {
     const target = event.currentTarget as HTMLTextAreaElement;
+    const compositionActive =
+      composerCompositionInProgress ||
+      ("isComposing" in event && Boolean((event as InputEvent).isComposing));
+    const previousComposerDraft = state.composerDraft;
     const previousMentionQuery = state.mentionQuery;
     const previousSlashQuery = state.slashQuery;
     const wasAppMenuOpen = state.appMenuOpen;
     const wasBrowserActionPermissionMenuOpen = state.browserActionPermissionMenuOpen;
+    const primaryActionChanged = didComposerPrimaryActionChangeForDraftInput({
+      previousComposerDraft,
+      nextComposerDraft: target.value,
+      currentWorkActive: isCurrentPromptWorkActive(),
+      liveActive: state.voiceEnabled,
+      compositionInProgress: compositionActive,
+    });
     state.composerDraft = target.value;
     state.attachmentMenuOpen = false;
     state.browserActionPermissionMenuOpen = false;
     state.composerModelMenuOpen = false;
     state.appMenuOpen = false;
     rememberComposerInteraction(target);
+    if (compositionActive) {
+      return;
+    }
     state.mentionQuery = extractMentionQuery(target.value);
     state.slashQuery = extractSlashQuery(target.value);
+    if (previousMentionQuery !== state.mentionQuery) {
+      state.mentionActiveIndex = 0;
+    }
     if (previousSlashQuery !== state.slashQuery) {
       state.slashActiveIndex = 0;
     }
     if (state.mentionQuery !== null && previousMentionQuery === null) {
       void refreshOpenTabSuggestions({ requestPermission: false });
+    }
+    if (primaryActionChanged) {
+      syncComposerPrimaryActionButton();
     }
     const shouldRerenderComposer =
       wasAppMenuOpen ||
@@ -7759,10 +10053,43 @@ function bindEvents(): void {
 
   root.querySelector<HTMLTextAreaElement>("#composer")?.addEventListener("compositionstart", () => {
     composerCompositionInProgress = true;
+    composerCompositionStartDraft = state.composerDraft;
   });
 
-  root.querySelector<HTMLTextAreaElement>("#composer")?.addEventListener("compositionend", () => {
+  root.querySelector<HTMLTextAreaElement>("#composer")?.addEventListener("compositionend", (event) => {
+    const target = event.currentTarget as HTMLTextAreaElement;
+    const previousComposerDraft = composerCompositionStartDraft;
+    const previousMentionQuery = state.mentionQuery;
+    const previousSlashQuery = state.slashQuery;
+
     composerCompositionInProgress = false;
+    composerCompositionStartDraft = "";
+    state.composerDraft = target.value;
+    rememberComposerInteraction(target);
+    state.mentionQuery = extractMentionQuery(target.value);
+    state.slashQuery = extractSlashQuery(target.value);
+    if (previousMentionQuery !== state.mentionQuery) {
+      state.mentionActiveIndex = 0;
+    }
+    if (previousSlashQuery !== state.slashQuery) {
+      state.slashActiveIndex = 0;
+    }
+    if (state.mentionQuery !== null && previousMentionQuery === null) {
+      void refreshOpenTabSuggestions({ requestPermission: false });
+    }
+    const primaryActionChanged = didComposerPrimaryActionChangeForDraftInput({
+      previousComposerDraft,
+      nextComposerDraft: target.value,
+      currentWorkActive: isCurrentPromptWorkActive(),
+      liveActive: state.voiceEnabled,
+    });
+    if (primaryActionChanged) {
+      syncComposerPrimaryActionButton();
+    }
+    if (previousMentionQuery !== state.mentionQuery || previousSlashQuery !== state.slashQuery) {
+      render();
+    }
+    flushDeferredComposerCompositionRender();
   });
 
   root.querySelector<HTMLTextAreaElement>("#composer")?.addEventListener("keydown", (event) => {
@@ -7779,12 +10106,19 @@ function bindEvents(): void {
       rememberComposerInteraction(event.currentTarget as HTMLTextAreaElement);
       return;
     }
+    if (moveMentionOptionSelection(event.key)) {
+      event.preventDefault();
+      rememberComposerInteraction(event.currentTarget as HTMLTextAreaElement);
+      return;
+    }
 
     if (shouldInterceptComposerDropdownOnEnter(keyInput)) {
       event.preventDefault();
       rememberComposerInteraction(event.currentTarget as HTMLTextAreaElement);
       if (state.slashQuery !== null) {
         void acceptActiveSlashOptionFromComposer();
+      } else if (state.mentionQuery !== null) {
+        void acceptActiveMentionOptionFromComposer();
       }
       return;
     }
@@ -7795,7 +10129,7 @@ function bindEvents(): void {
       return;
     }
     event.preventDefault();
-    if (!canSendCurrentComposerMessage()) {
+    if (!canSendCurrentComposerMessage(undefined, { allowSteer: isCurrentTurnActive() })) {
       rememberComposerInteraction(event.currentTarget as HTMLTextAreaElement);
       return;
     }
@@ -7819,15 +10153,9 @@ function bindEvents(): void {
   root.querySelectorAll<HTMLButtonElement>("[data-tab-mention-id]").forEach((button) => {
     button.addEventListener("click", () => {
       const tabId = Number(button.dataset.tabMentionId);
-      if (!Number.isFinite(tabId)) {
+      if (!toggleTabMentionSelection(tabId)) {
         return;
       }
-      state.attachments.add("open-tabs");
-      state.selectedTabIds = toggleSelectedTabId(state.selectedTabIds, tabId);
-      if (state.selectedTabIds.length === 0) {
-        state.attachments.delete("open-tabs");
-      }
-      scheduleConversationPersist();
       renderSync();
       const composer = root.querySelector<HTMLTextAreaElement>("#composer");
       if (composer) {
@@ -7842,6 +10170,7 @@ function bindEvents(): void {
 
   root.querySelector<HTMLButtonElement>("[data-tab-mention-done]")?.addEventListener("click", () => {
     state.mentionQuery = null;
+    state.mentionActiveIndex = 0;
     state.composerDraft = removeActiveMentionToken(state.composerDraft);
     scheduleConversationPersist();
     renderSync();
@@ -7861,7 +10190,14 @@ function bindEvents(): void {
       if (!option) {
         return;
       }
-      await refreshOpenTabSuggestions({ requestPermission: true });
+      if (option.kind === "context") {
+        await refreshOpenTabSuggestions({ requestPermission: true });
+        return;
+      }
+
+      applyStructuredMentionOption(option);
+      renderSync();
+      restoreComposerFocus(true);
     });
   });
 
@@ -7942,68 +10278,87 @@ function bindEvents(): void {
     await installSkillArchive(file);
   });
 
-  root.querySelectorAll<HTMLButtonElement>("[data-app-id]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const app = state.connectedApps.find((item) => item.id === button.dataset.appId);
-      if (!app || !app.isAccessible || !app.isEnabled) {
+  root.querySelectorAll<HTMLInputElement>("[data-app-id]").forEach((input) => {
+    input.addEventListener("change", async () => {
+      const app = state.connectedApps.find((item) => item.id === input.dataset.appId);
+      if (!app || !isConnectedAppMentionAvailable(app)) {
+        input.checked = false;
         return;
       }
-      toggleStructuredInput({
+      setStructuredInputEnabled({
         id: app.id,
         type: "mention",
         name: app.name,
         path: app.path,
         description: app.description,
         token: app.token,
-      });
+        ...(app.iconUrl ? { iconUrl: app.iconUrl } : {}),
+      }, input.checked);
       scheduleConversationPersist();
       render();
     });
   });
 
-  root.querySelectorAll<HTMLButtonElement>("[data-plugin-id]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const plugin = state.appServerPlugins.find((item) => item.id === button.dataset.pluginId);
-      if (!plugin || !plugin.installed || !plugin.enabled) {
-        return;
-      }
-      toggleStructuredInput({
-        id: plugin.id,
-        type: "mention",
-        name: plugin.name,
-        path: plugin.path,
-        description: plugin.description,
-        token: plugin.token,
+  bindPluginMcpControls(root);
+
+  root.querySelector<HTMLButtonElement>("[data-plugin-connect-close]")?.addEventListener("click", () => {
+    closePluginConnectionDialog();
+  });
+
+  root.querySelector<HTMLElement>("[data-plugin-connect-backdrop]")?.addEventListener("click", (event) => {
+    if (event.target === event.currentTarget) {
+      closePluginConnectionDialog();
+    }
+  });
+
+  root.querySelector<HTMLButtonElement>("[data-plugin-connect-confirm]")?.addEventListener("click", () => {
+    void confirmPluginConnectionDialog();
+  });
+
+  root.querySelector<HTMLButtonElement>("#reload-mcp-servers")?.addEventListener("click", async () => {
+    const strings = stringsForState();
+    try {
+      await sendRuntimeMessage({ type: "mcp.servers.reload" });
+      const result = await sendRuntimeMessage<{ mcpServers?: CodexMcpServerOption[] }>({
+        type: "mcp.servers.list",
+        detail: "toolsAndAuthOnly",
       });
-      scheduleConversationPersist();
-      render();
-    });
-  });
-
-  root.querySelector<HTMLButtonElement>("#send-prompt")?.addEventListener("click", () => {
-    void sendPrompt();
-  });
-
-  root.querySelector<HTMLButtonElement>("#stop-turn")?.addEventListener("click", async () => {
-    const activePromptRequestId = state.promptActivity?.clientRequestId;
-    const activeTurn = state.activeTurn;
-    if (!activeTurn && !activePromptRequestId) {
-      return;
+      state.mcpServers = result.mcpServers ?? state.mcpServers;
+      state.actionStatus = strings.status.connectionRefreshed;
+    } catch (error) {
+      state.actionStatus = toUserFacingRuntimeError(error);
     }
-    if (activePromptRequestId) {
-      cancelledPromptRequestIds.add(activePromptRequestId);
-    }
-    await chrome.runtime.sendMessage({
-      type: "prompt.cancel",
-      clientRequestId: activePromptRequestId,
-      threadId: activeTurn?.threadId,
-      turnId: activeTurn?.turnId,
-    });
-    state.activeTurn = null;
-    state.promptActivity = null;
-    state.streamingAssistantMessageIds.clear();
     render();
   });
+
+  root.querySelectorAll<HTMLButtonElement>("[data-mcp-oauth-server]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const name = button.dataset.mcpOauthServer ?? "";
+      if (!name) {
+        return;
+      }
+      const strings = stringsForState();
+      try {
+        await sendRuntimeMessage({ type: "mcp.oauth.login.start", name });
+        const result = await sendRuntimeMessage<{ mcpServers?: CodexMcpServerOption[] }>({
+          type: "mcp.servers.list",
+          detail: "toolsAndAuthOnly",
+        });
+        state.mcpServers = result.mcpServers ?? state.mcpServers;
+        state.actionStatus = strings.status.connectionRefreshed;
+      } catch (error) {
+        state.actionStatus = toUserFacingRuntimeError(error);
+      }
+      render();
+    });
+  });
+
+  const composerPrimaryActionButton = root.querySelector<HTMLButtonElement>(
+    "#send-prompt, #stop-turn, #live-toggle, #stop-live",
+  );
+  if (composerPrimaryActionButton) {
+    bindComposerPrimaryActionButton(composerPrimaryActionButton);
+  }
 
   root.querySelector<HTMLButtonElement>("#voice-input-toggle")?.addEventListener("click", async () => {
     if (state.voiceInputActive) {
@@ -8019,32 +10374,6 @@ function bindEvents(): void {
 
   root.querySelector<HTMLButtonElement>("#voice-dictation-confirm")?.addEventListener("click", () => {
     void commitComposerVoiceInput();
-  });
-
-  root.querySelector<HTMLButtonElement>("#live-toggle, #stop-live")?.addEventListener("click", async () => {
-    if (voiceStartPromise) {
-      return;
-    }
-    state.initError = "";
-    state.actionStatus = "";
-    state.pendingAction = "voice";
-    render();
-    try {
-      if (!state.voiceEnabled) {
-        voiceStartPromise = startRealtimeVoiceSession();
-        await voiceStartPromise;
-      } else {
-        await stopRealtimeVoiceSession({ notifyBridge: true });
-      }
-    } catch (error) {
-      state.initError = error instanceof Error ? error.message : strings.errors.voiceUpdate;
-      cleanupRealtimeVoiceResources();
-      state.voiceEnabled = false;
-    } finally {
-      voiceStartPromise = null;
-      state.pendingAction = "";
-      render();
-    }
   });
 
   root.querySelectorAll<HTMLButtonElement>(".action-card").forEach((button) => {
@@ -8193,6 +10522,7 @@ function bindEvents(): void {
     state.appMenuOpen = false;
     state.composerModelMenuOpen = false;
     state.mentionQuery = null;
+    state.mentionActiveIndex = 0;
     state.slashQuery = null;
     state.browserActionPermissionMenuOpen = !state.browserActionPermissionMenuOpen;
     renderSync();
@@ -8278,6 +10608,7 @@ async function handleAttachmentMenuAction(action: AttachmentMenuAction): Promise
       state.slashQuery = null;
       state.slashActiveIndex = 0;
       state.mentionQuery = "";
+      state.mentionActiveIndex = 0;
       state.composerDraft = ensureTrailingComposerToken(state.composerDraft, "@");
       renderSync();
       await refreshOpenTabSuggestions({ requestPermission: false });
@@ -8288,10 +10619,7 @@ async function handleAttachmentMenuAction(action: AttachmentMenuAction): Promise
       state.browserActionPermissionMenuOpen = false;
       state.attachments.add("image");
       state.currentReadStrategy = "vision";
-      state.actionStatus =
-        state.uiLocale === "ko"
-          ? "현재 화면을 다음 요청의 시각 컨텍스트로 첨부합니다."
-          : "The visible screen will be attached as visual context for your next request.";
+      state.actionStatus = stringsForState().status.screenAttached;
       scheduleConversationPersist();
       render();
       return;
@@ -8299,6 +10627,7 @@ async function handleAttachmentMenuAction(action: AttachmentMenuAction): Promise
       state.attachmentMenuOpen = false;
       state.browserActionPermissionMenuOpen = false;
       state.mentionQuery = null;
+      state.mentionActiveIndex = 0;
       state.slashQuery = "";
       state.slashActiveIndex = 0;
       state.composerDraft = ensureTrailingComposerToken(state.composerDraft, "/");
@@ -8417,14 +10746,21 @@ async function refreshOpenTabSuggestions(options: { requestPermission: boolean }
   render();
 }
 
-async function sendPrompt(messageOverride?: string, options: { resetThread?: boolean } = {}): Promise<void> {
-  if (!canSendCurrentComposerMessage()) {
+async function sendPrompt(
+  messageOverride?: string,
+  options: { resetThread?: boolean; displayMessage?: string } = {},
+): Promise<void> {
+  const composer = root.querySelector<HTMLTextAreaElement>("#composer");
+  const strings = stringsForState();
+  const composerText = composer?.value ?? state.composerDraft;
+  const isDirectComposerTextSend = messageOverride === undefined && composerText.trim().length > 0;
+  const currentWorkActiveAtSubmit = isCurrentPromptWorkActive();
+  const message = (messageOverride ?? composer?.value ?? "").trim() || defaultPromptForContext(strings);
+  const displayMessage = (options.displayMessage ?? message).trim();
+  if (!canSendCurrentComposerMessage(message, { allowSteer: isDirectComposerTextSend })) {
     return;
   }
 
-  const composer = root.querySelector<HTMLTextAreaElement>("#composer");
-  const strings = stringsForState();
-  const message = (messageOverride ?? composer?.value ?? "").trim() || defaultPromptForContext(strings);
   if (!message) {
     return;
   }
@@ -8437,6 +10773,7 @@ async function sendPrompt(messageOverride?: string, options: { resetThread?: boo
       composer.value = "";
     }
     state.mentionQuery = null;
+    state.mentionActiveIndex = 0;
     state.slashQuery = null;
     render();
     return;
@@ -8464,35 +10801,82 @@ async function sendPrompt(messageOverride?: string, options: { resetThread?: boo
     }
   }
 
-  Object.assign(state, createPendingComposerDraftState());
-  state.activeView = "chat";
-  const activeProfileId = ensureComposerProfileSelection();
-  if (options.resetThread) {
-    state.threadId = "";
-    state.activeTurn = null;
-  }
-  sanitizeUnavailableCurrentPageState();
-  const nextAttachments = Array.from(state.attachments);
-  const nextFileAttachments = [...state.fileAttachments];
-  const contextHint = buildConversationContextHint();
-  const messageProfile = createMessageProfileSnapshot();
-  const userMessageId = `user-${Date.now()}`;
-  const clientRequestId = `prompt-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  state.promptActivity = {
-    clientRequestId,
-    phase: "preparing",
-  };
-  state.messages.push({
-    id: userMessageId,
-    role: "user",
-    text: message,
-    ...(nextFileAttachments.length ? { attachments: createConversationMessageAttachments(nextFileAttachments) } : {}),
-    ...(messageProfile ? { profile: messageProfile } : {}),
-  });
-  render();
-  scheduleConversationPersist();
+  let conversationIdAtStart = state.currentConversationId;
+  let userMessageId = "";
+  let clientRequestId = "";
+  let submittedComposerFileAttachments: UserFileAttachment[] = [];
+  promptSubmissionBootstrapInFlight = true;
 
   try {
+    Object.assign(state, createPendingComposerDraftState());
+    state.activeView = "chat";
+    const activeProfileId = ensureComposerProfileSelection();
+    if (!state.currentConversationId) {
+      const created = await sendRuntimeMessage<{ conversation: SavedConversation }>({
+        type: "conversation.new",
+        profileId: activeProfileId,
+        model: state.selectedModel,
+      });
+      hydrateConversation(created.conversation);
+    }
+    conversationIdAtStart = state.currentConversationId;
+    if (options.resetThread) {
+      state.threadId = "";
+      state.activeTurn = null;
+    }
+    const sendAsTurnSteer = shouldSendComposerAsTurnSteer({
+      draft: message,
+      resetThread: Boolean(options.resetThread),
+      threadId: state.threadId || undefined,
+      activeTurn: state.activeTurn,
+      currentWorkActive: currentWorkActiveAtSubmit,
+      source: isDirectComposerTextSend ? "composer" : "programmatic",
+    });
+    sanitizeUnavailableCurrentPageState();
+    const nextAttachments = Array.from(state.attachments);
+    const contextHint = buildConversationContextHint();
+    const submittedFileAttachmentState = createSubmittedComposerFileAttachmentState(
+      state.fileAttachments,
+    );
+    submittedComposerFileAttachments = submittedFileAttachmentState.messageFileAttachments;
+    const submittedMessageFileAttachments = submittedFileAttachmentState.messageFileAttachments;
+    const submittedRequestFileAttachments = submittedFileAttachmentState.requestFileAttachments;
+    state.fileAttachments = submittedFileAttachmentState.composerFileAttachments;
+    const messageProfile = createMessageProfileSnapshot();
+    const submittedMessageStructuredInputs = createConversationMessageStructuredInputs(state.structuredInputs);
+    const submittedPromptStructuredInputs = getPromptStructuredInputs();
+    userMessageId = `user-${Date.now()}`;
+    clientRequestId = `prompt-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    setActivePromptUserMessageId(resolveActivePromptUserMessageIdForSend(userMessageId, sendAsTurnSteer));
+    state.promptActivity = {
+      clientRequestId,
+      phase: "preparing",
+    };
+    promptSubmissionBootstrapInFlight = false;
+    promptRequestConversationIds.set(clientRequestId, conversationIdAtStart);
+    promptActivitiesByConversationId.set(conversationIdAtStart, state.promptActivity);
+    state.messages.push({
+      id: userMessageId,
+      role: "user",
+      text: displayMessage || message,
+      ...(submittedMessageFileAttachments.length ? { attachments: createConversationMessageAttachments(submittedMessageFileAttachments) } : {}),
+      ...(submittedMessageStructuredInputs.length ? { structuredInputs: submittedMessageStructuredInputs } : {}),
+      ...(messageProfile ? { profile: messageProfile } : {}),
+    });
+    rememberCurrentConversationSnapshot();
+    renderSync();
+    scheduleConversationPersist();
+
+    const generatedImageAttachments = sendAsTurnSteer
+      ? []
+      : await createGeneratedImageFileAttachmentsForPrompt(
+          message,
+          contextHint,
+          activeProfileId,
+          submittedRequestFileAttachments,
+        );
+    const nextFileAttachments = [...submittedRequestFileAttachments, ...generatedImageAttachments];
+
     const result = await sendRuntimeMessageWithConfirmation<{
       threadId: string;
       turnId: string;
@@ -8502,12 +10886,12 @@ async function sendPrompt(messageOverride?: string, options: { resetThread?: boo
       assistantText?: string;
       previewRef?: string;
       previewRefs?: string[];
-      appliedToPage?: boolean;
       cancelled?: boolean;
     }>({
-      type: "prompt.send",
+      type: sendAsTurnSteer ? "turn.steer" : "prompt.send",
       payload: {
         message,
+        conversationId: conversationIdAtStart,
         contextHint,
         clientRequestId,
         profileId: activeProfileId,
@@ -8517,7 +10901,7 @@ async function sendPrompt(messageOverride?: string, options: { resetThread?: boo
         readStrategyOverride: state.currentReadStrategy,
         attachments: nextAttachments,
         fileAttachments: nextFileAttachments,
-        structuredInputs: getPromptStructuredInputs(),
+        structuredInputs: submittedPromptStructuredInputs,
         selectedTabIds: state.selectedTabIds,
         historyQuery: state.historyQuery,
         resetThread: options.resetThread,
@@ -8540,20 +10924,46 @@ async function sendPrompt(messageOverride?: string, options: { resetThread?: boo
       removePendingImageWorkflowMessage(clientRequestId);
       state.messages = state.messages.filter((entry) => entry.id !== userMessageId);
       state.promptActivity = null;
+      clearActivePromptUserMessageId();
       state.streamingAssistantMessageIds.clear();
       Object.assign(state, createRestoredComposerDraftState(message));
+      state.fileAttachments = submittedComposerFileAttachments;
       if (composer) {
         composer.value = message;
       }
       render();
       return;
     }
+    const resultConversationId = result.currentConversationId ?? conversationIdAtStart;
+    if (result.threadId) {
+      rememberConversationThreadId(resultConversationId, result.threadId);
+    }
+    if (resultConversationId !== state.currentConversationId) {
+      if (result.workflow === "generated-image") {
+        const previewRefs = normalizeImagePreviewRefs(result.previewRefs, result.previewRef);
+        const imageAlt = stringsForState().images.generated;
+        const workflowMessageId =
+          pendingImageWorkflowMessageIdsByRequest.get(clientRequestId) ??
+          completedImageWorkflowMessageIdsByRequest.get(clientRequestId) ??
+          `assistant-image-${Date.now()}`;
+        await hydrateGeneratedImagesForDetachedConversation(resultConversationId, workflowMessageId, previewRefs, imageAlt);
+        pendingImageWorkflowMessageIdsByRequest.delete(clientRequestId);
+        streamedImagePreviewRefsByRequest.delete(clientRequestId);
+        completedImageWorkflowMessageIdsByRequest.delete(clientRequestId);
+      } else {
+        clearConversationActivity(resultConversationId);
+        await persistDetachedConversation(resultConversationId);
+      }
+      promptRequestConversationIds.delete(clientRequestId);
+      return;
+    }
     if (result.workflow === "image-edit") {
       state.currentConversationId = result.currentConversationId ?? state.currentConversationId;
       state.actionCards = result.actionCards;
       state.promptActivity = null;
+      clearActivePromptUserMessageId();
       state.streamingAssistantMessageIds.clear();
-      const imageAlt = state.uiLocale === "ko" ? "편집된 이미지" : "Edited image";
+      const imageAlt = stringsForState().images.edited;
       const messageId = replacePendingImageWorkflowMessage(
         clientRequestId,
         result.assistantText,
@@ -8577,9 +10987,10 @@ async function sendPrompt(messageOverride?: string, options: { resetThread?: boo
       state.currentConversationId = result.currentConversationId ?? state.currentConversationId;
       state.actionCards = result.actionCards;
       state.promptActivity = null;
+      clearActivePromptUserMessageId();
       state.streamingAssistantMessageIds.clear();
       const previewRefs = normalizeImagePreviewRefs(result.previewRefs, result.previewRef);
-      const imageAlt = state.uiLocale === "ko" ? "생성된 이미지" : "Generated image";
+      const imageAlt = stringsForState().images.generated;
       const streamedPreviewRefs = consumeStreamedImagePreviewRefs(clientRequestId);
       if (streamedPreviewRefs.length) {
         const missingPreviewRefs = previewRefs.filter((previewRef) => !streamedPreviewRefs.includes(previewRef));
@@ -8623,11 +11034,12 @@ async function sendPrompt(messageOverride?: string, options: { resetThread?: boo
       state.currentConversationId = result.currentConversationId ?? state.currentConversationId;
       state.actionCards = result.actionCards;
       state.promptActivity = null;
+      clearActivePromptUserMessageId();
       state.streamingAssistantMessageIds.clear();
       state.messages.push({
         id: `assistant-browser-action-${Date.now()}`,
         role: "assistant",
-        text: result.assistantText?.trim() || (state.uiLocale === "ko" ? "현재 페이지에서 요청한 작업을 처리했습니다." : "I handled the requested page action."),
+        text: result.assistantText?.trim() || stringsForState().status.pageActionHandled,
       });
       if (composer) {
         composer.value = "";
@@ -8641,9 +11053,15 @@ async function sendPrompt(messageOverride?: string, options: { resetThread?: boo
       return;
     }
     state.threadId = result.threadId;
+    const acceptedActiveTurn = resolveAcceptedPromptActiveTurn({
+      threadId: result.threadId,
+      turnId: result.turnId,
+      completedTurnIds,
+    });
     completedTurnIds.delete(result.turnId);
+    rememberAssistantResponseTurnGroup({ threadId: result.threadId, turnId: result.turnId }, `prompt:${clientRequestId}`);
     state.promptActivity = null;
-    state.activeTurn = null;
+    state.activeTurn = acceptedActiveTurn;
     state.currentConversationId = result.currentConversationId ?? state.currentConversationId;
     state.actionCards = result.actionCards;
     if (composer) {
@@ -8655,13 +11073,45 @@ async function sendPrompt(messageOverride?: string, options: { resetThread?: boo
     scheduleConversationPersist();
     render();
   } catch (error) {
+    promptSubmissionBootstrapInFlight = false;
     if (cancelledPromptRequestIds.delete(clientRequestId)) {
       removePendingImageWorkflowMessage(clientRequestId);
       scheduleConversationPersist();
       return;
     }
     removePendingImageWorkflowMessage(clientRequestId);
+    if (conversationIdAtStart !== state.currentConversationId) {
+      clearConversationActivity(conversationIdAtStart);
+      promptRequestConversationIds.delete(clientRequestId);
+      const errorMessage = toUserFacingRuntimeError(error);
+      getDetachedConversationMessages(conversationIdAtStart).push(createAssistantFailureMessage(errorMessage, state.uiLocale));
+      await persistDetachedConversation(conversationIdAtStart);
+      return;
+    }
+    const oauthFallbackResult = await handleOAuthUsageFallbackRequest(
+      error,
+      createPromptRetryAfterOAuthFallback(message, displayMessage, options),
+    );
+    if (oauthFallbackResult === "switched" || oauthFallbackResult === "awaiting-api-key") {
+      state.messages = state.messages.filter((entry) => entry.id !== userMessageId);
+      state.promptActivity = null;
+      clearActivePromptUserMessageId();
+      state.streamingAssistantMessageIds.clear();
+      state.activeTurn = null;
+      Object.assign(state, createRestoredComposerDraftState(message));
+      state.fileAttachments = submittedComposerFileAttachments;
+      if (composer) {
+        composer.value = message;
+      }
+      scheduleConversationPersist();
+      render();
+      if (oauthFallbackResult === "switched") {
+        await sendPrompt(message, createRetrySendPromptOptions(displayMessage, options));
+      }
+      return;
+    }
     state.promptActivity = null;
+    clearActivePromptUserMessageId();
     state.streamingAssistantMessageIds.clear();
     const errorMessage = toUserFacingRuntimeError(error);
     state.messages.push(createAssistantFailureMessage(errorMessage, state.uiLocale));
@@ -8676,8 +11126,32 @@ async function sendPrompt(messageOverride?: string, options: { resetThread?: boo
   }
 }
 
+function createPromptRetryAfterOAuthFallback(
+  message: string,
+  displayMessage: string,
+  options: { resetThread?: boolean },
+): NonNullable<NativeTextDialogState["afterSubmit"]> {
+  return {
+    kind: "retry-prompt",
+    message,
+    displayMessage,
+    ...(options.resetThread ? { resetThread: true } : {}),
+  };
+}
+
+function createRetrySendPromptOptions(
+  displayMessage: string,
+  options: { resetThread?: boolean },
+): { resetThread?: boolean; displayMessage?: string } {
+  return {
+    ...(displayMessage ? { displayMessage } : {}),
+    ...(options.resetThread ? { resetThread: true } : {}),
+  };
+}
+
 async function handleActionCard(actionId: string): Promise<void> {
   const selectedCard = getPinnedSuggestionCards().find((card) => card.id === actionId);
+  const displayMessage = selectedCard ? renderActionCardTitle(stringsForState(), selectedCard) : undefined;
   if (isYouTubeCurrentMomentAction(actionId)) {
     try {
       const result = await sendRuntimeMessageWithConfirmation<YouTubeCurrentMomentPromptResult>({
@@ -8688,7 +11162,7 @@ async function handleActionCard(actionId: string): Promise<void> {
       }
       clearVisualPromptAttachments();
       state.activeView = "chat";
-      await sendPrompt(result.prompt);
+      await sendPrompt(result.prompt, createSendPromptDisplayOptions(displayMessage));
     } catch (error) {
       state.initError = toUserFacingRuntimeError(error);
       render();
@@ -8711,7 +11185,7 @@ async function handleActionCard(actionId: string): Promise<void> {
       clearVisualPromptAttachments();
     }
     state.activeView = "chat";
-    await sendPrompt(selectedCard.prompt);
+    await sendPrompt(selectedCard.prompt, createSendPromptDisplayOptions(displayMessage));
     return;
   }
 
@@ -8727,10 +11201,7 @@ async function handleActionCard(actionId: string): Promise<void> {
     try {
       const result = await sendRuntimeMessageWithConfirmation<{ previewRef?: string; cancelled?: boolean }>({
         type: "image.edit.start",
-        prompt:
-          state.uiLocale === "ko"
-            ? "주 피사체는 유지하면서 현재 이미지를 더 완성도 높게 다듬어줘."
-            : "Improve this image while preserving the main subject.",
+        prompt: stringsForState().prompts.improveCurrentImage,
       });
       if (isCancelledResult(result) || !result.previewRef) {
         removePendingImageWorkflowMessage(clientRequestId);
@@ -8738,7 +11209,7 @@ async function handleActionCard(actionId: string): Promise<void> {
         render();
         return;
       }
-      const imageAlt = state.uiLocale === "ko" ? "편집된 이미지" : "Edited image";
+      const imageAlt = stringsForState().images.edited;
       const messageId = replacePendingImageWorkflowMessage(
         clientRequestId,
         null,
@@ -8748,10 +11219,6 @@ async function handleActionCard(actionId: string): Promise<void> {
       scheduleConversationPersist();
       render();
       void hydrateConversationImage(messageId, result.previewRef, imageAlt);
-      await sendRuntimeMessageWithConfirmation({
-        type: "page.apply-image-overlay",
-        previewRef: result.previewRef,
-      });
     } catch (error) {
       removePendingImageWorkflowMessage(clientRequestId);
       state.promptActivity = null;
@@ -8769,11 +11236,10 @@ async function handleActionCard(actionId: string): Promise<void> {
   }
 
   const prompts: Record<string, string> = {
-    "summarize-page": state.uiLocale === "ko" ? "현재 페이지를 요약해줘." : "Summarize the current page.",
-    "summarize-video": state.uiLocale === "ko" ? "현재 유튜브 영상을 섹션별로 요약해줘." : "Summarize the current YouTube video with sections.",
-    "summarize-current-timestamp":
-      state.uiLocale === "ko" ? "현재 타임스탬프에서 무슨 일이 일어나고 있는지 설명해줘." : "Explain what is happening at the current timestamp.",
-    "draft-blog-post": state.uiLocale === "ko" ? "이 페이지를 바탕으로 제목과 섹션이 있는 블로그 초안을 써줘." : "Turn this page into a blog draft with headings.",
+    "summarize-page": stringsForState().prompts.summarizePage,
+    "summarize-video": stringsForState().prompts.summarizeVideo,
+    "summarize-current-timestamp": stringsForState().prompts.summarizeTimestamp,
+    "draft-blog-post": stringsForState().prompts.draftBlogPost,
   };
   const prompt = prompts[actionId];
   if (prompt) {
@@ -8804,12 +11270,27 @@ async function seekYouTubeTimestamp(seconds: number): Promise<void> {
   }
 }
 
+function createSendPromptDisplayOptions(displayMessage: string | undefined): { displayMessage?: string } {
+  return displayMessage ? { displayMessage } : {};
+}
+
 async function createInfographicFromCurrentPage(): Promise<void> {
-  if (!canSendCurrentComposerMessage()) {
+  if (!canStartCurrentComposerWorkflow()) {
     return;
   }
 
-  const userMessageText = state.uiLocale === "ko" ? "현재 페이지로 인포그래픽 만들기" : "Create an infographic from this page";
+  const activeProfileId = ensureComposerProfileSelection();
+  if (!state.currentConversationId) {
+    const created = await sendRuntimeMessage<{ conversation: SavedConversation }>({
+      type: "conversation.new",
+      profileId: activeProfileId,
+      model: state.selectedModel,
+    });
+    hydrateConversation(created.conversation);
+  }
+
+  const conversationIdAtStart = state.currentConversationId;
+  const userMessageText = stringsForState().prompts.createInfographicFromPage;
   const userMessageId = `user-infographic-${Date.now()}`;
   const clientRequestId = `infographic-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const messageProfile = createMessageProfileSnapshot();
@@ -8824,7 +11305,10 @@ async function createInfographicFromCurrentPage(): Promise<void> {
     text: userMessageText,
     ...(messageProfile ? { profile: messageProfile } : {}),
   });
-  pushPendingImageWorkflowMessage(clientRequestId, "infographic");
+  const workflowMessageId = pushPendingImageWorkflowMessage(clientRequestId, "infographic");
+  promptRequestConversationIds.set(clientRequestId, conversationIdAtStart);
+  promptActivitiesByConversationId.set(conversationIdAtStart, state.promptActivity);
+  rememberCurrentConversationSnapshot();
   scheduleConversationPersist();
   render();
 
@@ -8834,10 +11318,12 @@ async function createInfographicFromCurrentPage(): Promise<void> {
       previewRef?: string;
       previewRefs?: string[];
       actionCards?: ActionCard[];
+      currentConversationId?: string;
       cancelled?: boolean;
     }>({
       type: "image.infographic.start",
       clientRequestId,
+      conversationId: conversationIdAtStart,
       conversationContext: buildInfographicConversationContext(state.messages),
     });
     if (isCancelledResult(result)) {
@@ -8848,7 +11334,14 @@ async function createInfographicFromCurrentPage(): Promise<void> {
       return;
     }
     const previewRefs = normalizeImagePreviewRefs(result.previewRefs, result.previewRef);
+    const resultConversationId = result.currentConversationId ?? conversationIdAtStart;
     if (!previewRefs.length) {
+      if (resultConversationId !== state.currentConversationId) {
+        clearConversationActivity(resultConversationId);
+        promptRequestConversationIds.delete(clientRequestId);
+        await persistDetachedConversation(resultConversationId);
+        return;
+      }
       removePendingImageWorkflowMessage(clientRequestId);
       state.messages = state.messages.filter((entry) => entry.id !== userMessageId);
       state.promptActivity = null;
@@ -8856,10 +11349,16 @@ async function createInfographicFromCurrentPage(): Promise<void> {
       return;
     }
 
+    const imageAlt = stringsForState().images.infographic;
+    if (resultConversationId !== state.currentConversationId) {
+      await hydrateGeneratedImagesForDetachedConversation(resultConversationId, workflowMessageId, previewRefs, imageAlt);
+      promptRequestConversationIds.delete(clientRequestId);
+      return;
+    }
+
     state.actionCards = result.actionCards ?? state.actionCards;
     state.promptActivity = null;
     state.streamingAssistantMessageIds.clear();
-    const imageAlt = state.uiLocale === "ko" ? "현재 페이지 인포그래픽" : "Current page infographic";
     const streamedPreviewRefs = consumeStreamedImagePreviewRefs(clientRequestId);
     if (streamedPreviewRefs.length) {
       const missingPreviewRefs = previewRefs.filter((previewRef) => !streamedPreviewRefs.includes(previewRef));
@@ -8892,10 +11391,17 @@ async function createInfographicFromCurrentPage(): Promise<void> {
     render();
     void hydrateConversationImages(messageId, previewRefs, imageAlt);
   } catch (error) {
+    const errorMessage = toUserFacingRuntimeError(error);
+    if (conversationIdAtStart !== state.currentConversationId) {
+      clearConversationActivity(conversationIdAtStart);
+      promptRequestConversationIds.delete(clientRequestId);
+      getDetachedConversationMessages(conversationIdAtStart).push(createAssistantFailureMessage(errorMessage, state.uiLocale));
+      await persistDetachedConversation(conversationIdAtStart);
+      return;
+    }
     removePendingImageWorkflowMessage(clientRequestId);
     state.promptActivity = null;
     state.streamingAssistantMessageIds.clear();
-    const errorMessage = toUserFacingRuntimeError(error);
     state.messages.push(createAssistantFailureMessage(errorMessage, state.uiLocale));
     state.initError = errorMessage;
     scheduleConversationPersist();
@@ -8904,12 +11410,23 @@ async function createInfographicFromCurrentPage(): Promise<void> {
 }
 
 async function createSlideImagesFromCurrentPage(prompt: string): Promise<void> {
-  if (!canSendCurrentComposerMessage()) {
+  if (!canStartCurrentComposerWorkflow()) {
     return;
   }
 
+  const activeProfileId = ensureComposerProfileSelection();
+  if (!state.currentConversationId) {
+    const created = await sendRuntimeMessage<{ conversation: SavedConversation }>({
+      type: "conversation.new",
+      profileId: activeProfileId,
+      model: state.selectedModel,
+    });
+    hydrateConversation(created.conversation);
+  }
+
+  const conversationIdAtStart = state.currentConversationId;
   const userMessageText =
-    prompt.trim() || (state.uiLocale === "ko" ? "현재 페이지로 슬라이드 이미지 만들기" : "Create slide images from this page");
+    prompt.trim() || stringsForState().prompts.createSlideImagesFromPage;
   const userMessageId = `user-slide-images-${Date.now()}`;
   const clientRequestId = `slide-images-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const messageProfile = createMessageProfileSnapshot();
@@ -8924,7 +11441,10 @@ async function createSlideImagesFromCurrentPage(prompt: string): Promise<void> {
     text: userMessageText,
     ...(messageProfile ? { profile: messageProfile } : {}),
   });
-  pushPendingImageWorkflowMessage(clientRequestId, "slide-images");
+  const workflowMessageId = pushPendingImageWorkflowMessage(clientRequestId, "slide-images");
+  promptRequestConversationIds.set(clientRequestId, conversationIdAtStart);
+  promptActivitiesByConversationId.set(conversationIdAtStart, state.promptActivity);
+  rememberCurrentConversationSnapshot();
   scheduleConversationPersist();
   render();
 
@@ -8934,10 +11454,12 @@ async function createSlideImagesFromCurrentPage(prompt: string): Promise<void> {
       previewRef?: string;
       previewRefs?: string[];
       actionCards?: ActionCard[];
+      currentConversationId?: string;
       cancelled?: boolean;
     }>({
       type: "image.slides.start",
       clientRequestId,
+      conversationId: conversationIdAtStart,
       prompt: userMessageText,
       conversationContext: buildInfographicConversationContext(state.messages),
     });
@@ -8949,7 +11471,14 @@ async function createSlideImagesFromCurrentPage(prompt: string): Promise<void> {
       return;
     }
     const previewRefs = normalizeImagePreviewRefs(result.previewRefs, result.previewRef);
+    const resultConversationId = result.currentConversationId ?? conversationIdAtStart;
     if (!previewRefs.length) {
+      if (resultConversationId !== state.currentConversationId) {
+        clearConversationActivity(resultConversationId);
+        promptRequestConversationIds.delete(clientRequestId);
+        await persistDetachedConversation(resultConversationId);
+        return;
+      }
       removePendingImageWorkflowMessage(clientRequestId);
       state.messages = state.messages.filter((entry) => entry.id !== userMessageId);
       state.promptActivity = null;
@@ -8957,10 +11486,16 @@ async function createSlideImagesFromCurrentPage(prompt: string): Promise<void> {
       return;
     }
 
+    const imageAlt = stringsForState().images.slide;
+    if (resultConversationId !== state.currentConversationId) {
+      await hydrateGeneratedImagesForDetachedConversation(resultConversationId, workflowMessageId, previewRefs, imageAlt);
+      promptRequestConversationIds.delete(clientRequestId);
+      return;
+    }
+
     state.actionCards = result.actionCards ?? state.actionCards;
     state.promptActivity = null;
     state.streamingAssistantMessageIds.clear();
-    const imageAlt = state.uiLocale === "ko" ? "발표 슬라이드 이미지" : "Presentation slide image";
     const streamedPreviewRefs = consumeStreamedImagePreviewRefs(clientRequestId);
     if (streamedPreviewRefs.length) {
       const missingPreviewRefs = previewRefs.filter((previewRef) => !streamedPreviewRefs.includes(previewRef));
@@ -8993,10 +11528,17 @@ async function createSlideImagesFromCurrentPage(prompt: string): Promise<void> {
     render();
     void hydrateConversationImages(messageId, previewRefs, imageAlt);
   } catch (error) {
+    const errorMessage = toUserFacingRuntimeError(error);
+    if (conversationIdAtStart !== state.currentConversationId) {
+      clearConversationActivity(conversationIdAtStart);
+      promptRequestConversationIds.delete(clientRequestId);
+      getDetachedConversationMessages(conversationIdAtStart).push(createAssistantFailureMessage(errorMessage, state.uiLocale));
+      await persistDetachedConversation(conversationIdAtStart);
+      return;
+    }
     removePendingImageWorkflowMessage(clientRequestId);
     state.promptActivity = null;
     state.streamingAssistantMessageIds.clear();
-    const errorMessage = toUserFacingRuntimeError(error);
     state.messages.push(createAssistantFailureMessage(errorMessage, state.uiLocale));
     state.initError = errorMessage;
     scheduleConversationPersist();
@@ -9027,10 +11569,7 @@ async function copyConversationMessage(messageId: string | undefined): Promise<v
 
 async function deleteConversationFromUi(conversationId: string): Promise<void> {
   const strings = stringsForState();
-  const message =
-    state.uiLocale === "ko"
-      ? "이 채팅을 최근 채팅 이력에서 삭제할까요?"
-      : "Delete this chat from recent chat history?";
+  const message = strings.prompts.deleteChatConfirm;
   const approved = await requestNativeConfirmation(message, {
     title: strings.actions.deleteChat,
     confirmLabel: strings.actions.deleteChat,
@@ -9064,10 +11603,7 @@ async function clearConversationHistoryFromUi(options: { returnToSettings?: bool
   }
 
   const strings = stringsForState();
-  const message =
-    state.uiLocale === "ko"
-      ? "이 기기에 저장된 최근 채팅 이력을 모두 삭제할까요?"
-      : "Clear all recent chat history stored on this device?";
+  const message = strings.prompts.clearChatHistoryConfirm;
   const approved = await requestNativeConfirmation(message, {
     title: strings.actions.clearRecentChats,
     confirmLabel: strings.actions.clearRecentChats,
@@ -9156,7 +11692,7 @@ async function replayConversationFromMessage(
   messageId: string | undefined,
   editedPrompt?: string,
 ): Promise<void> {
-  if (!messageId || !canSendCurrentComposerMessage()) {
+  if (!messageId || !canStartMessageReplayInteraction()) {
     return;
   }
 
@@ -9173,21 +11709,11 @@ async function replayConversationFromMessage(
   await sendPrompt(replay.prompt, { resetThread: true });
 }
 
-function isTextFirstActionCard(card: ActionCard): boolean {
-  return (
-    card.kind === "prompt" ||
-    card.id === "summarize-video" ||
-    card.id === "summarize-current-timestamp" ||
-    card.id === "draft-blog-post" ||
-    card.id === "summarize-page"
-  );
-}
-
 function isSlideImageGenerationActionCard(card: ActionCard): boolean {
   return card.id === "profile-slide-maker-1";
 }
 
-function upsertTurnActivityTrace(activity: {
+type TurnTraceActivityInput = {
   threadId: string;
   turnId: string;
   itemId: string;
@@ -9196,12 +11722,32 @@ function upsertTurnActivityTrace(activity: {
   detail: string;
   status: "running" | "completed";
   timestampMs: number;
-}): void {
+};
+
+function upsertTurnActivityTrace(activity: TurnTraceActivityInput): void {
+  if (upsertTurnActivityTraceInMessages(state.messages, activity)) {
+    scheduleConversationPersist();
+  }
+}
+
+function upsertTurnActivityTraceForConversation(
+  conversationId: string,
+  activity: TurnTraceActivityInput,
+): void {
+  if (upsertTurnActivityTraceInMessages(getDetachedConversationMessages(conversationId), activity)) {
+    void persistDetachedConversation(conversationId);
+  }
+}
+
+function upsertTurnActivityTraceInMessages(
+  messages: ConversationMessage[],
+  activity: TurnTraceActivityInput,
+): boolean {
   if (isNoisyTraceText(activity.title) || isNoisyTraceText(activity.detail)) {
-    return;
+    return false;
   }
   const messageId = createTurnTraceMessageId(activity.threadId, activity.turnId);
-  let message = state.messages.find((entry) => entry.id === messageId);
+  let message = messages.find((entry) => entry.id === messageId);
   if (!message) {
     message = {
       id: messageId,
@@ -9209,7 +11755,7 @@ function upsertTurnActivityTrace(activity: {
       text: "",
       trace: [],
     };
-    state.messages.push(message);
+    messages.push(message);
   }
   const trace = [...(message.trace ?? [])];
   const existingIndex = trace.findIndex((item) => item.id === activity.itemId);
@@ -9231,33 +11777,47 @@ function upsertTurnActivityTrace(activity: {
     trace.push(nextItem);
   }
   message.trace = trace.slice(-MAX_TRACE_ITEMS);
-  scheduleConversationPersist();
+  return true;
 }
 
 function upsertTurnPlanTrace(plan: CodexTurnPlan): void {
+  if (upsertTurnPlanTraceInMessages(state.messages, plan)) {
+    scheduleConversationPersist();
+  }
+}
+
+function upsertTurnPlanTraceForConversation(conversationId: string, plan: CodexTurnPlan): void {
+  if (upsertTurnPlanTraceInMessages(getDetachedConversationMessages(conversationId), plan)) {
+    void persistDetachedConversation(conversationId);
+  }
+}
+
+function upsertTurnPlanTraceInMessages(messages: ConversationMessage[], plan: CodexTurnPlan): boolean {
   const steps = plan.steps
     .map((step) => ({
       step: step.step.trim(),
       status: step.status,
     }))
     .filter((step) => step.step && !isNoisyTraceText(step.step));
-  removeTurnTraceItems(plan.threadId, plan.turnId, (item) => item.id.startsWith("plan-"));
+  let changed = removeTurnTraceItemsInMessages(messages, plan.threadId, plan.turnId, (item) => item.id.startsWith("plan-"));
 
   for (const [index, step] of steps.entries()) {
     if (!step.step) {
       continue;
     }
-    upsertTurnActivityTrace({
+    changed =
+      upsertTurnActivityTraceInMessages(messages, {
       threadId: plan.threadId,
       turnId: plan.turnId,
       itemId: `plan-${index}`,
       kind: "reasoning",
-      title: state.uiLocale === "ko" ? "계획" : "Plan",
+      title: stringsForState().trace.plan,
       detail: step.step,
       status: step.status === "completed" || step.status === "done" ? "completed" : "running",
       timestampMs: Date.now() + index,
-    });
+      }) || changed;
   }
+  return changed;
 }
 
 function removeTurnTraceItems(
@@ -9265,31 +11825,55 @@ function removeTurnTraceItems(
   turnId: string,
   predicate: (item: NonNullable<ConversationMessage["trace"]>[number]) => boolean,
 ): void {
-  const message = state.messages.find((entry) => entry.id === createTurnTraceMessageId(threadId, turnId));
+  if (removeTurnTraceItemsInMessages(state.messages, threadId, turnId, predicate)) {
+    scheduleConversationPersist();
+  }
+}
+
+function removeTurnTraceItemsInMessages(
+  messages: ConversationMessage[],
+  threadId: string,
+  turnId: string,
+  predicate: (item: NonNullable<ConversationMessage["trace"]>[number]) => boolean,
+): boolean {
+  const messageIndex = messages.findIndex((entry) => entry.id === createTurnTraceMessageId(threadId, turnId));
+  const message = messageIndex >= 0 ? messages[messageIndex] : undefined;
   if (!message?.trace?.length) {
-    return;
+    return false;
   }
   const nextTrace = message.trace.filter((item) => !predicate(item));
   if (nextTrace.length === message.trace.length) {
-    return;
+    return false;
   }
   message.trace = nextTrace;
   if (!nextTrace.length && message.role === "assistant" && !message.text.trim() && !(message.images ?? []).length) {
-    state.messages = state.messages.filter((entry) => entry.id !== message.id);
+    messages.splice(messageIndex, 1);
   }
-  scheduleConversationPersist();
+  return true;
 }
 
 function upsertTurnDiffTrace(diff: CodexTurnDiff): void {
-  if (!diff.diff.trim()) {
-    return;
+  if (upsertTurnDiffTraceInMessages(state.messages, diff)) {
+    scheduleConversationPersist();
   }
-  upsertTurnActivityTrace({
+}
+
+function upsertTurnDiffTraceForConversation(conversationId: string, diff: CodexTurnDiff): void {
+  if (upsertTurnDiffTraceInMessages(getDetachedConversationMessages(conversationId), diff)) {
+    void persistDetachedConversation(conversationId);
+  }
+}
+
+function upsertTurnDiffTraceInMessages(messages: ConversationMessage[], diff: CodexTurnDiff): boolean {
+  if (!diff.diff.trim()) {
+    return false;
+  }
+  return upsertTurnActivityTraceInMessages(messages, {
     threadId: diff.threadId,
     turnId: diff.turnId,
     itemId: "turn-diff",
     kind: "file",
-    title: state.uiLocale === "ko" ? "파일 변경" : "File changes",
+    title: stringsForState().trace.fileChanges,
     detail: diff.diff.split("\n").find((line) => line.trim())?.trim().slice(0, 180) ?? "",
     status: "completed",
     timestampMs: Date.now(),
@@ -9307,15 +11891,169 @@ function completeTurnTrace(threadId: string, turnId: string): void {
   if (!threadId || !turnId) {
     return;
   }
-  const message = state.messages.find((entry) => entry.id === createTurnTraceMessageId(threadId, turnId));
-  if (!message?.trace?.length) {
+  if (completeTurnTraceInMessages(state.messages, threadId, turnId)) {
+    scheduleConversationPersist();
+  }
+}
+
+function completeTurnTraceForConversation(conversationId: string, threadId: string, turnId: string): void {
+  if (completeTurnTraceInMessages(getDetachedConversationMessages(conversationId), threadId, turnId)) {
+    void persistDetachedConversation(conversationId);
+  }
+}
+
+function scheduleEmptyAssistantResponseNotice(input: {
+  conversationId: string | null;
+  threadId: string;
+  turnId: string;
+  activeUserMessageId?: string | null;
+}): void {
+  if (!input.threadId || !input.turnId) {
     return;
+  }
+
+  const key = createEmptyAssistantResponseNoticeTimerKey(input.conversationId, input.threadId, input.turnId);
+  cancelEmptyAssistantResponseNotice(input.threadId, input.turnId, input.conversationId);
+  const timer = setTimeout(() => {
+    pendingEmptyAssistantResponseNoticeTimers.delete(key);
+    const messages = getMessagesForEmptyAssistantResponseNotice(input.conversationId, input.threadId);
+    if (!messages) {
+      return;
+    }
+    const changed = ensureEmptyAssistantResponseNoticeInMessages(
+      messages,
+      input.threadId,
+      input.turnId,
+      input.activeUserMessageId ?? null,
+    );
+    if (!changed) {
+      return;
+    }
+    if (isCurrentEmptyAssistantResponseNoticeConversation(input.conversationId)) {
+      scheduleConversationPersist();
+      render();
+      return;
+    }
+    if (input.conversationId) {
+      void persistDetachedConversation(input.conversationId);
+      renderConversationListIfVisible();
+    }
+  }, EMPTY_ASSISTANT_RESPONSE_NOTICE_DELAY_MS);
+  pendingEmptyAssistantResponseNoticeTimers.set(key, timer);
+}
+
+function cancelEmptyAssistantResponseNotice(
+  threadId: string,
+  turnId: string,
+  conversationId: string | null = state.currentConversationId || null,
+): void {
+  if (!threadId || !turnId) {
+    return;
+  }
+  const keys = new Set([
+    createEmptyAssistantResponseNoticeTimerKey(conversationId, threadId, turnId),
+    createEmptyAssistantResponseNoticeTimerKey(state.currentConversationId || null, threadId, turnId),
+  ]);
+  for (const key of keys) {
+    const timer = pendingEmptyAssistantResponseNoticeTimers.get(key);
+    if (!timer) {
+      continue;
+    }
+    clearTimeout(timer);
+    pendingEmptyAssistantResponseNoticeTimers.delete(key);
+  }
+}
+
+function clearEmptyAssistantResponseNoticeForTurn(
+  threadId: string,
+  turnId: string,
+  conversationId: string | null = state.currentConversationId || null,
+): void {
+  if (!threadId || !turnId) {
+    return;
+  }
+  const messages = getMessagesForEmptyAssistantResponseNotice(conversationId, threadId);
+  if (!messages || !clearEmptyAssistantResponseNotice({ messages, threadId, turnId })) {
+    return;
+  }
+  if (isCurrentEmptyAssistantResponseNoticeConversation(conversationId)) {
+    scheduleConversationPersist();
+    return;
+  }
+  if (conversationId) {
+    void persistDetachedConversation(conversationId);
+  }
+}
+
+function getMessagesForEmptyAssistantResponseNotice(conversationId: string | null, threadId: string): ConversationMessage[] | null {
+  if (isCurrentEmptyAssistantResponseNoticeConversation(conversationId)) {
+    if (threadId && state.threadId && state.threadId !== threadId) {
+      return null;
+    }
+    return state.messages;
+  }
+  return conversationId ? conversationMessagesById.get(conversationId) ?? null : state.messages;
+}
+
+function isCurrentEmptyAssistantResponseNoticeConversation(conversationId: string | null): boolean {
+  return !conversationId || conversationId === state.currentConversationId;
+}
+
+function createEmptyAssistantResponseNoticeTimerKey(
+  conversationId: string | null,
+  threadId: string,
+  turnId: string,
+): string {
+  return `${conversationId || "current"}:${threadId}:${turnId}`;
+}
+
+function ensureEmptyAssistantResponseNoticeInMessages(
+  messages: ConversationMessage[],
+  threadId: string,
+  turnId: string,
+  activeUserMessageId?: string | null,
+): boolean {
+  if (!threadId || !turnId) {
+    return false;
+  }
+
+  const traceMessageId = createTurnTraceMessageId(threadId, turnId);
+  if (!shouldShowEmptyAssistantResponseNotice({ messages, traceMessageId, activeUserMessageId: activeUserMessageId ?? null })) {
+    return false;
+  }
+
+  const text = createEmptyAssistantResponseNotice({
+    locale: state.uiLocale,
+    structuredInputNames: getStructuredInputNamesForEmptyResponseNotice(messages, activeUserMessageId),
+  });
+  let message = messages.find((entry) => entry.id === traceMessageId && entry.role === "assistant");
+  if (!message) {
+    message = {
+      id: `assistant-empty-response-${stableMessageIdPart(`${threadId}-${turnId}`)}`,
+      role: "assistant",
+      text,
+    };
+    messages.push(message);
+    return true;
+  }
+
+  message.text = text;
+  return true;
+}
+
+function completeTurnTraceInMessages(messages: ConversationMessage[], threadId: string, turnId: string): boolean {
+  if (!threadId || !turnId) {
+    return false;
+  }
+  const message = messages.find((entry) => entry.id === createTurnTraceMessageId(threadId, turnId));
+  if (!message?.trace?.length) {
+    return false;
   }
   message.trace = message.trace.map((item) => ({
     ...item,
     status: "completed",
   }));
-  scheduleConversationPersist();
+  return true;
 }
 
 function createTurnTraceMessageId(threadId: string, turnId: string): string {
@@ -9342,21 +12080,135 @@ function isTraceOnlyAssistantMessage(message: ConversationMessage): boolean {
   return message.role === "assistant" && !message.text.trim() && Boolean(message.trace?.length) && !(message.images ?? []).length;
 }
 
-function upsertAssistantMessage(itemId: string, fragment: string, append: boolean): void {
-  const existing = state.messages.find((message) => message.id === itemId);
-  const nextText = consumeProfileQuestionFromAssistantText(itemId, existing?.text ?? "", fragment, append);
+function upsertAssistantMessage(
+  itemId: string,
+  fragment: string,
+  append: boolean,
+  context: { threadId?: string; turnId?: string } = {},
+): string | null {
+  const messageId = resolveAssistantResponseMessageId(itemId, context);
+  const nextText = upsertAssistantResponseTextSegment(messageId, itemId, fragment, append);
+  const existing = state.messages.find((message) => message.id === messageId);
+  const currentText = existing?.text ?? "";
+  const profileQuestionAwareText = consumeProfileQuestionFromAssistantText(messageId, currentText, nextText, false);
   if (!existing && !nextText.trim()) {
-    return;
+    return null;
   }
   if (!existing) {
     state.messages.push({
-      id: itemId,
+      id: messageId,
       role: "assistant",
-      text: nextText,
+      text: profileQuestionAwareText,
     });
   } else {
-    existing.text = nextText;
+    existing.text = profileQuestionAwareText;
   }
+  return messageId;
+}
+
+function resolveAssistantResponseMessageId(
+  itemId: string,
+  context: { threadId?: string; turnId?: string } = {},
+): string {
+  const groupKey = resolveAssistantResponseGroupKey(itemId, context);
+  let messageId = assistantResponseMessageIdsByGroupKey.get(groupKey);
+  if (!messageId) {
+    messageId = `assistant-response-${stableMessageIdPart(groupKey)}`;
+    assistantResponseMessageIdsByGroupKey.set(groupKey, messageId);
+  }
+  assistantResponseGroupKeysByItemId.set(itemId, groupKey);
+  return messageId;
+}
+
+function resolveAssistantResponseGroupKey(itemId: string, context: { threadId?: string; turnId?: string } = {}): string {
+  const existing = assistantResponseGroupKeysByItemId.get(itemId);
+  if (existing) {
+    return existing;
+  }
+  const turnKey = createAssistantResponseTurnKey(context.threadId, context.turnId);
+  if (turnKey) {
+    const turnGroupKey = assistantResponseGroupKeysByTurnKey.get(turnKey);
+    if (turnGroupKey) {
+      return turnGroupKey;
+    }
+  }
+  if (state.promptActivity?.clientRequestId) {
+    const promptGroupKey = `prompt:${state.promptActivity.clientRequestId}`;
+    if (turnKey) {
+      assistantResponseGroupKeysByTurnKey.set(turnKey, promptGroupKey);
+    }
+    return promptGroupKey;
+  }
+  if (turnKey) {
+    assistantResponseGroupKeysByTurnKey.set(turnKey, turnKey);
+    return turnKey;
+  }
+  const activeTurnKey = createAssistantResponseTurnKey(state.activeTurn?.threadId, state.activeTurn?.turnId);
+  if (activeTurnKey) {
+    const activeTurnGroupKey = assistantResponseGroupKeysByTurnKey.get(activeTurnKey) ?? activeTurnKey;
+    assistantResponseGroupKeysByTurnKey.set(activeTurnKey, activeTurnGroupKey);
+    return activeTurnGroupKey;
+  }
+  return `item:${itemId}`;
+}
+
+function rememberAssistantResponseTurnGroup(
+  turn: { threadId?: string; turnId?: string } | null | undefined,
+  groupKey = state.promptActivity?.clientRequestId ? `prompt:${state.promptActivity.clientRequestId}` : "",
+): void {
+  const turnKey = createAssistantResponseTurnKey(turn?.threadId, turn?.turnId);
+  if (!turnKey || !groupKey) {
+    return;
+  }
+  assistantResponseGroupKeysByTurnKey.set(turnKey, groupKey);
+}
+
+function createAssistantResponseTurnKey(threadId: string | undefined, turnId: string | undefined): string {
+  return threadId && turnId ? `turn:${threadId}:${turnId}` : "";
+}
+
+function upsertAssistantResponseTextSegment(
+  messageId: string,
+  itemId: string,
+  fragment: string,
+  append: boolean,
+): string {
+  const order = assistantResponseItemOrderByMessageId.get(messageId) ?? [];
+  if (!order.includes(itemId)) {
+    order.push(itemId);
+    assistantResponseItemOrderByMessageId.set(messageId, order);
+  }
+
+  const texts = assistantResponseItemTextsByMessageId.get(messageId) ?? new Map<string, string>();
+  const previousText = texts.get(itemId) ?? "";
+  const nextFragment = append ? `${previousText}${fragment}` : fragment;
+  const normalizedNextFragment = normalizeAssistantResponseTextSegment(nextFragment);
+  const duplicateItemId = Array.from(texts.entries()).find(
+    ([existingItemId, text]) => existingItemId !== itemId && normalizeAssistantResponseTextSegment(text) === normalizedNextFragment,
+  )?.[0];
+  if (normalizedNextFragment && duplicateItemId) {
+    order.splice(order.indexOf(itemId), 1);
+    assistantResponseItemOrderByMessageId.set(messageId, order);
+  } else {
+    texts.set(itemId, nextFragment);
+  }
+  assistantResponseItemTextsByMessageId.set(messageId, texts);
+
+  return order
+    .map((id) => texts.get(id)?.trim() ?? "")
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function normalizeAssistantResponseTextSegment(value: string): string {
+  return value.trim().replace(/\s+/g, " ");
+}
+
+function stableMessageIdPart(value: string): string {
+  return value
+    .replace(/[^a-z0-9_-]+/giu, "-")
+    .replace(/^-+|-+$/gu, "")
+    .slice(0, 96) || "assistant";
 }
 
 function consumeProfileQuestionFromAssistantText(itemId: string, currentText: string, fragment: string, append: boolean): string {
@@ -9447,6 +12299,7 @@ function setPendingProfileQuestion(itemId: string, question: ProfileAskUserQuest
     answer: "",
     createdAt: Date.now(),
   };
+  profileQuestionCardRenderRequested = true;
 }
 
 function flushStreamingAssistantDeltas(): void {
@@ -9457,9 +12310,6 @@ function patchStreamingAssistantMessageDoms(itemIds: string[]): boolean {
   const uniqueItemIds = Array.from(new Set(itemIds));
   if (!uniqueItemIds.length) {
     return true;
-  }
-  if (root.querySelector(".prompt-activity-row")) {
-    return false;
   }
 
   const scrollState = captureScrollPositions();
@@ -9561,7 +12411,7 @@ function upsertAssistantImageMessage(itemId: string, image: ConversationMessageI
     state.messages.push({
       id: itemId,
       role: "assistant",
-      text: state.uiLocale === "ko" ? "생성된 이미지입니다." : "Generated image.",
+      text: stringsForState().images.generatedResult,
       images: [image],
     });
     return;
@@ -9654,7 +12504,7 @@ async function downloadConversationImage(messageId: string | undefined, imageInd
 
   downloadReadyConversationImage(image);
   scheduleConversationPersist();
-  state.actionStatus = state.uiLocale === "ko" ? "이미지 다운로드를 시작했습니다." : "Image download started.";
+  state.actionStatus = stringsForState().status.imageDownloadStarted;
   render();
 }
 
@@ -9673,7 +12523,11 @@ async function openConversationImagePreview(messageId: string | undefined, image
   if (!image?.src) {
     return;
   }
-  window.open(image.src, "_blank", "noopener,noreferrer");
+  const preview = createExternalImagePreviewUrl(image.src);
+  window.open(preview.url, "_blank", "noopener,noreferrer");
+  if (preview.usesObjectUrl) {
+    window.setTimeout(preview.revoke, EXTERNAL_IMAGE_PREVIEW_OBJECT_URL_REVOKE_MS);
+  }
 }
 
 async function rememberAutoSavedConversationImage(messageId: string, assetRef: string): Promise<void> {
@@ -9742,7 +12596,7 @@ async function openConversationImageFollowupEditor(
     source: "conversation",
     messageId,
     imageIndex: index,
-    name: buildImageDownloadName(image.alt || (state.uiLocale === "ko" ? "생성된 이미지" : "generated-image")),
+    name: buildImageDownloadName(image.alt || stringsForState().images.downloadFallback),
     dataUrl: image.src,
   };
   state.imageAnnotationReferenceAttachments = [];
@@ -9785,116 +12639,38 @@ async function getConversationImageForAction(
   return image;
 }
 
-function buildImageDownloadName(alt: string): string {
-  const baseName = alt
-    .toLowerCase()
-    .replace(/[^a-z0-9가-힣_-]+/giu, "-")
-    .replace(/^-+|-+$/gu, "")
-    .slice(0, 48);
-  return `${baseName || "codex-image"}-${new Date().toISOString().replace(/[:.]/gu, "-")}.png`;
-}
-
 function isImageWorkflowPromptActivityPhase(phase: PromptActivityPhase): boolean {
-  return (
-    phase === "preparing-image" ||
-    phase === "editing-image" ||
-    phase === "rendering-image-preview" ||
-    phase === "applying-image-preview"
-  );
+  return phase === "preparing-image" || phase === "editing-image" || phase === "rendering-image-preview";
 }
 
 function createImageWorkflowPlaceholderText(kind: ImageWorkflowPlaceholderKind): string {
-  if (state.uiLocale === "ko") {
-    switch (kind) {
-      case "infographic":
-        return "인포그래픽 이미지를 생성하고 있습니다.";
-      case "slide-images":
-        return "슬라이드 이미지를 순차적으로 생성하고 있습니다.";
-      case "generated-image":
-        return "이미지를 생성하고 있습니다.";
-      case "image-edit":
-      default:
-        return "이미지 작업을 준비하고 있습니다.";
-    }
-  }
-
+  const images = stringsForState().images;
   switch (kind) {
     case "infographic":
-      return "Creating an infographic image.";
+      return images.pendingInfographic;
     case "slide-images":
-      return "Generating slide images sequentially.";
+      return images.pendingSlideImages;
     case "generated-image":
-      return "Generating an image.";
+      return images.pendingGeneratedImage;
     case "image-edit":
     default:
-      return "Preparing the image task.";
+      return images.pendingImageEdit;
   }
 }
 
 function createImageWorkflowPlaceholderAlt(kind: ImageWorkflowPlaceholderKind): string {
-  if (state.uiLocale === "ko") {
-    switch (kind) {
-      case "infographic":
-        return "생성 중인 인포그래픽";
-      case "slide-images":
-        return "생성 중인 슬라이드 이미지";
-      case "generated-image":
-        return "생성 중인 이미지";
-      case "image-edit":
-      default:
-        return "처리 중인 이미지";
-    }
-  }
-
+  const images = stringsForState().images;
   switch (kind) {
     case "infographic":
-      return "Pending infographic";
+      return images.pendingInfographicAlt;
     case "slide-images":
-      return "Pending slide image";
+      return images.pendingSlideImagesAlt;
     case "generated-image":
-      return "Pending generated image";
+      return images.pendingGeneratedImageAlt;
     case "image-edit":
     default:
-      return "Pending image edit";
+      return images.pendingImageEditAlt;
   }
-}
-
-function createLoadingConversationImage(alt: string): ConversationMessageImage {
-  return {
-    src: "",
-    alt,
-    status: "loading",
-  };
-}
-
-function createPendingConversationImage(previewRef: string, alt: string): ConversationMessageImage {
-  const trimmed = previewRef.trim();
-  return {
-    src: isBridgeImageAssetRef(trimmed) ? "" : trimmed,
-    alt,
-    status: isBridgeImageAssetRef(trimmed) ? "loading" : "ready",
-    ...(isBridgeImageAssetRef(trimmed) ? { assetRef: trimmed } : {}),
-  };
-}
-
-function createFailedConversationImage(previewRef: string, alt: string): ConversationMessageImage {
-  const trimmed = previewRef.trim();
-  return {
-    src: isBridgeImageAssetRef(trimmed) ? "" : trimmed,
-    alt,
-    status: "error",
-    ...(isBridgeImageAssetRef(trimmed) ? { assetRef: trimmed } : {}),
-  };
-}
-
-function isSameConversationImage(left: ConversationMessageImage, right: ConversationMessageImage): boolean {
-  if (left.assetRef && right.assetRef) {
-    return left.assetRef === right.assetRef;
-  }
-  if (left.src && right.src) {
-    return left.src === right.src;
-  }
-  return false;
 }
 
 async function createConversationImageFromPreviewRef(previewRef: string, alt: string): Promise<ConversationMessageImage> {
@@ -9909,29 +12685,79 @@ async function createConversationImageFromPreviewRef(previewRef: string, alt: st
   return image;
 }
 
-function normalizeImagePreviewRefs(previewRefs: string[] | undefined, previewRef: string | undefined): string[] {
-  return Array.from(
-    new Set(
-      [...(previewRefs ?? []), ...(previewRef ? [previewRef] : [])]
-        .map((ref) => ref.trim())
-        .filter(Boolean),
-    ),
-  );
-}
-
-function normalizeImageGenerateWorkflow(value: unknown): Exclude<ImageWorkflowPlaceholderKind, "image-edit"> | undefined {
-  return value === "infographic" || value === "slide-images" || value === "generated-image" ? value : undefined;
-}
-
-function normalizePromptStatusImageWorkflow(value: unknown): ImageWorkflowPlaceholderKind | undefined {
-  if (value === "image-edit") {
-    return "image-edit";
+async function createGeneratedImageFileAttachmentsForPrompt(
+  message: string,
+  contextHint: string,
+  activeProfileId: string,
+  submittedFileAttachments: UserFileAttachment[],
+): Promise<UserFileAttachment[]> {
+  const submittedRequestFileAttachments = [...submittedFileAttachments];
+  const remainingSlots = Math.max(0, MAX_FILE_ATTACHMENTS - submittedRequestFileAttachments.length);
+  const limit = Math.min(remainingSlots, getGeneratedImageAttachmentLimit());
+  if (limit <= 0) {
+    return [];
   }
-  return normalizeImageGenerateWorkflow(value);
-}
 
-function createGeneratedImageAlt(baseAlt: string, index: number, total: number): string {
-  return total > 1 ? `${baseAlt} ${index + 1}/${total}` : baseAlt;
+  const candidates = state.messages
+    .filter((entry) => entry.role === "assistant")
+    .flatMap((entry) => entry.images ?? [])
+    .filter((image) => image.status !== "deleted" && image.status !== "error" && (image.src || image.assetRef))
+    .slice(-limit);
+  const attachments: UserFileAttachment[] = [];
+
+  for (const [index, image] of candidates.entries()) {
+    let dataUrl = image.src;
+    if (!/^data:image\/[a-z0-9.+-]+;base64,/iu.test(dataUrl) && image.assetRef) {
+      dataUrl = await resolvePreviewRefForUi(image.assetRef);
+      image.src = dataUrl;
+      image.status = "ready";
+    }
+    const attachment = toGeneratedImageFileAttachment({
+      id: `generated-followup-${Date.now()}-${index}`,
+      name: createGeneratedImageAttachmentName(image.alt, index),
+      dataUrl,
+      index,
+    });
+    if (attachment) {
+      attachments.push(attachment);
+    }
+  }
+
+  if (!attachments.length) {
+    return [];
+  }
+
+  try {
+    const result = await sendRuntimeMessage<{ plan?: AgenticRoutePlan }>({
+      type: "prompt.route.preview",
+      payload: {
+        message,
+        contextHint,
+        profileId: activeProfileId,
+        model: state.selectedModel,
+        reasoningEffort: state.selectedReasoningEffort || undefined,
+        serviceTier: state.selectedServiceTier || undefined,
+        readStrategyOverride: state.currentReadStrategy,
+        attachments: Array.from(state.attachments),
+        fileAttachments: [...submittedRequestFileAttachments, ...attachments],
+        structuredInputs: getPromptStructuredInputs(),
+        selectedTabIds: state.selectedTabIds,
+        historyQuery: state.historyQuery,
+        suppressPageContext: isCurrentTabContextDismissed(),
+        conversationMessageCount: state.messages.length,
+        ...(state.currentConversationId ? { conversationId: state.currentConversationId } : {}),
+      },
+    });
+    if (!result.plan || !shouldAttachGeneratedImagesForRoutePlan(result.plan)) {
+      return [];
+    }
+    recordUiDiagnostic("sidepanel.generated_images.attached_to_prompt", {
+      count: attachments.length,
+    });
+    return attachments;
+  } catch {
+    return [];
+  }
 }
 
 function recordUiDiagnostic(event: string, details: Record<string, unknown> = {}): void {
@@ -9963,6 +12789,7 @@ async function restoreConversationImagePreviews(): Promise<void> {
     return;
   }
 
+  pendingChatScrollToBottom = true;
   render();
   await Promise.allSettled(
     pendingImages.map(async (image) => {
@@ -9978,6 +12805,7 @@ async function restoreConversationImagePreviews(): Promise<void> {
       }
     }),
   );
+  pendingChatScrollToBottom = true;
   render();
 }
 
@@ -10041,7 +12869,7 @@ function replacePendingImageWorkflowMessage(
 
   const text =
     assistantText?.trim() ||
-    (state.uiLocale === "ko" ? "이미지 편집 결과입니다." : "Here is the image edit preview.");
+    stringsForState().images.editPreview;
   existing.text = text;
   const images = Array.isArray(image) ? image : image ? [image] : [];
   if (images.length) {
@@ -11037,7 +13865,11 @@ function appendVoiceInputTranscriptToComposer(transcript: string): void {
   }
   const current = state.composerDraft.trimEnd();
   state.composerDraft = `${current}${current ? " " : ""}${text}`;
+  const previousMentionQuery = state.mentionQuery;
   state.mentionQuery = extractMentionQuery(state.composerDraft);
+  if (previousMentionQuery !== state.mentionQuery) {
+    state.mentionActiveIndex = 0;
+  }
   state.slashQuery = extractSlashQuery(state.composerDraft);
   render();
   window.setTimeout(() => focusComposerAtEnd(), 0);
@@ -11374,6 +14206,59 @@ function resetRealtimeVoiceContextSnapshot(): void {
   realtimeVoiceContextSnapshotCapturedAt = 0;
 }
 
+async function shouldRouteRealtimeVoiceTranscriptViaPrompt(transcript: string): Promise<boolean> {
+  const message = transcript.trim();
+  if (!message || !canSendCurrentComposerMessage()) {
+    return false;
+  }
+
+  try {
+    const result = await sendRuntimeMessage<{ plan?: AgenticRoutePlan }>({
+      type: "prompt.route.preview",
+      payload: createCurrentVoiceRoutePreviewPayload(message),
+    });
+    return result.plan ? shouldRouteRealtimeVoiceTranscriptThroughPrompt(result.plan) : false;
+  } catch {
+    return false;
+  }
+}
+
+function createCurrentVoiceRoutePreviewPayload(message: string): PromptRequestPayload {
+  return createSanitizedVoiceRoutePreviewPayload({
+    message,
+    contextHint: buildConversationContextHint(),
+    profileId: ensureComposerProfileSelection(),
+    model: state.selectedModel,
+    ...(state.selectedReasoningEffort ? { reasoningEffort: state.selectedReasoningEffort } : {}),
+    ...(state.selectedServiceTier ? { serviceTier: state.selectedServiceTier } : {}),
+    readStrategyOverride: state.currentReadStrategy,
+    attachments: Array.from(state.attachments),
+    fileAttachments: state.fileAttachments,
+    structuredInputs: getPromptStructuredInputs(),
+    selectedTabIds: state.selectedTabIds,
+    historyQuery: state.historyQuery,
+    suppressPageContext: isCurrentTabContextDismissed(),
+    conversationMessageCount: state.messages.length,
+    ...(state.currentConversationId ? { conversationId: state.currentConversationId } : {}),
+  });
+}
+
+async function handleRealtimeVoiceItemAdded(item: Record<string, unknown> | undefined, threadId?: string): Promise<void> {
+  if (threadId && realtimeVoiceThreadId && threadId !== realtimeVoiceThreadId) {
+    return;
+  }
+
+  const handoffPrompt = extractRealtimeVoiceHandoffPrompt(item);
+  if (!handoffPrompt || !canSendCurrentComposerMessage()) {
+    return;
+  }
+
+  interruptRealtimeVoiceOutput();
+  state.liveCaption = handoffPrompt;
+  render();
+  await sendPrompt(handoffPrompt);
+}
+
 async function handleVoiceTranscript(
   transcript: string,
   timing: { startedAt?: number; endedAt?: number } = {},
@@ -11390,8 +14275,16 @@ async function handleVoiceTranscript(
   }
 
   if (state.voiceEnabled && realtimeVoiceTransport === "websocket" && realtimeVoiceThreadId) {
+    if (await shouldRouteRealtimeVoiceTranscriptViaPrompt(transcript)) {
+      interruptRealtimeVoiceOutput();
+      state.liveCaption = `${stringsForState().roles.user}: ${transcript}`;
+      render();
+      await sendPrompt(transcript);
+      return;
+    }
+
     mirrorLocalLiveUserTranscript(transcript, timing);
-    state.liveCaption = `${state.uiLocale === "ko" ? "나" : "You"}: ${transcript}`;
+    state.liveCaption = `${stringsForState().roles.user}: ${transcript}`;
     render();
     await appendRealtimeVoiceTextWithCurrentContext(transcript, {
       includeTranscript: !realtimeInputAudioWorkletNode,
@@ -11495,6 +14388,8 @@ async function compactCurrentConversation(): Promise<void> {
 }
 
 async function startNewChat(): Promise<void> {
+  flushStreamingAssistantDeltas();
+  await persistConversationBatch.flush();
   const activeProfileId = ensureComposerProfileSelection();
   const result = await sendRuntimeMessage<{ conversation: SavedConversation | null }>({
     type: "conversation.new",
@@ -11503,6 +14398,9 @@ async function startNewChat(): Promise<void> {
   });
   hydrateConversation(result.conversation);
   state.messages = [];
+  state.chatMessageWindowSize = DEFAULT_CHAT_MESSAGE_WINDOW_SIZE;
+  pendingChatScrollToBottom = false;
+  pendingChatScrollAnchor = null;
   state.attachments = new Set();
   state.fileAttachments = [];
   state.selectedTabIds = [];
@@ -11516,6 +14414,7 @@ async function startNewChat(): Promise<void> {
   state.latestReroute = null;
   state.pendingProfileQuestion = null;
   profileQuestionStreamBuffers.clear();
+  profileQuestionCardRenderRequested = false;
   completedTurnIds.clear();
   render();
 }
@@ -11526,24 +14425,35 @@ function scheduleConversationPersist(): void {
 
 async function persistConversation(): Promise<void> {
   const activeProfileId = ensureComposerProfileSelection();
-  if (!state.currentConversationId) {
+  let conversationIdForSave = state.currentConversationId;
+  const messages = serializeConversationMessagesForStorage(state.messages);
+  if (!shouldPersistConversationMessagesForStorage(state.messages)) {
+    if (conversationIdForSave) {
+      state.recentChats = state.recentChats.filter((item) => item.id !== conversationIdForSave);
+    }
+    return;
+  }
+  if (!conversationIdForSave) {
     const created = await sendRuntimeMessage<{ conversation: SavedConversation }>({
       type: "conversation.new",
       profileId: activeProfileId,
       model: state.selectedModel,
     });
-    state.currentConversationId = created.conversation.id;
+    conversationIdForSave = created.conversation.id;
+    if (!state.currentConversationId) {
+      state.currentConversationId = conversationIdForSave;
+    }
   }
 
   const result = await sendRuntimeMessage<{ conversation: SavedConversation }>({
     type: "conversation.save",
     conversation: {
-      id: state.currentConversationId,
+      id: conversationIdForSave,
       title: "",
       profileId: activeProfileId,
       model: state.selectedModel || undefined,
       threadId: state.threadId || undefined,
-      messages: serializeConversationMessagesForStorage(state.messages),
+      messages,
       attachments: [],
       structuredInputs: [],
       selectedTabIds: [],
@@ -11552,7 +14462,15 @@ async function persistConversation(): Promise<void> {
       updatedAt: Date.now(),
     },
   });
-  state.currentConversationId = result.conversation.id;
+  if (
+    shouldApplyConversationSaveResultToActiveChat({
+      saveStartedConversationId: conversationIdForSave,
+      currentConversationId: state.currentConversationId,
+      savedConversationId: result.conversation.id,
+    })
+  ) {
+    state.currentConversationId = result.conversation.id;
+  }
   state.recentChats = upsertRecentChat(state.recentChats, {
     id: result.conversation.id,
     title: result.conversation.title,
@@ -11568,7 +14486,7 @@ function upsertRecentChat(conversations: ConversationSummary[], summary: Convers
 }
 
 function formatTimestamp(value: number): string {
-  return new Intl.DateTimeFormat(state.uiLocale === "ko" ? "ko-KR" : "en-US", {
+  return new Intl.DateTimeFormat(state.uiLocale || getBrowserUiLanguage(), {
     month: "short",
     day: "numeric",
     hour: "numeric",
@@ -11636,6 +14554,10 @@ async function sendRuntimeMessageWithConfirmation<TResult>(
       continue;
     }
 
+    if (openRequiredAppConnectionDialog(response)) {
+      return { cancelled: true };
+    }
+
     break;
   }
 
@@ -11644,6 +14566,25 @@ async function sendRuntimeMessageWithConfirmation<TResult>(
   }
 
   return response as TResult;
+}
+
+function openRequiredAppConnectionDialog(response: Record<string, unknown>): boolean {
+  const appConnection = response.appConnection;
+  if (!appConnection || typeof appConnection !== "object") {
+    return false;
+  }
+
+  const connection = appConnection as { kind?: unknown; id?: unknown };
+  if (connection.kind === "plugin" && typeof connection.id === "string") {
+    const plugin = state.appServerPlugins.find((item) => item.id === connection.id);
+    if (!plugin) {
+      return false;
+    }
+    openPluginConnectionDialog(plugin);
+    return true;
+  }
+
+  return false;
 }
 
 function getHarnessConfirmationPrompt(operation: string, fallback: unknown): string {
@@ -11658,13 +14599,9 @@ function getHarnessConfirmationPrompt(operation: string, fallback: unknown): str
     case "page.image.overlay":
       return strings.permissions.currentPageAction;
     case "voice.session.start":
-      return state.uiLocale === "ko"
-        ? "Codex realtime 음성 세션을 시작하도록 허용할까요?"
-        : "Allow Codex to start a realtime voice session?";
+      return strings.prompts.voiceSessionStart;
     case "image.edit":
-      return state.uiLocale === "ko"
-        ? "Codex가 이미지 편집 작업을 실행하도록 허용할까요?"
-        : "Allow Codex to run this image editing task?";
+      return strings.prompts.imageEditTask;
     default:
       return String(fallback ?? strings.prompts.allowAction);
   }
@@ -11818,33 +14755,16 @@ async function getActiveTabUrl(): Promise<string | undefined> {
 
 function toUserFacingPermissionRationale(rationale: string): string {
   const strings = getUiStrings(state.uiLocale);
-  if (state.uiLocale !== "ko") {
-    return rationale || strings.permissions.generic;
-  }
-
-  if (rationale === UI_STRINGS.en.permissions.currentSite) {
-    return strings.permissions.currentSite;
-  }
-  if (rationale === UI_STRINGS.en.permissions.currentSiteAndTabs) {
-    return strings.permissions.currentSiteAndTabs;
-  }
-  if (rationale === UI_STRINGS.en.permissions.openTabs) {
-    return strings.permissions.openTabs;
-  }
-  if (rationale === UI_STRINGS.en.permissions.history) {
-    return strings.permissions.history;
-  }
-  if (rationale === UI_STRINGS.en.permissions.currentPageAction) {
-    return strings.permissions.currentPageAction;
-  }
-  if (rationale === UI_STRINGS.en.permissions.siteCapture) {
-    return strings.permissions.siteCapture;
-  }
-  if (rationale === UI_STRINGS.en.permissions.siteRead) {
-    return strings.permissions.siteRead;
-  }
-
-  return rationale || strings.permissions.generic;
+  const localized = new Map<string, string>([
+    [UI_STRINGS.en.permissions.currentSite, strings.permissions.currentSite],
+    [UI_STRINGS.en.permissions.currentSiteAndTabs, strings.permissions.currentSiteAndTabs],
+    [UI_STRINGS.en.permissions.openTabs, strings.permissions.openTabs],
+    [UI_STRINGS.en.permissions.history, strings.permissions.history],
+    [UI_STRINGS.en.permissions.currentPageAction, strings.permissions.currentPageAction],
+    [UI_STRINGS.en.permissions.siteCapture, strings.permissions.siteCapture],
+    [UI_STRINGS.en.permissions.siteRead, strings.permissions.siteRead],
+  ]).get(rationale);
+  return localized || rationale || strings.permissions.generic;
 }
 
 function escapeHtml(value: string): string {

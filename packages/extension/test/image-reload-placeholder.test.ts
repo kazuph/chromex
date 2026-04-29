@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { describe, expect, test } from "vitest";
 
 const sidepanelSource = readFileSync(resolve(process.cwd(), "src/sidepanel/index.ts"), "utf8");
+const i18nSource = readFileSync(resolve(process.cwd(), "src/sidepanel/i18n.ts"), "utf8");
 const sidepanelStateSource = readFileSync(resolve(process.cwd(), "src/sidepanel/sidepanel-state.ts"), "utf8");
 const backgroundSource = readFileSync(resolve(process.cwd(), "src/background/index.ts"), "utf8");
 const styles = readFileSync(resolve(process.cwd(), "public/sidepanel.css"), "utf8");
@@ -14,7 +15,8 @@ describe("image reload placeholders", () => {
     expect(sidepanelStateSource).toContain('status: "deleted"');
     expect(sidepanelStateSource).toContain('image.status === "deleted"');
     expect(sidepanelSource).toContain('image.status === "deleted"');
-    expect(sidepanelSource).toContain("삭제된 이미지");
+    expect(sidepanelSource).toContain("strings.images.deleted");
+    expect(i18nSource).toContain("삭제된 이미지");
   });
 
   test("shows a compact skeleton without duplicate generated-image copy", () => {
@@ -26,9 +28,10 @@ describe("image reload placeholders", () => {
   });
 
   test("keeps active image workflow supplements under the process row", () => {
-    expect(sidepanelSource).toContain("partitionPromptActivitySupplementMessages");
+    expect(sidepanelSource).toContain("partitionPromptActivityMessages");
     expect(sidepanelSource).toContain("isPromptActivitySupplementMessage");
     expect(sidepanelSource).toContain("isCurrentPromptActivityPendingImageMessage");
+    expect(sidepanelSource).toContain("isCurrentStreamingAssistantMessage");
     expect(sidepanelSource).toContain("pendingImageWorkflowMessageIdsByRequest.get(clientRequestId)");
     expect(sidepanelSource).toContain("isPendingImageMessage");
     expect(sidepanelSource).not.toContain("return isTraceOnlyAssistantMessage(message) || isPendingImageMessage(message);");
@@ -43,7 +46,8 @@ describe("image reload placeholders", () => {
   test("creates a pending image message as soon as an image workflow starts", () => {
     expect(sidepanelSource).toContain("ensurePendingImageWorkflowMessage");
     expect(sidepanelSource).toContain("isImageWorkflowPromptActivityPhase");
-    expect(sidepanelSource).toContain("state.promptActivity?.clientRequestId !== event.clientRequestId");
+    expect(sidepanelSource).toContain("resolvePromptStatusClientRequestId");
+    expect(sidepanelSource).toContain("isPromptStatusForActiveRequest");
     expect(sidepanelSource).toContain("a previous image turn cannot leak into a text answer");
     expect(sidepanelSource).toContain("replacePendingImageWorkflowMessage");
     expect(sidepanelSource).toContain("createLoadingConversationImage");

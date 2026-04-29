@@ -10,6 +10,7 @@ import { BridgeHarnessRuntime, CodexAppServerClient, CodexVoicePlane, InMemoryBr
 import type { BridgeEvent } from "../src/index.js";
 
 const tempDirs: string[] = [];
+const OPENAI_API_KEY_ENV_NAME = "OPENAI_API_KEY";
 
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
@@ -70,12 +71,12 @@ describe("InMemoryBridgeSecrets", () => {
 
     expect(store.hasOpenAiApiKey()).toBe(false);
 
-    store.setOpenAiApiKey("sk-test");
+    store.setOpenAiApiKey("test-openai-key");
 
     expect(store.hasOpenAiApiKey()).toBe(true);
-    expect(store.getOpenAiApiKey()).toBe("sk-test");
+    expect(store.getOpenAiApiKey()).toBe("test-openai-key");
     expect(JSON.parse(await readFile(secretPath, "utf8"))).toEqual({
-      openAiApiKey: "sk-test",
+      openAiApiKey: "test-openai-key",
     });
   });
 
@@ -88,21 +89,21 @@ describe("InMemoryBridgeSecrets", () => {
       initialOpenAiApiKey: null,
     });
 
-    firstStore.setOpenAiApiKey("sk-persisted");
+    firstStore.setOpenAiApiKey("persisted-test-openai-key");
 
-    const previousEnvKey = process.env.OPENAI_API_KEY;
-    delete process.env.OPENAI_API_KEY;
+    const previousEnvKey = process.env[OPENAI_API_KEY_ENV_NAME];
+    delete process.env[OPENAI_API_KEY_ENV_NAME];
 
     const secondStore = new InMemoryBridgeSecrets({
       secretPath,
     });
 
     if (previousEnvKey) {
-      process.env.OPENAI_API_KEY = previousEnvKey;
+      process.env[OPENAI_API_KEY_ENV_NAME] = previousEnvKey;
     }
 
     expect(secondStore.hasOpenAiApiKey()).toBe(true);
-    expect(secondStore.getOpenAiApiKey()).toBe("sk-persisted");
+    expect(secondStore.getOpenAiApiKey()).toBe("persisted-test-openai-key");
   });
 });
 

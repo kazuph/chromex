@@ -88,6 +88,18 @@ export function createFileChipLabel(attachment: Pick<UserFileAttachment, "name" 
   return `${prefix}: ${attachment.name}`;
 }
 
+export function createImageAttachmentPreviewSrc(
+  attachment: Pick<UserFileAttachment, "base64" | "kind" | "mimeType" | "sourceUrl">,
+): string {
+  if (attachment.kind !== "image") {
+    return "";
+  }
+  if (attachment.base64.trim()) {
+    return `data:${attachment.mimeType || "image/png"};base64,${attachment.base64}`;
+  }
+  return attachment.sourceUrl?.trim() ?? "";
+}
+
 export interface DropDataReader {
   getData(type: string): string;
 }

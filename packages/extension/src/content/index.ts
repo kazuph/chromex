@@ -15,12 +15,55 @@ import type {
   BrowserDomSnapshot,
 } from "@codex-sidepanel/shared";
 
+type ImagePromptHoverTarget = {
+  element: Element;
+  url: string;
+  candidate: EditablePageImageCandidate;
+  anchorRect: DOMRect;
+  image?: HTMLImageElement;
+};
+
 let overlayNode: HTMLDivElement | null = null;
 let aiControlOverlayNode: HTMLDivElement | null = null;
 let aiControlOverlayTimer: number | null = null;
+let aiControlOverlayWatchdogTimer: number | null = null;
 let aiControlCancelled = false;
+let imagePromptHoverInstalled = false;
+let imagePromptHoverButton: HTMLButtonElement | null = null;
+let imagePromptHoverTarget: ImagePromptHoverTarget | null = null;
+let imagePromptHoverTargetRect: DOMRect | null = null;
+let imagePromptHoverButtonRect: DOMRect | null = null;
+let imagePromptHoverButtonRemoveTimer: number | null = null;
+let imagePromptHoverScrollFrame: number | null = null;
+let imagePromptHoverLastPointer: { clientX: number; clientY: number } | null = null;
+let chromexRuntimeWatchdogTimer: number | null = null;
+let chromexRuntimeMessageListenerRegistered = false;
+const CHROMEX_CONTENT_INSTANCE_KEY = "__chromexContentScriptInstanceId";
+const CHROMEX_CONTENT_CLEANUP_KEY = "__chromexContentScriptCleanup";
+const chromexContentScriptInstanceId = `${Date.now()}:${Math.random().toString(36).slice(2)}`;
+const chromexContentGlobal = globalThis as typeof globalThis & Record<string, unknown>;
+const chromexContentScriptAbortController = new AbortController();
+const IMAGE_PROMPT_HOVER_BUTTON_CLASS = "chromex-image-prompt-button";
+const IMAGE_PROMPT_HOVER_BUTTON_SELECTOR = `.${IMAGE_PROMPT_HOVER_BUTTON_CLASS}`;
+const IMAGE_PROMPT_HOVER_SURFACE_PADDING_PX = 8;
+const IMAGE_PROMPT_HOVER_BUTTON_SIZE_PX = 34;
+const IMAGE_PROMPT_HOVER_BUTTON_INSET_PX = 8;
+const IMAGE_PROMPT_HOVER_FADE_MS = 140;
+const IMAGE_PROMPT_HOVER_ICON_DATA_URL =
+  "data:image/png;base64,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";
 const highlightedElements = new Set<HTMLElement>();
 const domActionElementRefs = new Map<string, HTMLElement>();
+const AI_CONTROL_OVERLAY_MAX_MS = 45_000;
+type ImagePromptAttachmentPayload = {
+  id: string;
+  name: string;
+  mimeType: string;
+  sizeBytes: number;
+  lastModified: number;
+  base64: string;
+  kind: "image";
+  sourceUrl?: string;
+};
 const EDITOR_LIKE_SELECTOR = [
   'input:not([type="hidden"])',
   "textarea",
@@ -35,7 +78,75 @@ const EDITOR_LIKE_SELECTOR = [
 ].join(",");
 const EDITOR_DISCOVERY_TIMEOUT_MS = 900;
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+cleanupPreviousContentScriptInstance();
+removeStaleAiControlOverlays();
+chromexContentGlobal[CHROMEX_CONTENT_INSTANCE_KEY] = chromexContentScriptInstanceId;
+chromexContentGlobal[CHROMEX_CONTENT_CLEANUP_KEY] = cleanupContentScriptInstance;
+
+registerChromexRuntimeMessageListener();
+startContentScriptRuntimeWatchdog();
+installImagePromptHover();
+
+function getSafeChromeRuntime(): typeof chrome.runtime | null {
+  try {
+    if (typeof chrome === "undefined" || !chrome.runtime?.id) {
+      return null;
+    }
+    return chrome.runtime;
+  } catch {
+    return null;
+  }
+}
+
+function registerChromexRuntimeMessageListener(): void {
+  const runtime = getSafeChromeRuntime();
+  if (!runtime) {
+    return;
+  }
+  runtime.onMessage.addListener(chromexRuntimeMessageListener);
+  chromexRuntimeMessageListenerRegistered = true;
+}
+
+function startContentScriptRuntimeWatchdog(): void {
+  if (chromexRuntimeWatchdogTimer !== null) {
+    return;
+  }
+  chromexRuntimeWatchdogTimer = window.setInterval(() => {
+    if (!getSafeChromeRuntime()) {
+      try {
+        cleanupContentScriptInstance();
+      } catch {
+        // If Chrome is tearing down this isolated world, avoid surfacing another uncaught page error.
+      }
+    }
+  }, 1000);
+}
+
+function stopContentScriptRuntimeWatchdog(): void {
+  if (chromexRuntimeWatchdogTimer === null) {
+    return;
+  }
+  window.clearInterval(chromexRuntimeWatchdogTimer);
+  chromexRuntimeWatchdogTimer = null;
+}
+
+function chromexRuntimeMessageListener(
+  message: Record<string, any>,
+  _sender: chrome.runtime.MessageSender,
+  sendResponse: (response?: unknown) => void,
+): boolean {
+  if (message.type === "page.ping") {
+    if (!isActiveContentScriptInstance()) {
+      return false;
+    }
+    sendResponse({ ok: true });
+    return false;
+  }
+
+  if (!isActiveContentScriptInstance()) {
+    return false;
+  }
+
   if (message.type === "page.collect") {
     void collectPageProbe()
       .then((probe) => sendResponse(probe))
@@ -63,6 +174,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message.type === "page.clear-image-overlay") {
     clearImageOverlay();
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  if (message.type === "page.image-prompt-hover.install") {
+    installImagePromptHover();
     sendResponse({ ok: true });
     return true;
   }
@@ -120,7 +237,39 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   return false;
-});
+}
+
+function isActiveContentScriptInstance(): boolean {
+  return chromexContentGlobal[CHROMEX_CONTENT_INSTANCE_KEY] === chromexContentScriptInstanceId;
+}
+
+function cleanupPreviousContentScriptInstance(): void {
+  const cleanup = chromexContentGlobal[CHROMEX_CONTENT_CLEANUP_KEY];
+  if (typeof cleanup !== "function") {
+    return;
+  }
+  try {
+    cleanup();
+  } catch {
+    // A previous content script can already be invalidated; the new instance still owns future listeners.
+  }
+}
+
+function cleanupContentScriptInstance(): void {
+  chromexContentScriptAbortController.abort();
+  stopContentScriptRuntimeWatchdog();
+  if (chromexRuntimeMessageListenerRegistered) {
+    try {
+      const runtime = getSafeChromeRuntime();
+      runtime?.onMessage.removeListener(chromexRuntimeMessageListener);
+    } catch {
+      // The runtime can already be gone while Chrome is tearing down an unpacked extension reload.
+    }
+    chromexRuntimeMessageListenerRegistered = false;
+  }
+  imagePromptHoverInstalled = false;
+  hideImagePromptHoverButton({ immediate: true });
+}
 
 async function collectPageProbe() {
   const bodyText = collectBodyText();
@@ -169,12 +318,10 @@ function normalizeBrowserAutomationMode(value: unknown): BrowserAutomationMode {
 }
 
 function showAiControlOverlay(mode: BrowserAutomationMode, label = "Codex is controlling this page"): void {
-  if (aiControlOverlayTimer !== null) {
-    window.clearTimeout(aiControlOverlayTimer);
-    aiControlOverlayTimer = null;
-  }
+  clearAiControlOverlayTimers();
   ensureAiControlStyle();
   if (!aiControlOverlayNode) {
+    removeStaleAiControlOverlays();
     aiControlOverlayNode = document.createElement("div");
     aiControlOverlayNode.className = "codex-ai-control-border";
     aiControlOverlayNode.setAttribute("aria-hidden", "true");
@@ -198,22 +345,25 @@ function showAiControlOverlay(mode: BrowserAutomationMode, label = "Codex is con
   if (text) {
     text.textContent = label;
   }
+  scheduleAiControlOverlayWatchdog();
+}
+
+function removeStaleAiControlOverlays(): void {
+  for (const node of Array.from(document.querySelectorAll(".codex-ai-control-border"))) {
+    if (node !== aiControlOverlayNode) {
+      node.remove();
+    }
+  }
 }
 
 function hideAiControlOverlay(): void {
-  if (aiControlOverlayTimer !== null) {
-    window.clearTimeout(aiControlOverlayTimer);
-    aiControlOverlayTimer = null;
-  }
+  clearAiControlOverlayTimers();
   aiControlOverlayNode?.remove();
   aiControlOverlayNode = null;
 }
 
 function scheduleHideAiControlOverlay(delayMs: number): void {
-  if (aiControlOverlayTimer !== null) {
-    window.clearTimeout(aiControlOverlayTimer);
-    aiControlOverlayTimer = null;
-  }
+  clearAiControlOverlayTimers();
   if (delayMs <= 0) {
     hideAiControlOverlay();
     return;
@@ -222,6 +372,27 @@ function scheduleHideAiControlOverlay(delayMs: number): void {
     hideAiControlOverlay();
     aiControlOverlayTimer = null;
   }, Math.max(0, delayMs));
+}
+
+function scheduleAiControlOverlayWatchdog(): void {
+  if (aiControlOverlayWatchdogTimer !== null) {
+    window.clearTimeout(aiControlOverlayWatchdogTimer);
+  }
+  aiControlOverlayWatchdogTimer = window.setTimeout(() => {
+    aiControlOverlayWatchdogTimer = null;
+    scheduleHideAiControlOverlay(0);
+  }, AI_CONTROL_OVERLAY_MAX_MS);
+}
+
+function clearAiControlOverlayTimers(): void {
+  if (aiControlOverlayTimer !== null) {
+    window.clearTimeout(aiControlOverlayTimer);
+    aiControlOverlayTimer = null;
+  }
+  if (aiControlOverlayWatchdogTimer !== null) {
+    window.clearTimeout(aiControlOverlayWatchdogTimer);
+    aiControlOverlayWatchdogTimer = null;
+  }
 }
 
 function ensureAiControlStyle(): void {
@@ -460,17 +631,805 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
+function installImagePromptHover(): void {
+  if (imagePromptHoverInstalled) {
+    removeImagePromptHoverButtons(imagePromptHoverButton);
+    return;
+  }
+  imagePromptHoverInstalled = true;
+  removeImagePromptHoverButtons();
+  const listenerOptions: AddEventListenerOptions = {
+    capture: true,
+    signal: chromexContentScriptAbortController.signal,
+  };
+  document.addEventListener("pointerover", handleImagePromptPointerOver, listenerOptions);
+  document.addEventListener("click", handleImagePromptButtonClick, listenerOptions);
+  document.addEventListener("scroll", handleImagePromptScroll, listenerOptions);
+  document.addEventListener("visibilitychange", handleImagePromptVisibilityChange, listenerOptions);
+  window.addEventListener("blur", handleImagePromptForceHide, listenerOptions);
+}
+
+function handleImagePromptForceHide(): void {
+  try {
+    if (!isActiveContentScriptInstance()) {
+      return;
+    }
+    hideImagePromptHoverButton();
+  } catch (error) {
+    handleImagePromptEventError(error);
+  }
+}
+
+function handleImagePromptPointerOver(event: MouseEvent): void {
+  try {
+    if (!isActiveContentScriptInstance()) {
+      return;
+    }
+    rememberImagePromptPointer(event);
+    if (isPointerInsideImagePromptHoverSurface(event.clientX, event.clientY)) {
+      return;
+    }
+    const target = findPromptExtractableImageFromPointerEvent(event);
+    if (target) {
+      showImagePromptHoverButton(target);
+      return;
+    }
+    hideImagePromptHoverButton();
+  } catch (error) {
+    handleImagePromptEventError(error);
+  }
+}
+
+function rememberImagePromptPointer(event: MouseEvent): void {
+  imagePromptHoverLastPointer = {
+    clientX: event.clientX,
+    clientY: event.clientY,
+  };
+}
+
+function handleImagePromptScroll(): void {
+  try {
+    if (!isActiveContentScriptInstance() || !imagePromptHoverTarget || !imagePromptHoverLastPointer) {
+      return;
+    }
+    if (imagePromptHoverScrollFrame !== null) {
+      return;
+    }
+    imagePromptHoverScrollFrame = window.requestAnimationFrame(() => {
+      imagePromptHoverScrollFrame = null;
+      try {
+        if (!isActiveContentScriptInstance()) {
+          return;
+        }
+        refreshImagePromptHoverTargetAtPointer();
+      } catch (error) {
+        handleImagePromptEventError(error);
+      }
+    });
+  } catch (error) {
+    handleImagePromptEventError(error);
+  }
+}
+
+function handleImagePromptEventError(error: unknown): void {
+  if (handleImagePromptRuntimeError(error)) {
+    return;
+  }
+  throw error;
+}
+
+function findPromptExtractableImageFromPointerEvent(event: MouseEvent): ImagePromptHoverTarget | null {
+  for (const candidate of collectImagePromptPointerCandidates(event)) {
+    const target = findPromptExtractableImageInsideElement(candidate, event.clientX, event.clientY);
+    if (target) {
+      return target;
+    }
+  }
+  return null;
+}
+
+function refreshImagePromptHoverTargetAtPointer(): void {
+  const pointer = imagePromptHoverLastPointer;
+  const button = imagePromptHoverButton;
+  if (!pointer || !button) {
+    hideImagePromptHoverButton();
+    return;
+  }
+
+  const refreshedTarget = refreshImagePromptHoverTarget(imagePromptHoverTarget);
+  if (
+    refreshedTarget &&
+    (isPointInsideRect(refreshedTarget.anchorRect, pointer.clientX, pointer.clientY) ||
+      isPointInsideRect(imagePromptHoverButtonRect, pointer.clientX, pointer.clientY, IMAGE_PROMPT_HOVER_SURFACE_PADDING_PX))
+  ) {
+    showImagePromptHoverButton(refreshedTarget);
+    return;
+  }
+
+  const targetAtPointer = findPromptExtractableImageAtPoint(pointer.clientX, pointer.clientY);
+  if (targetAtPointer) {
+    showImagePromptHoverButton(targetAtPointer);
+    return;
+  }
+
+  hideImagePromptHoverButton();
+}
+
+function refreshImagePromptHoverTarget(target: ImagePromptHoverTarget | null): ImagePromptHoverTarget | null {
+  if (!target?.element.isConnected) {
+    return null;
+  }
+  if (target.image) {
+    return refreshImagePromptHoverImageTarget(target.image);
+  }
+  if (target.element instanceof HTMLElement) {
+    return refreshImagePromptHoverBackgroundTarget(target.element);
+  }
+  return null;
+}
+
+function refreshImagePromptHoverImageTarget(image: HTMLImageElement): ImagePromptHoverTarget | null {
+  if (!isPromptExtractableImage(image) || isImagePromptVideoContextElement(image)) {
+    return null;
+  }
+  const anchorRect = resolveImagePromptHoverAnchorRect(image);
+  if (!isPromptExtractableRect(anchorRect)) {
+    return null;
+  }
+  const imageUrl = resolvePageImageUrl(image.currentSrc || image.src || "");
+  const imageCandidate = describePageImage(image);
+  if (!imageCandidate) {
+    return null;
+  }
+  return {
+    element: image,
+    image,
+    url: imageUrl,
+    candidate: { ...imageCandidate, url: imageUrl },
+    anchorRect,
+  };
+}
+
+function refreshImagePromptHoverBackgroundTarget(element: HTMLElement): ImagePromptHoverTarget | null {
+  if (isImagePromptVideoContextElement(element)) {
+    return null;
+  }
+  const anchorRect = resolveImagePromptHoverAnchorRect(element);
+  if (!isPromptExtractableRect(anchorRect)) {
+    return null;
+  }
+  const urls = extractCssImageUrls(window.getComputedStyle(element).backgroundImage || "");
+  for (const url of urls) {
+    const imageUrl = resolvePageImageUrl(url);
+    if (!isSupportedImagePromptSource(imageUrl)) {
+      continue;
+    }
+    const candidate = describeElementImage(imageUrl, element);
+    if (candidate) {
+      return {
+        element,
+        url: imageUrl,
+        candidate,
+        anchorRect,
+      };
+    }
+  }
+  return null;
+}
+
+function findPromptExtractableImageAtPoint(clientX: number, clientY: number): ImagePromptHoverTarget | null {
+  for (const candidate of collectImagePromptPointCandidates(clientX, clientY)) {
+    const target = findPromptExtractableImageInsideElement(candidate, clientX, clientY);
+    if (target) {
+      return target;
+    }
+  }
+  return null;
+}
+
+function collectImagePromptPointCandidates(clientX: number, clientY: number): Element[] {
+  const hitElements = typeof document.elementsFromPoint === "function"
+    ? document.elementsFromPoint(clientX, clientY)
+    : [document.elementFromPoint(clientX, clientY)].filter((element): element is Element => element !== null);
+  return hitElements
+    .filter((element) => !imagePromptHoverButton?.contains(element))
+    .slice(0, 8);
+}
+
+function collectImagePromptPointerCandidates(event: MouseEvent): Array<EventTarget | Element | null> {
+  const candidates: Array<EventTarget | Element | null> = [];
+  const seen = new Set<EventTarget | Element>();
+  const add = (candidate: EventTarget | Element | null) => {
+    if (!candidate || seen.has(candidate)) {
+      return;
+    }
+    seen.add(candidate);
+    candidates.push(candidate);
+  };
+
+  for (const candidate of event.composedPath().slice(0, 12)) {
+    add(candidate);
+  }
+  const hitElements = typeof document.elementsFromPoint === "function"
+    ? document.elementsFromPoint(event.clientX, event.clientY)
+    : [document.elementFromPoint(event.clientX, event.clientY)];
+  for (const candidate of hitElements.slice(0, 8)) {
+    add(candidate);
+  }
+
+  return candidates;
+}
+
+function findPromptExtractableImageInsideElement(
+  candidate: EventTarget | Element | null,
+  clientX: number,
+  clientY: number,
+): ImagePromptHoverTarget | null {
+  if (!(candidate instanceof Element)) {
+    return null;
+  }
+  if (candidate === document.documentElement || candidate === document.body) {
+    return null;
+  }
+  let bestTarget: ImagePromptHoverTarget | null = null;
+  let bestArea = 0;
+  for (const element of collectImagePromptCandidateElements(candidate, clientX, clientY)) {
+    const target = createImagePromptTargetFromElement(element, clientX, clientY);
+    if (!target) {
+      continue;
+    }
+    const anchorRect = target.anchorRect;
+    const area = anchorRect.width * anchorRect.height;
+    if (area > bestArea) {
+      bestTarget = target;
+      bestArea = area;
+    }
+  }
+  return bestTarget;
+}
+
+function collectImagePromptCandidateElements(element: Element, clientX: number, clientY: number): Element[] {
+  const elements: Element[] = [];
+  const seen = new Set<Element>();
+  const add = (candidate: Element | null) => {
+    if (
+      !candidate ||
+      candidate === document.documentElement ||
+      candidate === document.body ||
+      seen.has(candidate)
+    ) {
+      return;
+    }
+    seen.add(candidate);
+    elements.push(candidate);
+  };
+
+  add(element);
+  add(element.closest("img, [role='img']"));
+
+  let depth = 0;
+  for (let current: Element | null = element; current && current !== document.body && depth < 4; current = current.parentElement) {
+    depth += 1;
+    add(current);
+    const currentRect = current.getBoundingClientRect();
+    if (!isPointInsideRect(currentRect, clientX, clientY, 4)) {
+      continue;
+    }
+    for (const nestedImage of Array.from(current.querySelectorAll("img, [role='img']")).slice(0, 8)) {
+      add(nestedImage);
+    }
+    if (elements.length >= 24) {
+      break;
+    }
+  }
+
+  return elements;
+}
+
+function createImagePromptTargetFromElement(
+  element: Element,
+  clientX: number,
+  clientY: number,
+): ImagePromptHoverTarget | null {
+  if (element instanceof HTMLImageElement) {
+    return createImagePromptTargetFromImage(element, clientX, clientY);
+  }
+  if (element instanceof HTMLElement) {
+    return createImagePromptTargetFromElementBackground(element, clientX, clientY);
+  }
+  return null;
+}
+
+function createImagePromptTargetFromImage(
+  image: HTMLImageElement,
+  clientX: number,
+  clientY: number,
+): ImagePromptHoverTarget | null {
+  if (!isPromptExtractableImage(image)) {
+    return null;
+  }
+  if (isImagePromptVideoContextElement(image)) {
+    return null;
+  }
+  const anchorRect = resolveImagePromptHoverAnchorRect(image);
+  if (!isPromptExtractableRect(anchorRect) || !isPointInsideRect(anchorRect, clientX, clientY)) {
+    return null;
+  }
+  const imageUrl = resolvePageImageUrl(image.currentSrc || image.src || "");
+  const imageCandidate = describePageImage(image);
+  if (!imageCandidate) {
+    return null;
+  }
+  return {
+    element: image,
+    image,
+    url: imageUrl,
+    candidate: { ...imageCandidate, url: imageUrl },
+    anchorRect,
+  };
+}
+
+function createImagePromptTargetFromElementBackground(
+  element: HTMLElement,
+  clientX: number,
+  clientY: number,
+): ImagePromptHoverTarget | null {
+  const anchorRect = resolveImagePromptHoverAnchorRect(element);
+  if (!isPromptExtractableRect(anchorRect) || !isPointInsideRect(anchorRect, clientX, clientY)) {
+    return null;
+  }
+  const urls = extractCssImageUrls(window.getComputedStyle(element).backgroundImage || "");
+  if (!urls.length || isImagePromptVideoContextElement(element)) {
+    return null;
+  }
+  for (const url of urls) {
+    const imageUrl = resolvePageImageUrl(url);
+    if (!isSupportedImagePromptSource(imageUrl)) {
+      continue;
+    }
+    const candidate = describeElementImage(imageUrl, element);
+    if (candidate) {
+      return {
+        element,
+        url: imageUrl,
+        candidate,
+        anchorRect,
+      };
+    }
+  }
+  return null;
+}
+
+function isImagePromptVideoContextElement(element: Element): boolean {
+  if (element.localName === "video" || element.closest("video")) {
+    return true;
+  }
+
+  let depth = 0;
+  for (let current: Element | null = element; current && current !== document.body && depth < 5; current = current.parentElement) {
+    depth += 1;
+    if (!(current instanceof HTMLElement)) {
+      continue;
+    }
+    if (hasImagePromptVideoContextMarker(current)) {
+      return true;
+    }
+    if (current.querySelector("video")) {
+      return true;
+    }
+    const markedDescendants = Array.from(current.querySelectorAll<HTMLElement>("[aria-label], [data-testid]")).slice(0, 20);
+    if (markedDescendants.some(hasImagePromptVideoContextMarker)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function hasImagePromptVideoContextMarker(element: HTMLElement): boolean {
+  const marker = [
+    element.getAttribute("aria-label") ?? "",
+    element.getAttribute("data-testid") ?? "",
+  ]
+    .join(" ")
+    .toLowerCase();
+  return (
+    marker.includes("video") ||
+    marker.includes("player") ||
+    /(^|[^a-z])(play|watch|reel|reels)([^a-z]|$)/u.test(marker) ||
+    /동영상|비디오|재생/u.test(marker)
+  );
+}
+
+function resolveImagePromptHoverAnchorRect(element: Element): DOMRect {
+  const rect = element.getBoundingClientRect();
+  let left = clamp(rect.left, 0, window.innerWidth || document.documentElement.clientWidth || 0);
+  let top = clamp(rect.top, 0, window.innerHeight || document.documentElement.clientHeight || 0);
+  let right = clamp(rect.right, 0, window.innerWidth || document.documentElement.clientWidth || 0);
+  let bottom = clamp(rect.bottom, 0, window.innerHeight || document.documentElement.clientHeight || 0);
+
+  for (let parent = element.parentElement; parent && parent !== document.documentElement; parent = parent.parentElement) {
+    const style = window.getComputedStyle(parent);
+    if (!isImagePromptClippingElement(style)) {
+      continue;
+    }
+    const parentRect = parent.getBoundingClientRect();
+    left = Math.max(left, parentRect.left);
+    top = Math.max(top, parentRect.top);
+    right = Math.min(right, parentRect.right);
+    bottom = Math.min(bottom, parentRect.bottom);
+  }
+
+  return new DOMRect(left, top, Math.max(0, right - left), Math.max(0, bottom - top));
+}
+
+function isImagePromptClippingElement(style: CSSStyleDeclaration): boolean {
+  const overflowX = style.overflowX;
+  const overflowY = style.overflowY;
+  return [overflowX, overflowY].some((value) => value === "hidden" || value === "clip" || value === "auto" || value === "scroll");
+}
+
+function handleImagePromptVisibilityChange(): void {
+  try {
+    if (!isActiveContentScriptInstance()) {
+      return;
+    }
+    if (document.visibilityState !== "visible") {
+      hideImagePromptHoverButton();
+    }
+  } catch (error) {
+    handleImagePromptEventError(error);
+  }
+}
+
+function isPointerInsideImagePromptHoverSurface(clientX: number, clientY: number): boolean {
+  return (
+    isPointInsideRect(imagePromptHoverTargetRect, clientX, clientY) ||
+    isPointInsideRect(imagePromptHoverButtonRect, clientX, clientY, IMAGE_PROMPT_HOVER_SURFACE_PADDING_PX)
+  );
+}
+
+function isPointInsideRect(rect: DOMRect | null | undefined, clientX: number, clientY: number, padding = 0): boolean {
+  if (!rect) {
+    return false;
+  }
+  return (
+    clientX >= rect.left - padding &&
+    clientX <= rect.right + padding &&
+    clientY >= rect.top - padding &&
+    clientY <= rect.bottom + padding
+  );
+}
+
+function isPromptExtractableRect(rect: DOMRect): boolean {
+  return rect.width >= 80 && rect.height >= 80;
+}
+
+function isPromptExtractableImage(image: HTMLImageElement): boolean {
+  const source = resolvePageImageUrl(image.currentSrc || image.src || "");
+  if (!isSupportedImagePromptSource(source)) {
+    return false;
+  }
+  return isPromptExtractableRect(image.getBoundingClientRect());
+}
+
+function isSupportedImagePromptSource(source: string): boolean {
+  const normalized = source.trim().toLowerCase();
+  return /^https?:\/\//iu.test(source) || normalized.startsWith("blob:") || normalized.startsWith("data:image/");
+}
+
+function isHttpImagePromptSource(source: string): boolean {
+  return /^https?:\/\//iu.test(source);
+}
+
+function showImagePromptHoverButton(target: ImagePromptHoverTarget): void {
+  imagePromptHoverTarget = target;
+  imagePromptHoverTargetRect = target.anchorRect;
+  clearImagePromptHoverButtonRemoveTimer();
+  const button = getImagePromptHoverButton();
+  if (!button) {
+    return;
+  }
+  positionImagePromptHoverButton(imagePromptHoverTargetRect, button);
+  removeImagePromptHoverButtons(button);
+  window.requestAnimationFrame(() => {
+    if (imagePromptHoverButton === button) {
+      setImagePromptHoverButtonVisible(button, true);
+    }
+  });
+}
+
+function getImagePromptHoverButton(): HTMLButtonElement | null {
+  if (!isActiveContentScriptInstance()) {
+    return null;
+  }
+  if (imagePromptHoverButton?.isConnected) {
+    return imagePromptHoverButton;
+  }
+  imagePromptHoverButton = null;
+  removeImagePromptHoverButtons();
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = IMAGE_PROMPT_HOVER_BUTTON_CLASS;
+  button.title = "Extract image prompt";
+  button.setAttribute("aria-label", "Extract image prompt");
+  const icon = document.createElement("img");
+  icon.alt = "";
+  icon.src = IMAGE_PROMPT_HOVER_ICON_DATA_URL;
+  Object.assign(icon.style, {
+    width: "22px",
+    height: "22px",
+    display: "block",
+    pointerEvents: "none",
+  });
+  button.appendChild(icon);
+  Object.assign(button.style, {
+    position: "fixed",
+    zIndex: "2147483647",
+    width: `${IMAGE_PROMPT_HOVER_BUTTON_SIZE_PX}px`,
+    height: `${IMAGE_PROMPT_HOVER_BUTTON_SIZE_PX}px`,
+    display: "grid",
+    placeItems: "center",
+    border: "1px solid rgba(255,255,255,0.28)",
+    borderRadius: "999px",
+    background: "rgba(17, 24, 39, 0.92)",
+    color: "#ffffff",
+    boxShadow: "0 8px 24px rgba(0,0,0,0.35)",
+    cursor: "pointer",
+    padding: "0",
+    pointerEvents: "auto",
+    opacity: "0",
+    transform: "scale(0.94)",
+    transformOrigin: "center",
+    transition: `opacity ${IMAGE_PROMPT_HOVER_FADE_MS}ms ease, transform ${IMAGE_PROMPT_HOVER_FADE_MS}ms ease`,
+    willChange: "opacity, transform",
+  });
+  button.addEventListener("click", handleImagePromptButtonClick, {
+    capture: true,
+    signal: chromexContentScriptAbortController.signal,
+  });
+  document.documentElement.appendChild(button);
+  imagePromptHoverButton = button;
+  return button;
+}
+
+function setImagePromptHoverButtonVisible(button: HTMLButtonElement, visible: boolean): void {
+  button.style.opacity = visible ? "1" : "0";
+  button.style.transform = visible ? "scale(1)" : "scale(0.94)";
+}
+
+function handleImagePromptRuntimeError(error: unknown): boolean {
+  if (!(error instanceof Error) || !error.message.includes("Extension context invalidated")) {
+    return false;
+  }
+  cleanupContentScriptInstance();
+  return true;
+}
+
+function positionImagePromptHoverButton(rect: DOMRect, button: HTMLButtonElement): void {
+  const left = clamp(
+    rect.left + IMAGE_PROMPT_HOVER_BUTTON_INSET_PX,
+    IMAGE_PROMPT_HOVER_BUTTON_INSET_PX,
+    window.innerWidth - IMAGE_PROMPT_HOVER_BUTTON_SIZE_PX - IMAGE_PROMPT_HOVER_BUTTON_INSET_PX,
+  );
+  const top = clamp(
+    rect.top + IMAGE_PROMPT_HOVER_BUTTON_INSET_PX,
+    IMAGE_PROMPT_HOVER_BUTTON_INSET_PX,
+    window.innerHeight - IMAGE_PROMPT_HOVER_BUTTON_SIZE_PX - IMAGE_PROMPT_HOVER_BUTTON_INSET_PX,
+  );
+  button.style.left = `${left}px`;
+  button.style.top = `${top}px`;
+  imagePromptHoverButtonRect = button.getBoundingClientRect();
+}
+
+function handleImagePromptButtonClick(event: MouseEvent): void {
+  try {
+    if (!isActiveContentScriptInstance() || !isPointInsideRect(imagePromptHoverButtonRect, event.clientX, event.clientY)) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+    void extractPromptFromHoveredImage().catch((error: unknown) => {
+      if (!handleImagePromptRuntimeError(error)) {
+        console.warn("[Chromex] Failed to extract an image prompt.", error);
+      }
+    });
+  } catch (error) {
+    handleImagePromptEventError(error);
+  }
+}
+
+function hideImagePromptHoverButton(options: { immediate?: boolean } = {}): void {
+  clearImagePromptHoverButtonRemoveTimer();
+  cancelImagePromptHoverScrollFrame();
+  const button = imagePromptHoverButton;
+  imagePromptHoverTarget = null;
+  imagePromptHoverTargetRect = null;
+  imagePromptHoverButtonRect = null;
+  imagePromptHoverLastPointer = null;
+  if (!button) {
+    removeImagePromptHoverButtons();
+    return;
+  }
+  if (options.immediate) {
+    button.remove();
+    imagePromptHoverButton = null;
+    removeImagePromptHoverButtons();
+    return;
+  }
+  setImagePromptHoverButtonVisible(button, false);
+  imagePromptHoverButtonRemoveTimer = window.setTimeout(() => {
+    if (imagePromptHoverButton === button) {
+      button.remove();
+      imagePromptHoverButton = null;
+    }
+    imagePromptHoverButtonRemoveTimer = null;
+    removeImagePromptHoverButtons();
+  }, IMAGE_PROMPT_HOVER_FADE_MS);
+}
+
+function clearImagePromptHoverButtonRemoveTimer(): void {
+  if (imagePromptHoverButtonRemoveTimer === null) {
+    return;
+  }
+  window.clearTimeout(imagePromptHoverButtonRemoveTimer);
+  imagePromptHoverButtonRemoveTimer = null;
+}
+
+function cancelImagePromptHoverScrollFrame(): void {
+  if (imagePromptHoverScrollFrame === null) {
+    return;
+  }
+  window.cancelAnimationFrame(imagePromptHoverScrollFrame);
+  imagePromptHoverScrollFrame = null;
+}
+
+function removeImagePromptHoverButtons(except: HTMLButtonElement | null = null): void {
+  for (const button of Array.from(document.querySelectorAll<HTMLButtonElement>(IMAGE_PROMPT_HOVER_BUTTON_SELECTOR))) {
+    if (button === except) {
+      continue;
+    }
+    button.remove();
+  }
+}
+
+async function extractPromptFromHoveredImage(): Promise<void> {
+  if (!isActiveContentScriptInstance()) {
+    return;
+  }
+  const target = imagePromptHoverTarget;
+  if (!target) {
+    return;
+  }
+  const imageUrl = target.url;
+  if (!isSupportedImagePromptSource(imageUrl)) {
+    return;
+  }
+  const imageCandidate = target.candidate;
+  hideImagePromptHoverButton();
+  const runtime = getSafeChromeRuntime();
+  if (!runtime) {
+    cleanupContentScriptInstance();
+    return;
+  }
+  try {
+    const attachment = await createImagePromptAttachmentForHoveredTarget(target, imageUrl);
+    await runtime.sendMessage({
+      type: "page.image-prompt.extract",
+      imageUrl,
+      imageCandidate,
+      ...(attachment ? { attachment } : {}),
+    });
+  } catch (error) {
+    if (handleImagePromptRuntimeError(error)) {
+      return;
+    }
+    throw error;
+  }
+}
+
+async function createImagePromptAttachmentForHoveredTarget(
+  target: ImagePromptHoverTarget,
+  imageUrl: string,
+): Promise<ImagePromptAttachmentPayload | null> {
+  if (isHttpImagePromptSource(imageUrl)) {
+    return null;
+  }
+
+  const blob = await readHoveredTargetBlob(target, imageUrl).catch(() => null);
+  if (!blob || !blob.type.startsWith("image/")) {
+    return null;
+  }
+  const base64 = await blobToBase64String(blob).catch(() => "");
+  if (!base64) {
+    return null;
+  }
+
+  return {
+    id: `hovered-page-image-${Date.now()}`,
+    name: filenameFromPromptImageUrl(imageUrl, blob.type),
+    mimeType: blob.type || "image/png",
+    sizeBytes: blob.size,
+    lastModified: Date.now(),
+    base64,
+    kind: "image",
+  };
+}
+
+async function readHoveredTargetBlob(target: ImagePromptHoverTarget, imageUrl: string): Promise<Blob | null> {
+  const fetched = await fetch(imageUrl)
+    .then((response) => (response.ok ? response.blob() : null))
+    .catch(() => null);
+  if (fetched) {
+    return fetched;
+  }
+  return target.image ? renderImageElementToBlob(target.image) : null;
+}
+
+function renderImageElementToBlob(image: HTMLImageElement): Promise<Blob | null> {
+  if (!image.complete || !image.naturalWidth || !image.naturalHeight) {
+    return Promise.resolve(null);
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = image.naturalWidth;
+  canvas.height = image.naturalHeight;
+  const context = canvas.getContext("2d");
+  if (!context) {
+    return Promise.resolve(null);
+  }
+  try {
+    context.drawImage(image, 0, 0);
+  } catch {
+    return Promise.resolve(null);
+  }
+  return new Promise((resolve) => {
+    canvas.toBlob((blob) => resolve(blob), "image/png");
+  });
+}
+
+function blobToBase64String(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error("Failed to read image blob."));
+    reader.onload = () => {
+      const dataUrl = typeof reader.result === "string" ? reader.result : "";
+      resolve(dataUrl.split(",", 2)[1] ?? "");
+    };
+    reader.readAsDataURL(blob);
+  });
+}
+
+function filenameFromPromptImageUrl(imageUrl: string, mimeType: string): string {
+  const extension = mimeType === "image/jpeg" ? "jpg" : mimeType === "image/webp" ? "webp" : mimeType === "image/gif" ? "gif" : "png";
+  if (imageUrl.startsWith("data:") || imageUrl.startsWith("blob:")) {
+    return `hovered-page-image.${extension}`;
+  }
+  try {
+    const filename = new URL(imageUrl, document.baseURI).pathname.split("/").filter(Boolean).at(-1)?.trim();
+    return filename ? filename.replace(/\.[a-z0-9]+$/iu, `.${extension}`) : `hovered-page-image.${extension}`;
+  } catch {
+    return `hovered-page-image.${extension}`;
+  }
+}
+
 async function applyImageOverlay(previewRef: string): Promise<void> {
-  const resolvedPreviewRef = await resolveImagePreviewRefForUi(previewRef, (payload) =>
-    chrome.runtime.sendMessage(payload) as Promise<{
+  const resolvedPreviewRef = await resolveImagePreviewRefForUi(previewRef, (payload) => {
+    const runtime = getSafeChromeRuntime();
+    if (!runtime) {
+      cleanupContentScriptInstance();
+      throw new Error("Extension context invalidated.");
+    }
+    return runtime.sendMessage(payload) as Promise<{
       dataBase64: string;
       mimeType: string;
       sizeBytes: number;
       offset: number;
       nextOffset: number;
       done: boolean;
-    }>,
-  );
+    }>;
+  });
   clearImageOverlay();
 
   overlayNode = document.createElement("div");
@@ -681,6 +1640,11 @@ function describeDomActionElement(ref: string, element: HTMLElement): BrowserDom
 
 async function performBrowserDomAction(step: BrowserDomActionStep): Promise<BrowserDomActionResult["results"][number]> {
   try {
+    if (step.action === "navigate") {
+      performNavigateAction(step);
+      return { step, ok: true, message: "Navigated the current page." };
+    }
+
     const element = resolveDomActionTarget(step);
     if (!element && step.action !== "scroll") {
       return { step, ok: false, message: "Target element was not found." };
@@ -720,6 +1684,18 @@ async function performBrowserDomAction(step: BrowserDomActionStep): Promise<Brow
   } catch (error) {
     return { step, ok: false, message: error instanceof Error ? error.message : String(error) };
   }
+}
+
+function performNavigateAction(step: BrowserDomActionStep): void {
+  const url = step.url || step.value || "";
+  if (!url) {
+    throw new Error("No navigation URL was provided.");
+  }
+  const destination = new URL(url, window.location.href);
+  if (destination.protocol !== "http:" && destination.protocol !== "https:") {
+    throw new Error("Only http and https page navigation is supported.");
+  }
+  window.location.assign(destination.href);
 }
 
 function resolveDomActionTarget(step: BrowserDomActionStep): HTMLElement | null {

@@ -38,7 +38,7 @@ describe("sidepanel icon rendering", () => {
     expect(sidepanelSource).toContain('renderUiIcon("plus")');
     expect(sidepanelSource).toContain('renderUiIcon("mic")');
     expect(sidepanelSource).toContain('renderUiIcon("send")');
-    expect(sidepanelSource).toContain('renderUiIcon("stop")');
+    expect(sidepanelSource).toContain('renderUiIcon("stop-filled")');
     expect(sidepanelSource).toContain('renderUiIcon("chevron-down")');
     expect(sidepanelSource).toContain('renderUiIcon("chevron-right")');
     expect(sidepanelSource).toContain('renderUiIcon("check")');
@@ -57,6 +57,16 @@ describe("sidepanel icon rendering", () => {
     expect(messageContentSource).toContain('renderUiIcon("code")');
     expect(messageContentSource).toContain('renderUiIcon("copy")');
     expect(messageContentSource).not.toContain("<svg viewBox=");
+  });
+
+  test("renders the streaming stop control as a filled lucide icon", () => {
+    const iconSource = readFileSync(resolve(process.cwd(), "src/sidepanel/ui-icons.ts"), "utf8");
+
+    expect(iconSource).toContain('| "stop-filled"');
+    expect(iconSource).toContain('"stop-filled": Square');
+    expect(iconSource).toContain('const fill = icon === "stop-filled" ? "currentColor" : "none";');
+    expect(sidepanelSource).toContain('renderUiIcon("stop-filled")');
+    expect(sidepanelSource).not.toContain('renderUiIcon("stop")');
   });
 
   test("keeps icon-only buttons centered without hover reflow", () => {

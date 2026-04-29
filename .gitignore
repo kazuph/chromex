@@ -13,6 +13,13 @@ __load_extension__.pem
 
 .codex/
 .codex-sidepanel/
+CODEX.md
+CLAUDE.md
+AGENTS.md
+GEMINI.md
+MEMORY.md
+*harness*.md
+docs/
 codex-sidepanel-backups/
 chromex-backups/
 .codex-backups/

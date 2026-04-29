@@ -1,6 +1,8 @@
 import { describe, expect, test } from "vitest";
+import { readFileSync } from "node:fs";
 
 import { inferActionCardsForOpenTab } from "../src/background/site-suggestions.js";
+import { getUiStrings } from "../src/sidepanel/i18n.js";
 
 describe("site suggestions", () => {
   test("suggests practical Gmail actions", () => {
@@ -43,6 +45,51 @@ describe("site suggestions", () => {
     expect(docs.map((card) => card.id)).toContain("docs-summary");
     expect(sheets.map((card) => card.id)).toContain("sheets-insights");
     expect(slides.map((card) => card.id)).toContain("slides-critique");
+  });
+
+  test("uses the requested UI locale instead of the browser page language for all site suggestion prompts", () => {
+    const cases = [
+      { title: "Quarterly planning - Gmail", url: "https://mail.google.com/mail/u/0/#inbox/FMfcgzQ" },
+      { title: "AI 산업 새 국면 - 네이버뉴스", url: "https://n.news.naver.com/article/001/0012345678" },
+      { title: "Attention Is All You Need", url: "https://arxiv.org/abs/1706.03762" },
+      { title: "Release checklist | Trello", url: "https://trello.com/c/abc/123-card" },
+    ];
+
+    for (const item of cases) {
+      const cards = inferActionCardsForOpenTab(item, "ja");
+      expect(cards.length, item.url).toBeGreaterThan(0);
+      expect(cards.map((card) => card.prompt ?? "").join("\n"), item.url).toContain(
+        "Answer in the user's selected UI language (ja).",
+      );
+      expect(cards.map((card) => card.title).join(" "), item.url).not.toMatch(/[가-힣]/u);
+    }
+  });
+
+  test("localizes site suggestion titles from the UI string catalog for non-English locales", () => {
+    const japaneseCards = inferActionCardsForOpenTab(
+      {
+        title: "A useful video - YouTube",
+        url: "https://www.youtube.com/watch?v=abc",
+      },
+      "ja",
+    );
+
+    expect(japaneseCards[0]?.id).toBe("youtube-summary-question");
+    expect(japaneseCards[0]?.title).toBe(getUiStrings("ja").actionCards["youtube-summary-question"]);
+    expect(japaneseCards[0]?.title).not.toBe("Summarize video");
+  });
+
+  test("keeps shared site suggestion generation free of hardcoded UI locale branches", () => {
+    const actionCardsSource = readFileSync(new URL("../../shared/src/action-cards.ts", import.meta.url), "utf8");
+    const backgroundSource = readFileSync(new URL("../src/background/index.ts", import.meta.url), "utf8");
+    const disallowedLocaleSet = ["LOCALIZED", "ACTION_CARD", "COPY_LOCALES"].join("_");
+    const disallowedLocaleHelper = ["has", "Localized", "Action", "Card", "Copy"].join("");
+    const disallowedBackgroundHelper = ["get", "Background", "Localized", "Text"].join("");
+
+    expect(actionCardsSource).not.toContain(disallowedLocaleSet);
+    expect(actionCardsSource).not.toContain(disallowedLocaleHelper);
+    expect(actionCardsSource).not.toMatch(/[가-힣]/u);
+    expect(backgroundSource).not.toContain(disallowedBackgroundHelper);
   });
 
   test("suggests developer, design, shopping, and research actions", () => {
@@ -195,6 +242,10 @@ describe("site suggestions", () => {
     );
     expect(naverCards[0]?.title).toBe("기사 핵심 요약");
     expect(naverCards.find((card) => card.id === "news-infographic")?.title).toBe("인포그래픽 만들기");
+    expect(naverCards.find((card) => card.id === "news-infographic")).toMatchObject({
+      kind: "workflow",
+    });
+    expect(naverCards.find((card) => card.id === "news-infographic")).not.toHaveProperty("prompt");
     expect(reutersCards.map((card) => card.id)).toEqual(
       expect.arrayContaining(["news-article-summary", "news-infographic"]),
     );

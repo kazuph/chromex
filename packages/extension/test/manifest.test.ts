@@ -4,6 +4,75 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, test } from "vitest";
 
+const CHROME_WEB_STORE_LOCALES = [
+  "ar",
+  "am",
+  "bg",
+  "bn",
+  "ca",
+  "cs",
+  "da",
+  "de",
+  "el",
+  "en",
+  "en_AU",
+  "en_GB",
+  "en_US",
+  "es",
+  "es_419",
+  "et",
+  "fa",
+  "fi",
+  "fil",
+  "fr",
+  "gu",
+  "he",
+  "hi",
+  "hr",
+  "hu",
+  "id",
+  "it",
+  "ja",
+  "kn",
+  "ko",
+  "lt",
+  "lv",
+  "ml",
+  "mr",
+  "ms",
+  "nl",
+  "no",
+  "pl",
+  "pt_BR",
+  "pt_PT",
+  "ro",
+  "ru",
+  "sk",
+  "sl",
+  "sr",
+  "sv",
+  "sw",
+  "ta",
+  "te",
+  "th",
+  "tr",
+  "uk",
+  "vi",
+  "zh_CN",
+  "zh_TW",
+] as const;
+
+const REQUIRED_CHROME_MESSAGE_KEYS = [
+  "extensionName",
+  "extensionDescription",
+  "actionOpenSidePanel",
+  "commandOpenSidePanel",
+  "commandOpenPopup",
+  "contextAskPage",
+  "contextEditImage",
+  "contextSummarizeYoutube",
+] as const;
+
 describe("extension manifest", () => {
   test("keeps intrusive permissions optional and uses a stable public key for unpacked native host installs", () => {
     const manifestPath = resolve(dirname(fileURLToPath(import.meta.url)), "../public/manifest.json");
@@ -28,7 +97,12 @@ describe("extension manifest", () => {
     expect(manifest.permissions ?? []).not.toContain("tabs");
     expect(manifest.optional_permissions ?? []).toContain("tabs");
     expect(manifest.optional_permissions ?? []).not.toContain("tabCapture");
-    expect(manifest.web_accessible_resources).toBeUndefined();
+    expect(manifest.web_accessible_resources).toEqual([
+      {
+        resources: ["icons/codex-32.png"],
+        matches: ["<all_urls>"],
+      },
+    ]);
   });
 
   test("ships Chromex localized name and icon assets", () => {
@@ -49,5 +123,22 @@ describe("extension manifest", () => {
     expect(existsSync(resolve(publicDir, "icons/chromex-source.png"))).toBe(true);
     expect(existsSync(resolve(publicDir, "icons/chromex-line-source.png"))).toBe(true);
     expect(existsSync(resolve(publicDir, "icons/codex-mono-128.png"))).toBe(true);
+  });
+
+  test("ships Chrome-supported extension locale folders with complete manifest messages", () => {
+    const publicDir = resolve(dirname(fileURLToPath(import.meta.url)), "../public");
+
+    for (const locale of CHROME_WEB_STORE_LOCALES) {
+      const messagesPath = resolve(publicDir, "_locales", locale, "messages.json");
+      expect(existsSync(messagesPath), locale).toBe(true);
+
+      const messages = JSON.parse(readFileSync(messagesPath, "utf8")) as Record<
+        string,
+        { message?: string; description?: string }
+      >;
+      for (const key of REQUIRED_CHROME_MESSAGE_KEYS) {
+        expect(messages[key]?.message?.trim(), `${locale}:${key}`).toBeTruthy();
+      }
+    }
   });
 });

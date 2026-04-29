@@ -12,7 +12,8 @@ describe("conversation message attachments", () => {
     expect(sidepanelSource).toContain("renderConversationMessageAttachmentImage");
     expect(sidepanelSource).toContain("renderConversationMessageAttachmentFile");
     expect(sidepanelSource).toContain("createConversationMessageAttachments");
-    expect(sidepanelSource).toContain("attachments: createConversationMessageAttachments(nextFileAttachments)");
+    expect(sidepanelSource).toContain("attachments: createConversationMessageAttachments(submittedMessageFileAttachments)");
+    expect(sidepanelSource).not.toContain("attachments: createConversationMessageAttachments(nextFileAttachments)");
     expect(styles).toContain(".message-attachments");
     expect(styles).toContain(".message-attachment-image");
     expect(styles).toContain(".message-attachment-file");

@@ -1,8 +1,7 @@
 import type { ProfileTemplate } from "@codex-sidepanel/shared";
+import { getTranslatedUiLocale, type UiLocale } from "./ui-language.js";
 
-type ProfileNameLocale = "en" | "ko";
-
-const BUILTIN_PROFILE_NAMES: Record<ProfileNameLocale, Record<string, string>> = {
+const BUILTIN_PROFILE_NAMES: Partial<Record<UiLocale, Record<string, string>>> & { en: Record<string, string> } = {
   en: {
     default: "Default",
     "youtube-summarizer": "YouTube Summarizer",
@@ -49,6 +48,8 @@ const BUILTIN_PROFILE_NAMES: Record<ProfileNameLocale, Record<string, string>> =
   },
 };
 
+type ProfileNameLocale = keyof typeof BUILTIN_PROFILE_NAMES;
+
 const BUILTIN_PROFILE_IDS = new Set(Object.keys(BUILTIN_PROFILE_NAMES.en));
 
 export function localizeBuiltinProfiles(profiles: ProfileTemplate[], locale: string | undefined): ProfileTemplate[] {
@@ -68,9 +69,10 @@ export function localizeBuiltinProfileName(
   }
 
   const localeKey = getProfileNameLocale(locale);
-  return BUILTIN_PROFILE_NAMES[localeKey][profileId] ?? fallbackName;
+  return (BUILTIN_PROFILE_NAMES[localeKey] ?? BUILTIN_PROFILE_NAMES.en)[profileId] ?? fallbackName;
 }
 
 function getProfileNameLocale(locale: string | undefined): ProfileNameLocale {
-  return locale?.toLowerCase().startsWith("ko") ? "ko" : "en";
+  const translatedLocale = getTranslatedUiLocale(locale);
+  return BUILTIN_PROFILE_NAMES[translatedLocale] ? translatedLocale : "en";
 }

@@ -4,7 +4,11 @@ import { resolve } from "node:path";
 import { describe, expect, test } from "vitest";
 
 import { getUiStrings } from "../src/sidepanel/i18n.js";
-import { shouldShowAuthOnboarding, shouldShowUsageNoticeOnboarding } from "../src/sidepanel/onboarding.js";
+import {
+  resolveAuthOnboardingReadiness,
+  shouldShowAuthOnboarding,
+  shouldShowUsageNoticeOnboarding,
+} from "../src/sidepanel/onboarding.js";
 import type { UiInitPayload } from "../src/types.js";
 
 const sidepanelSource = readFileSync(resolve(process.cwd(), "src/sidepanel/index.ts"), "utf8");
@@ -27,8 +31,12 @@ describe("auth onboarding", () => {
   test("localizes welcome copy and login choices", () => {
     expect(getUiStrings("en").onboarding.title).toBe("Welcome to Chromex");
     expect(getUiStrings("en").onboarding.chatgptCta).toBe("Continue with ChatGPT");
+    expect(getUiStrings("en").onboarding.nativeHostSetup).toContain("local bridge");
+    expect(getUiStrings("en").onboarding.codexBinaryMissing).toContain("Codex");
     expect(getUiStrings("ko").onboarding.title).toBe("Welcome to Chromex");
     expect(getUiStrings("ko").onboarding.apiCta).toBe("API 키로 사용");
+    expect(getUiStrings("ko").onboarding.nativeHostSetup).toContain("로컬 브리지");
+    expect(getUiStrings("ko").onboarding.webOnlyUnavailable).toContain("로컬 브리지");
   });
 
   test("renders a centered internal onboarding surface with existing login actions", () => {
@@ -36,9 +44,48 @@ describe("auth onboarding", () => {
     expect(sidepanelSource).toContain("shouldShowAuthOnboarding(state.accountStatus)");
     expect(sidepanelSource).toContain('id="onboarding-chatgpt-login"');
     expect(sidepanelSource).toContain('id="onboarding-apikey-login"');
+    expect(sidepanelSource).toContain('id="onboarding-reconnect"');
+    expect(sidepanelSource).toContain('id="onboarding-open-settings"');
+    expect(sidepanelSource).toContain('class="auth-onboarding-install"');
+    expect(sidepanelSource).toContain("strings.onboarding.sourceInstallCommand");
+    expect(sidepanelSource).toContain("strings.onboarding.webOnlyUnavailable");
     expect(sidepanelSource).toContain('openNativeTextDialog("api-key")');
     expect(sidepanelCss).toContain(".auth-onboarding");
     expect(sidepanelCss).toContain(".auth-onboarding-card");
+    expect(sidepanelCss).toContain(".auth-onboarding-readiness");
+    expect(sidepanelCss).toContain(".auth-onboarding-install");
+  });
+
+  test("blocks login until the local native host and Codex runtime are ready", () => {
+    expect(
+      resolveAuthOnboardingReadiness({
+        nativeHostStatus: "setup-needed",
+        codexBinaryStatus: "pending",
+      }),
+    ).toMatchObject({
+      canStartAuth: false,
+      primaryIssue: "native-host",
+    });
+
+    expect(
+      resolveAuthOnboardingReadiness({
+        nativeHostStatus: "connected",
+        codexBinaryStatus: "not-detected",
+      }),
+    ).toMatchObject({
+      canStartAuth: false,
+      primaryIssue: "codex-binary",
+    });
+
+    expect(
+      resolveAuthOnboardingReadiness({
+        nativeHostStatus: "connected",
+        codexBinaryStatus: "automatic",
+      }),
+    ).toMatchObject({
+      canStartAuth: true,
+      primaryIssue: null,
+    });
   });
 });
 

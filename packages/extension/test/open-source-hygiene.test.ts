@@ -36,12 +36,69 @@ describe("open-source repository hygiene", () => {
     expect(gitignore).toContain("coverage/");
   });
 
-  test("documents the release backup and verification flow", () => {
-    const checklistPath = resolve(repoRoot, "docs/open-source-release-checklist.md");
+  test("documents the public packaging flow without exposing internal release rules", () => {
+    const publicReleaseScript = readRepoFile("scripts/package-public-release.mjs");
+    const readme = readRepoFile("README.md");
+    const koreanReadme = readRepoFile("README.ko.md");
+    const japaneseReadme = readRepoFile("README.ja.md");
+    const chineseReadme = readRepoFile("README.zh-CN.md");
+    const publicReadmes = [readme, koreanReadme, japaneseReadme, chineseReadme];
 
-    expect(existsSync(checklistPath)).toBe(true);
-    expect(readRepoFile("docs/open-source-release-checklist.md")).toContain("Backup");
-    expect(readRepoFile("README.md")).toContain("open-source release checklist");
+    expect(publicReleaseScript).toContain("/^docs\\//u");
+    for (const publicReadme of publicReadmes) {
+      expect(publicReadme).toContain("npm run package:public");
+      expect(publicReadme).toContain("./assets/chromex-hero.png");
+      expect(publicReadme).toContain("releases/latest/download/chromex-unpacked-extension.zip");
+      expect(publicReadme).toContain("README.ja.md");
+      expect(publicReadme).toContain("README.zh-CN.md");
+    }
+    expect(existsSync(resolve(repoRoot, "assets/chromex-hero.png"))).toBe(true);
+    expect(readme).not.toContain(["What", "Is", "Not", "Published"].join(" "));
+    expect(koreanReadme).not.toContain(["공개하지", "않는", "항목"].join(" "));
+    expect(japaneseReadme).not.toContain(["公開", "しない", "項目"].join(""));
+    expect(chineseReadme).not.toContain(["不", "发布", "的", "项目"].join(""));
+    expect(readme).not.toContain(["intentionally", "excludes"].join(" "));
+    expect(koreanReadme).not.toContain(["의도적으로", "제외"].join(" "));
+    for (const publicReadme of publicReadmes) {
+      expect(publicReadme).not.toContain("docs/");
+      expect(publicReadme).not.toContain(["CONTRIBUTING", "md"].join("."));
+    }
+  });
+
+  test("keeps private maintainer rules out of public-facing documents", () => {
+    const readme = readRepoFile("README.md");
+    const koreanReadme = readRepoFile("README.ko.md");
+    const japaneseReadme = readRepoFile("README.ja.md");
+    const chineseReadme = readRepoFile("README.zh-CN.md");
+    const publicReleaseScript = readRepoFile("scripts/package-public-release.mjs");
+
+    expect(publicReleaseScript).toContain("(?:CODEX|CLAUDE|AGENTS|GEMINI|MEMORY)");
+
+    expect(readme).not.toMatch(/legacy personal account/iu);
+    expect(koreanReadme).not.toMatch(/과거 개인 계정/iu);
+    expect(japaneseReadme).not.toMatch(/過去の個人アカウント/iu);
+    expect(chineseReadme).not.toMatch(/历史个人账号/iu);
+    expect(readme).not.toMatch(/clean public history/iu);
+    expect(koreanReadme).not.toMatch(/공개 커밋 이력/iu);
+    expect(japaneseReadme).not.toMatch(/公開コミット履歴/iu);
+    expect(chineseReadme).not.toMatch(/公开提交历史/iu);
+    expect(readme).not.toMatch(/non-user release rules/iu);
+    expect(koreanReadme).not.toContain(["내부", "배포", "규칙"].join(" "));
+    expect(japaneseReadme).not.toContain(["内部", "リリース", "ルール"].join(""));
+    expect(chineseReadme).not.toContain(["内部", "发布", "规则"].join(""));
+  });
+
+  test("provides clean public packaging and git-history audit scripts", () => {
+    const packageJson = JSON.parse(readRepoFile("package.json")) as { scripts?: Record<string, string> };
+
+    expect(packageJson.scripts?.["package:public"]).toContain("scripts/package-public-release.mjs");
+    expect(packageJson.scripts?.["release:audit:history"]).toBe("node scripts/audit-git-history.mjs");
+    expect(existsSync(resolve(repoRoot, "RELEASE.md"))).toBe(true);
+    expect(readRepoFile("RELEASE.md")).toContain("0.1.1");
+    expect(readRepoFile("RELEASE.md")).toContain("semantic versioning");
+    expect(readRepoFile("RELEASE.md")).toContain("chromex-unpacked-extension.zip");
+    expect(existsSync(resolve(repoRoot, "scripts/package-public-release.mjs"))).toBe(true);
+    expect(existsSync(resolve(repoRoot, "scripts/audit-git-history.mjs"))).toBe(true);
   });
 
   test("does not allow legacy extension ids in the native-host installer by default", () => {

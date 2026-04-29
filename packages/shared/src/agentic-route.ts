@@ -2,6 +2,8 @@ import { listProfileTemplates } from "./profiles.js";
 import type {
   AgenticContextRequest,
   AgenticBrowserControlRouting,
+  AgenticBrowserControlPrecondition,
+  BrowserControlSurface,
   AgenticImageEditRouting,
   AgenticIntentAction,
   AgenticIntentPlan,
@@ -42,6 +44,16 @@ const BROWSER_AUTOMATION_MODES = new Set<BrowserAutomationMode>([
   "dom",
   "playwright",
   "computer-use",
+]);
+const BROWSER_CONTROL_SURFACES = new Set<BrowserControlSurface>([
+  "active-tab",
+  "new-tab",
+]);
+const BROWSER_CONTROL_PRECONDITIONS = new Set<AgenticBrowserControlPrecondition>([
+  "external-research",
+  "content-generation",
+  "context-collection",
+  "user-confirmation",
 ]);
 const INTENT_ACTIONS = new Set<AgenticIntentAction>([
   "answer",
@@ -143,13 +155,17 @@ export function normalizeAgenticRoutePlan(rawPlan: unknown, input: AgenticRouteI
       : isImageGenerationExecution
         ? "image-generate"
         : rawTaskCandidate;
+  const structuredInputIds = normalizeStructuredInputIds(raw.structuredInputIds, input);
   const normalizedIntent = normalizeIntent(raw.intent, input, imageEdit);
   const intent = textPageSummaryRequest
     ? normalizeTextPageSummaryIntent(normalizedIntent, input)
     : rawTask === "image-generate"
         ? normalizeImageGenerationIntent(normalizedIntent, input)
         : normalizedIntent;
-  const browserControl = normalizeBrowserControl(raw.browserControl, intent, input);
+  const browserControl = normalizeBrowserControlForStructuredInputs(
+    normalizeBrowserControl(raw.browserControl, intent, input),
+    structuredInputIds,
+  );
   if (intent.target === "browser-history" && !intent.needsClarification) {
     pushRequest({
       source: "history",
@@ -202,6 +218,7 @@ export function normalizeAgenticRoutePlan(rawPlan: unknown, input: AgenticRouteI
     task: task.task,
     contextMode: deriveContextMode(normalizedContextRequests, input.fileAttachments.length > 0),
     contextRequests: normalizedContextRequests,
+    structuredInputIds,
     historyQuery,
     requiresVision,
     pageReadStrategy,
@@ -226,6 +243,7 @@ export function createFallbackAgenticRoutePlan(input: AgenticRouteInput, reason?
         required: true,
         reason: "Explicitly attached by the user.",
       })),
+      structuredInputIds: [],
       requiresVision: input.readStrategyOverride === "vision" || input.readStrategyOverride === "hybrid",
       selectedProfileId: input.selectedProfileId,
       selectedModel: input.selectedModel,
@@ -237,6 +255,7 @@ export function createFallbackAgenticRoutePlan(input: AgenticRouteInput, reason?
       browserControl: {
         shouldControl: false,
         mode: "dom",
+        surface: "active-tab",
         reason: "Fallback route does not automatically control the browser.",
       },
       intent: {
@@ -256,6 +275,32 @@ export function createFallbackAgenticRoutePlan(input: AgenticRouteInput, reason?
   );
 }
 
+function normalizeStructuredInputIds(value: unknown, input: AgenticRouteInput): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const available = new Set((input.availableStructuredInputs ?? []).map((structuredInput) => structuredInput.id));
+  if (!available.size) {
+    return [];
+  }
+
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  for (const item of value) {
+    const id = typeof item === "string" ? item.trim() : "";
+    if (!id || !available.has(id) || seen.has(id)) {
+      continue;
+    }
+    seen.add(id);
+    ids.push(id);
+    if (ids.length >= 8) {
+      break;
+    }
+  }
+  return ids;
+}
+
 export function routePlanToPromptRoutingPlan(plan: AgenticRoutePlan, input: AgenticRouteInput): PromptRoutingPlan {
   return {
     task: plan.task,
@@ -263,6 +308,7 @@ export function routePlanToPromptRoutingPlan(plan: AgenticRoutePlan, input: Agen
     requiresVision: plan.requiresVision,
     pageReadStrategy: plan.pageReadStrategy,
     intent: plan.intent,
+    browserControl: plan.browserControl,
     selectedProfileId: plan.selectedProfileId,
     selectedModel: plan.selectedModel,
     notes: plan.notes,
@@ -326,24 +372,49 @@ function normalizeBrowserControl(
     intent.action === "navigate" &&
     intent.target === "current-page" &&
     !intent.needsClarification;
-  const shouldControl = typeof raw.shouldControl === "boolean" ? raw.shouldControl : defaultShouldControl;
+  const preconditions = normalizeBrowserControlPreconditions(raw.preconditions);
+  const shouldDeferBrowserAction = defaultShouldControl && preconditions.length > 0;
+  const shouldControl = shouldDeferBrowserAction
+    ? false
+    : typeof raw.shouldControl === "boolean"
+      ? raw.shouldControl
+      : defaultShouldControl;
   const requestedMode = BROWSER_AUTOMATION_MODES.has(raw.mode as BrowserAutomationMode)
     ? (raw.mode as BrowserAutomationMode)
     : "dom";
   const requestedFallbackMode = BROWSER_AUTOMATION_MODES.has(raw.fallbackMode as BrowserAutomationMode)
     ? (raw.fallbackMode as BrowserAutomationMode)
     : undefined;
-  const mode = isBrowserAutomationModeAvailable(requestedMode, input)
+  const surface = BROWSER_CONTROL_SURFACES.has(raw.surface as BrowserControlSurface)
+    ? (raw.surface as BrowserControlSurface)
+    : defaultShouldControl
+      ? "active-tab"
+      : requestedMode === "playwright" || requestedFallbackMode === "playwright"
+        ? "new-tab"
+        : "active-tab";
+  const forceCurrentPageDom =
+    defaultShouldControl &&
+    (shouldControl || shouldDeferBrowserAction) &&
+    surface === "active-tab" &&
+    raw.surface !== "new-tab" &&
+    isBrowserAutomationModeAvailable("dom", input);
+  const mode = forceCurrentPageDom
+    ? "dom"
+    : isBrowserAutomationModeAvailable(requestedMode, input)
     ? requestedMode
     : requestedFallbackMode && isBrowserAutomationModeAvailable(requestedFallbackMode, input)
       ? requestedFallbackMode
       : "dom";
   const fallbackMode =
-    requestedFallbackMode && isBrowserAutomationModeAvailable(requestedFallbackMode, input)
+    !forceCurrentPageDom && requestedFallbackMode && isBrowserAutomationModeAvailable(requestedFallbackMode, input)
       ? requestedFallbackMode
       : undefined;
   const reason =
-    typeof raw.reason === "string" && raw.reason.trim()
+    shouldDeferBrowserAction
+      ? "Browser control is deferred until the agentic workflow completes upstream preconditions."
+      : forceCurrentPageDom && requestedMode !== "dom"
+      ? "Current-page browser actions run on the active tab through DOM control."
+      : typeof raw.reason === "string" && raw.reason.trim()
       ? raw.reason.trim()
       : shouldControl
         ? "Resolved as a browser control request for the current page."
@@ -352,9 +423,48 @@ function normalizeBrowserControl(
   return {
     shouldControl,
     mode,
+    surface,
     ...(fallbackMode && fallbackMode !== mode ? { fallbackMode } : {}),
+    ...(preconditions.length ? { preconditions } : {}),
     reason,
   };
+}
+
+function normalizeBrowserControlForStructuredInputs(
+  browserControl: AgenticBrowserControlRouting,
+  structuredInputIds: string[],
+): AgenticBrowserControlRouting {
+  if (!structuredInputIds.length || !browserControl.shouldControl) {
+    return browserControl;
+  }
+
+  return {
+    shouldControl: false,
+    mode: "dom",
+    surface: "active-tab",
+    ...(browserControl.preconditions?.length ? { preconditions: browserControl.preconditions } : {}),
+    reason: "Connected app, plugin, or MCP input was selected, so the request is routed through Codex tools instead of browser automation.",
+  };
+}
+
+function normalizeBrowserControlPreconditions(value: unknown): AgenticBrowserControlPrecondition[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const seen = new Set<AgenticBrowserControlPrecondition>();
+  const preconditions: AgenticBrowserControlPrecondition[] = [];
+  for (const item of value) {
+    if (!BROWSER_CONTROL_PRECONDITIONS.has(item as AgenticBrowserControlPrecondition)) {
+      continue;
+    }
+    const precondition = item as AgenticBrowserControlPrecondition;
+    if (seen.has(precondition)) {
+      continue;
+    }
+    seen.add(precondition);
+    preconditions.push(precondition);
+  }
+  return preconditions;
 }
 
 function isBrowserAutomationModeAvailable(mode: BrowserAutomationMode, input: AgenticRouteInput): boolean {
@@ -577,7 +687,19 @@ function normalizeImageGenerationIntent(intent: AgenticIntentPlan, input: Agenti
 }
 
 function isModelPlannedImageGeneration(rawPlan: Record<string, unknown>, rawIntent: Record<string, unknown>): boolean {
-  return rawPlan.task === "image-generate" || rawIntent.action === "generate-image";
+  if (rawIntent.action === "generate-image") {
+    return true;
+  }
+  if (rawPlan.task !== "image-generate") {
+    return false;
+  }
+
+  // If the model returned a contradictory recognized action, trust the action
+  // over the coarse task label so text summaries do not become image jobs.
+  if (typeof rawIntent.action === "string" && INTENT_ACTIONS.has(rawIntent.action as AgenticIntentAction)) {
+    return false;
+  }
+  return true;
 }
 
 function isModelPlannedTextPageSummary(rawPlan: Record<string, unknown>, rawIntent: Record<string, unknown>): boolean {
@@ -587,7 +709,7 @@ function isModelPlannedTextPageSummary(rawPlan: Record<string, unknown>, rawInte
   if (rawIntent.action !== "summarize" && rawIntent.action !== "extract") {
     return false;
   }
-  return rawPlan.task !== "image-generate";
+  return true;
 }
 
 function repairIncompleteImageEditPlan(
@@ -683,11 +805,15 @@ function selectProfileId(candidate: unknown, fallback: string, availableProfileI
     ...availableProfileIds.map((profileId) => profileId.trim()).filter(Boolean),
   ]);
   const requested = typeof candidate === "string" ? candidate.trim() : "";
+  const selected = fallback.trim();
+  if (selected && selected !== "default" && profileIds.has(selected)) {
+    return selected;
+  }
   if (requested && profileIds.has(requested)) {
     return requested;
   }
-  if (profileIds.has(fallback)) {
-    return fallback;
+  if (profileIds.has(selected)) {
+    return selected;
   }
   return "default";
 }

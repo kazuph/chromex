@@ -102,11 +102,21 @@ describe("composer submit key handling", () => {
     });
   });
 
-  test("allows a new message only when no prompt, turn, or stream is active", () => {
-    expect(canSendComposerMessage({ turnActive: false, promptActivityActive: false, streamingAssistantActive: false })).toBe(true);
-    expect(canSendComposerMessage({ turnActive: true, promptActivityActive: false, streamingAssistantActive: false })).toBe(false);
-    expect(canSendComposerMessage({ turnActive: false, promptActivityActive: true, streamingAssistantActive: false })).toBe(false);
-    expect(canSendComposerMessage({ turnActive: false, promptActivityActive: false, streamingAssistantActive: true })).toBe(false);
-    expect(canSendComposerMessage({ turnActive: true, promptActivityActive: true, streamingAssistantActive: true })).toBe(false);
+  test("allows a normal message only when no prompt, turn, or stream is active", () => {
+    expect(canSendComposerMessage({ draft: "새 질문", turnActive: false, promptActivityActive: false, streamingAssistantActive: false })).toBe(true);
+    expect(canSendComposerMessage({ draft: "새 질문", turnActive: true, promptActivityActive: false, streamingAssistantActive: false })).toBe(true);
+    expect(canSendComposerMessage({ draft: "   ", turnActive: true, promptActivityActive: false, streamingAssistantActive: false })).toBe(false);
+    expect(canSendComposerMessage({ draft: "새 질문", turnActive: false, promptActivityActive: true, streamingAssistantActive: false })).toBe(false);
+    expect(canSendComposerMessage({ draft: "새 질문", turnActive: false, promptActivityActive: false, streamingAssistantActive: true })).toBe(false);
+    expect(canSendComposerMessage({ draft: "새 질문", turnActive: true, promptActivityActive: true, streamingAssistantActive: true })).toBe(true);
+    expect(
+      canSendComposerMessage({
+        draft: "새 질문",
+        turnActive: false,
+        promptActivityActive: false,
+        streamingAssistantActive: false,
+        submissionStartingActive: true,
+      }),
+    ).toBe(false);
   });
 });

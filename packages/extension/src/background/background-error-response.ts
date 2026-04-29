@@ -3,6 +3,7 @@ import {
   type BrowserPermissionRequiredError,
 } from "../browser-permission-errors.js";
 import { isSitePermissionRequiredError, type SitePermissionRequiredError } from "../page-access.js";
+import { isRetryableRuntimeMessageError } from "../runtime-errors.js";
 
 export type ExpectedPermissionError = BrowserPermissionRequiredError | SitePermissionRequiredError;
 
@@ -30,6 +31,9 @@ export function shouldLogBackgroundMessageError(error: unknown): boolean {
   if (toExpectedPermissionErrorResponse(error) !== null) {
     return false;
   }
+  if (isRetryableRuntimeMessageError(error)) {
+    return false;
+  }
 
   return !isExpectedRecoverableBackgroundError(error);
 }
@@ -38,6 +42,7 @@ function isExpectedRecoverableBackgroundError(error: unknown): boolean {
   const message = getErrorMessage(error).toLowerCase();
   return (
     message.includes("generated image asset is no longer available") ||
+    message.includes("extensions gallery cannot be scripted") ||
     /\bthread not found\b|no turns for conversation|unknown conversation/iu.test(message)
   );
 }

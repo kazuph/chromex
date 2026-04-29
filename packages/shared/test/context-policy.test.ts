@@ -173,7 +173,7 @@ describe("inferActionCards", () => {
       "summarize-video",
       "summarize-current-timestamp",
     ]);
-    expect(cards[0]?.title).toBe("영상 핵심 요약");
+    expect(cards[0]?.title).toBe("Summarize video");
     expect(cards[0]?.prompt).toContain("Chromex Demo");
     expect(cards[1]?.prompt).toContain("03:04");
   });

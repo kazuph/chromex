@@ -1,6 +1,7 @@
 import type {
   ActionCard,
   CodexAppOption,
+  CodexMcpServerOption,
   CodexModelOption,
   CodexPluginOption,
   CodexSkillOption,
@@ -16,6 +17,7 @@ import type {
   ConversationMessageAttachment,
   ConversationMessageImage,
   ConversationMessageProfile,
+  ConversationMessageStructuredInput,
   ConversationSummary,
   SavedConversation,
 } from "../types.js";
@@ -31,6 +33,7 @@ export interface SidepanelCollections {
   appServerSkills: CodexSkillOption[];
   connectedApps: CodexAppOption[];
   appServerPlugins: CodexPluginOption[];
+  mcpServers: CodexMcpServerOption[];
   recentChats: ConversationSummary[];
   serverThreads: CodexThreadSummary[];
 }
@@ -44,6 +47,7 @@ export function normalizeSidepanelCollections(input: Partial<SidepanelCollection
     appServerSkills: arrayOrEmpty(input.appServerSkills),
     connectedApps: arrayOrEmpty(input.connectedApps),
     appServerPlugins: arrayOrEmpty(input.appServerPlugins),
+    mcpServers: arrayOrEmpty(input.mcpServers),
     recentChats: arrayOrEmpty(input.recentChats),
     serverThreads: arrayOrEmpty(input.serverThreads),
   };
@@ -77,6 +81,7 @@ function normalizeMessages(messages: SavedConversation["messages"] | undefined):
     .map((message, index) => {
       const images = normalizeMessageImages(message.images);
       const attachments = normalizeMessageAttachments(message.attachments);
+      const structuredInputs = normalizeMessageStructuredInputs(message.structuredInputs);
       const normalized = {
         id: stringOrDefault(message.id, `message-${index + 1}`),
         role: message.role === "user" ? "user" : "assistant",
@@ -86,6 +91,7 @@ function normalizeMessages(messages: SavedConversation["messages"] | undefined):
         ...(message.role === "user" ? normalizeMessageProfile(message.profile) : {}),
         ...(images.length ? { images } : {}),
         ...(attachments.length ? { attachments } : {}),
+        ...(structuredInputs.length ? { structuredInputs } : {}),
         ...normalizeMessageTrace(message.trace),
       } satisfies ConversationMessage;
       return normalized;
@@ -251,6 +257,7 @@ export function serializeConversationMessagesForStorage(messages: ConversationMe
     .map((message) => {
       const images = serializeConversationImagesForStorage(message.images);
       const attachments = serializeConversationAttachmentsForStorage(message.attachments);
+      const structuredInputs = normalizeMessageStructuredInputs(message.structuredInputs);
       const trace = serializeConversationTraceForStorage(message.trace);
       return {
         id: message.id,
@@ -261,10 +268,40 @@ export function serializeConversationMessagesForStorage(messages: ConversationMe
         ...(message.role === "user" ? normalizeMessageProfile(message.profile) : {}),
         ...(images.length ? { images } : {}),
         ...(attachments.length ? { attachments } : {}),
+        ...(structuredInputs.length ? { structuredInputs } : {}),
         ...(trace.length ? { trace } : {}),
       } satisfies ConversationMessage;
     })
     .filter((message) => !isTraceOnlyProgressMessage(message));
+}
+
+export function shouldPersistConversationMessagesForStorage(messages: ConversationMessage[]): boolean {
+  return serializeConversationMessagesForStorage(messages).length > 0;
+}
+
+export function shouldApplyConversationSaveResultToActiveChat(input: {
+  saveStartedConversationId: string;
+  currentConversationId: string;
+  savedConversationId: string;
+}): boolean {
+  if (!input.saveStartedConversationId || input.savedConversationId !== input.saveStartedConversationId) {
+    return false;
+  }
+  return !input.currentConversationId || input.currentConversationId === input.saveStartedConversationId;
+}
+
+export function shouldHydrateInitConversation(input: {
+  currentConversationIdBeforeInit: string;
+  currentConversationIdNow: string;
+  payloadConversationId: string;
+}): boolean {
+  if (!input.currentConversationIdNow) {
+    return true;
+  }
+  if (input.payloadConversationId && input.payloadConversationId === input.currentConversationIdNow) {
+    return true;
+  }
+  return input.currentConversationIdNow === input.currentConversationIdBeforeInit;
 }
 
 function normalizeMessageNotice(
@@ -300,6 +337,40 @@ function serializeConversationAttachmentsForStorage(
   attachments: ConversationMessage["attachments"] | undefined,
 ): NonNullable<ConversationMessage["attachments"]> {
   return normalizeMessageAttachments(attachments);
+}
+
+function normalizeMessageStructuredInputs(
+  inputs: ConversationMessage["structuredInputs"] | undefined,
+): ConversationMessageStructuredInput[] {
+  const seen = new Set<string>();
+  return arrayOrEmpty(inputs)
+    .map((input) => {
+      const id = stringOrDefault(input.id, "").trim();
+      const name = stringOrDefault(input.name, "").trim();
+      const path = stringOrDefault(input.path, "").trim();
+      if (!id || !name || !path || seen.has(id)) {
+        return null;
+      }
+      seen.add(id);
+      const description = stringOrDefault(input.description, "").trim();
+      const iconUrl = normalizeStructuredInputIconUrl(stringOrDefault(input.iconUrl, ""));
+      return {
+        id: id.slice(0, 180),
+        type: input.type === "skill" ? "skill" : "mention",
+        name: name.slice(0, 120),
+        path: path.slice(0, 300),
+        ...(description ? { description: description.slice(0, 240) } : {}),
+        ...(iconUrl ? { iconUrl } : {}),
+      };
+    })
+    .filter((input): input is ConversationMessageStructuredInput => input !== null);
+}
+
+function normalizeStructuredInputIconUrl(value: string): string {
+  const normalized = value.trim();
+  return /^(?:https?:\/\/|chrome-extension:\/\/|data:image\/[a-z0-9.+-]+;base64,)/iu.test(normalized)
+    ? normalized.slice(0, MAX_STORED_DATA_IMAGE_URL_CHARS)
+    : "";
 }
 
 function normalizeMessageTrace(trace: ConversationMessage["trace"] | undefined): Pick<ConversationMessage, "trace"> | Record<string, never> {

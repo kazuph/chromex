@@ -18,6 +18,14 @@ describe("permission plans", () => {
     expect(toOriginPermissionPattern("chrome://extensions")).toBeNull();
   });
 
+  test("treats the Chrome extensions gallery as restricted even though it uses https", () => {
+    expect(isRestrictedBrowserUrl("https://chromewebstore.google.com/detail/example/abc")).toBe(true);
+    expect(toOriginPermissionPattern("https://chromewebstore.google.com/detail/example/abc")).toBeNull();
+    expect(isRestrictedBrowserUrl("https://chrome.google.com/webstore/detail/example/abc")).toBe(true);
+    expect(toOriginPermissionPattern("https://chrome.google.com/webstore/detail/example/abc")).toBeNull();
+    expect(isRestrictedBrowserUrl("https://chrome.google.com/search?q=codex")).toBe(false);
+  });
+
   test("requests history permission only for history search", () => {
     expect(getPermissionRequestForMessage({ type: "context.history.search" })).toEqual({
       permissions: ["history"],

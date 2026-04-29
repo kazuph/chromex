@@ -1,5 +1,5 @@
 import type { ConversationMessage } from "../types.js";
-import type { UiLocale } from "./i18n.js";
+import { getUiStrings, type UiLocale } from "./i18n.js";
 
 export function createAssistantFailureMessage(
   errorMessage: string,
@@ -7,12 +7,10 @@ export function createAssistantFailureMessage(
   id = `assistant-error-${Date.now()}`,
 ): ConversationMessage {
   const trimmed = errorMessage.trim();
+  const strings = getUiStrings(locale);
   return {
     id,
     role: "assistant",
-    text:
-      locale === "ko"
-        ? `요청을 완료하지 못했습니다.${trimmed ? ` ${trimmed}` : ""}`
-        : `I couldn't complete the request.${trimmed ? ` ${trimmed}` : ""}`,
+    text: `${strings.errors.requestFailed}${trimmed ? ` ${trimmed}` : ""}`,
   };
 }

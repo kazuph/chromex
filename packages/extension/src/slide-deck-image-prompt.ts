@@ -1,14 +1,14 @@
-import type { UiLocale } from "./sidepanel/i18n.js";
+import { getPromptOutputLanguageName } from "./ui-language.js";
 
 export interface SlideDeckImagePromptInput {
-  locale: UiLocale;
+  locale: string;
   pageTitle: string;
   pageUrl: string;
   userPrompt: string;
 }
 
 export function buildSlideDeckImagePrompt(input: SlideDeckImagePromptInput): string {
-  const outputLanguage = input.locale === "ko" ? "Korean" : "English";
+  const outputLanguage = getPromptOutputLanguageName(input.locale);
   const title = input.pageTitle.trim() || "Current page";
   const url = input.pageUrl.trim() || "unknown URL";
   const userPrompt = input.userPrompt.trim();
@@ -28,10 +28,12 @@ export function buildSlideDeckImagePrompt(input: SlideDeckImagePromptInput): str
     "- For executive-report, board, leadership, investor, or decision-meeting requests, generate the actual slide images after the storyboard. Do not return only an outline or optional image prompts.",
     "- Reference chaining is required for multi-slide generation: after slide 1 is generated, use its saved image path or preview reference and its exact image prompt as continuity input for slide 2; repeat this for every later slide.",
     "- Every slide 2+ image-generation prompt must include: Reference images/Input images = previous generated slide image, role = visual continuity reference; Previous slide prompt summary; Reused visual system = palette, typography, grid, spacing, components, and illustration/chart style.",
+    "- If the previous generated image cannot be attached as an actual image input, do not silently continue as unrelated images. Add an explicit continuity instruction inside each slide 2+ request: Deck visual system contract = same palette, typography, grid, spacing, component shapes, icon style, chart style, illustration style, lighting, depth, and overall presentation identity as slide 1.",
+    "- Before generating slide 1, define the Deck visual system contract in concrete terms. Reuse that exact contract in every later slide prompt, even when a previous image path or preview reference is also available.",
     "- The previous slide reference is for consistent deck design only. Do not copy the previous slide's content, claim, chart, or headline into the next slide unless the storyboard explicitly requires it.",
     "- Save every generated slide image and mention each saved path or image result in order.",
     "Slide design requirements:",
-    "- 16:9 presentation image, high quality, landscape layout, readable on a laptop screen.",
+    "- Aim for a presentation-friendly 16:9 landscape slide unless the user asks for a different format.",
     "- Use large typography, strong hierarchy, clean spacing, consistent visual system, and no tiny paragraphs.",
     "- Each slide should have one clear title, one core message, and only source-grounded supporting evidence.",
     "- Prefer diagrams, process flows, comparison layouts, timelines, and insight cards over generic posters.",

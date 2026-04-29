@@ -1,4 +1,5 @@
 import type { UiLocale } from "./i18n.js";
+import { getUiStrings } from "./i18n.js";
 
 export type AttachmentMenuAction =
   | "add-files"
@@ -16,32 +17,32 @@ export interface AttachmentMenuItem {
 }
 
 export function listAttachmentMenuItems(locale: UiLocale): AttachmentMenuItem[] {
-  const ko = locale === "ko";
+  const strings = getUiStrings(locale);
   return [
     {
       action: "add-files",
-      label: ko ? "사진 및 파일 추가" : "Add photos and files",
+      label: strings.actions.attachFiles,
       icon: "paperclip",
       section: "primary",
       enabled: true,
     },
     {
       action: "attach-tabs",
-      label: ko ? "탭 첨부" : "Attach tabs",
+      label: strings.actions.attachTabs,
       icon: "video",
       section: "primary",
       enabled: true,
     },
     {
       action: "attach-screenshot",
-      label: ko ? "스크린샷 첨부" : "Attach screenshot",
+      label: strings.actions.attachScreenshot,
       icon: "scan",
       section: "primary",
       enabled: true,
     },
     {
       action: "saved-prompts",
-      label: ko ? "저장된 프롬프트" : "Saved prompts",
+      label: strings.actions.savedPrompts,
       icon: "bookmark",
       section: "primary",
       enabled: true,

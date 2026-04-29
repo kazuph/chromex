@@ -39,8 +39,10 @@ function parseSeekTimestamp(value: string): number | null {
   return first * 60 + second;
 }
 
+const APPROXIMATE_CLOCK_TIME_SUFFIXES = [String.fromCodePoint(0xacbd)];
+
 function hasApproximateClockTimeSuffix(value: string, timestampEndIndex: number): boolean {
-  return /^\s*경/u.test(value.slice(timestampEndIndex));
+  return APPROXIMATE_CLOCK_TIME_SUFFIXES.some((suffix) => value.slice(timestampEndIndex).trimStart().startsWith(suffix));
 }
 
 function renderEscapedTextWithTimestamps(value: string, options: RenderMessageContentOptions): string {
@@ -79,7 +81,33 @@ function renderEscapedTextWithTimestamps(value: string, options: RenderMessageCo
 
 function isSafeMarkdownLinkUrl(value: string): boolean {
   const normalized = value.trim();
-  return /^(?:https?:\/\/|mailto:)/iu.test(normalized);
+  return /^(?:https?:\/\/|mailto:)/iu.test(normalized) || isSafeLocalPdfPath(normalized);
+}
+
+function formatSafeMarkdownLinkHref(value: string): string {
+  const normalized = value.trim();
+  if (isSafeLocalPdfPath(normalized)) {
+    return localPdfPathToFileUrl(normalized);
+  }
+  return normalized;
+}
+
+function isSafeLocalPdfPath(value: string): boolean {
+  return (
+    /^file:\/\/\/.+\.pdf$/iu.test(value) ||
+    /^\/.+\.pdf$/iu.test(value) ||
+    /^[a-zA-Z]:\\.+\.pdf$/iu.test(value)
+  );
+}
+
+function localPdfPathToFileUrl(value: string): string {
+  if (value.startsWith("file:///")) {
+    return encodeURI(value);
+  }
+  if (/^[a-zA-Z]:\\/u.test(value)) {
+    return encodeURI(`file:///${value.replaceAll("\\", "/")}`);
+  }
+  return encodeURI(`file://${value}`);
 }
 
 function trimPlainUrl(value: string): { url: string; trailing: string } {
@@ -172,9 +200,10 @@ function renderInlineMarkdown(value: string, options: RenderMessageContentOption
         const urlEndIndex = value.indexOf(")", urlStartIndex + 1);
         const rawUrl = urlEndIndex > urlStartIndex ? value.slice(urlStartIndex + 1, urlEndIndex).trim() : "";
         if (rawUrl && isSafeMarkdownLinkUrl(rawUrl)) {
+          const href = formatSafeMarkdownLinkHref(rawUrl);
           flushPlain();
           parts.push(
-            `<a href="${escapeHtml(rawUrl)}" target="_blank" rel="noreferrer noopener">${renderInlineMarkdown(
+            `<a href="${escapeHtml(href)}" target="_blank" rel="noreferrer noopener">${renderInlineMarkdown(
               value.slice(index + 1, labelEndIndex),
               options,
             )}</a>`,
@@ -335,13 +364,25 @@ function renderParagraph(lines: string[], options: RenderMessageContentOptions):
   return `<p>${renderInlineMarkdown(paragraph, options)}</p>`;
 }
 
+function getOrderedListStart(lines: string[]): number {
+  const firstLine = lines.find((line) => line.trim());
+  const match = firstLine ? /^(\d+)[.)]\s+\S/u.exec(firstLine.trim()) : null;
+  const start = match ? Number.parseInt(match[1] ?? "", 10) : 1;
+  return Number.isFinite(start) && start > 0 ? start : 1;
+}
+
 function renderList(lines: string[], ordered: boolean, options: RenderMessageContentOptions): string {
   const items = lines
     .map((line) => line.replace(ordered ? /^\d+[.)]\s+/u : /^(?:[-*+])\s+/u, "").trim())
     .filter(Boolean)
     .map((line) => `<li>${renderInlineMarkdown(line, options)}</li>`)
     .join("");
-  return `<${ordered ? "ol" : "ul"}>${items}</${ordered ? "ol" : "ul"}>`;
+  if (!ordered) {
+    return `<ul>${items}</ul>`;
+  }
+  const start = getOrderedListStart(lines);
+  const startAttribute = start === 1 ? "" : ` start="${start}"`;
+  return `<ol${startAttribute}>${items}</ol>`;
 }
 
 function renderMarkdownBlocks(block: string, options: RenderMessageContentOptions): string {

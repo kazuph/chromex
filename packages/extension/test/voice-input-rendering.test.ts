@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { describe, expect, test } from "vitest";
 
 const sidepanelSource = readFileSync(resolve(process.cwd(), "src/sidepanel/index.ts"), "utf8");
+const normalizedSidepanelSource = sidepanelSource.replace(/\r\n/g, "\n");
 
 function extractFunctionBody(name: string): string {
   const start = sidepanelSource.indexOf(`function ${name}`);
@@ -29,10 +30,37 @@ describe("voice input and live action rendering", () => {
   test("separates dictation from live mode controls", () => {
     expect(sidepanelSource).toContain('id="voice-input-toggle"');
     expect(sidepanelSource).toContain('"live-toggle"');
-    expect(sidepanelSource).toContain('querySelector<HTMLButtonElement>("#live-toggle, #stop-live")');
+    expect(sidepanelSource).toContain("function bindComposerPrimaryActionButton");
+    expect(sidepanelSource).toContain("function toggleRealtimeVoiceFromComposer");
     expect(sidepanelSource).toContain('resolveComposerPrimaryAction');
+    expect(sidepanelSource).toContain("didComposerPrimaryActionChangeForDraftInput");
     expect(sidepanelSource).toContain('renderUiIcon("audio-lines")');
     expect(sidepanelSource).not.toContain('id="voice-toggle"');
+  });
+
+  test("updates live/send action swaps without re-rendering the composer", () => {
+    expect(sidepanelSource).toContain("function syncComposerPrimaryActionButton");
+    expect(normalizedSidepanelSource).not.toContain(`if (primaryActionChanged) {
+      renderSync();
+      return;
+    }`);
+    expect(normalizedSidepanelSource).toContain(`if (primaryActionChanged) {
+      syncComposerPrimaryActionButton();
+    }`);
+  });
+
+  test("reuses composer autosize style metrics while the textarea DOM is stable", () => {
+    const resizeBody = extractFunctionBody("resizeComposerTextarea");
+    const firstRenderSyncIndex = sidepanelSource.indexOf("renderSync();");
+    const metricsCacheIndex = sidepanelSource.indexOf("const composerTextareaAutosizeMetricsByElement");
+
+    expect(sidepanelSource).toContain("composerTextareaAutosizeMetricsByElement");
+    expect(sidepanelSource).toContain("function getComposerTextareaAutosizeMetrics");
+    expect(metricsCacheIndex).toBeGreaterThanOrEqual(0);
+    expect(firstRenderSyncIndex).toBeGreaterThanOrEqual(0);
+    expect(metricsCacheIndex).toBeLessThan(firstRenderSyncIndex);
+    expect(resizeBody).toContain("getComposerTextareaAutosizeMetrics(target)");
+    expect(resizeBody).not.toContain("getComputedStyle(target)");
   });
 
   test("composer dictation updates the draft instead of sending prompts", () => {

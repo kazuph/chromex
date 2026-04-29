@@ -61,6 +61,14 @@ describe("background error responses", () => {
     expect(shouldLogBackgroundMessageError(new Error("Generated image asset is no longer available."))).toBe(false);
   });
 
+  test("keeps automatic tab-frame detachments out of noisy background logs", () => {
+    expect(shouldLogBackgroundMessageError(new Error("Frame with ID 0 was removed."))).toBe(false);
+  });
+
+  test("keeps Chrome extensions gallery script restrictions out of noisy background logs", () => {
+    expect(shouldLogBackgroundMessageError(new Error("The extensions gallery cannot be scripted."))).toBe(false);
+  });
+
   test("keeps unexpected errors visible in diagnostics", () => {
     expect(toExpectedPermissionErrorResponse(new Error("boom"))).toBeNull();
     expect(shouldLogBackgroundMessageError(new Error("boom"))).toBe(true);

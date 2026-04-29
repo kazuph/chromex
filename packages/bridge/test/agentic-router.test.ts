@@ -144,10 +144,17 @@ describe("agentic router helpers", () => {
     expect(prompt).toContain("summarize this post/article/page/text");
     expect(prompt).toContain("browserControl");
     expect(prompt).toContain("dom | playwright | computer-use");
+    expect(prompt).toContain("preconditions");
+    expect(prompt).toContain("external-research");
+    expect(prompt).toContain("content-generation");
     expect(prompt).toContain("Current extension executes safe current-page DOM actions directly");
-    expect(prompt).toContain("Use playwright only when");
+    expect(prompt).toContain("browserControl.surface=active-tab");
+    expect(prompt).toContain("Use playwright with surface=new-tab only when");
     expect(prompt).toContain("Use computer-use only when");
     expect(prompt).toContain("browserAutomationCapabilities.playwright is true");
+    expect(prompt).toContain("structuredInputIds");
+    expect(prompt).toContain("availableStructuredInputs");
+    expect(prompt).toContain("prefer the matching app, plugin, or MCP structured input over browser automation");
     expect(prompt).toContain("Use image-generate when the user wants a new generated image");
     expect(prompt).toContain("If the user provides, pastes, references, or says they will give a prompt and asks to generate/create/render an image from it");
     expect(prompt).toContain("When exactly one uploaded image is present");
@@ -160,6 +167,38 @@ describe("agentic router helpers", () => {
     expect(prompt).not.toContain('If the user says "this image"');
     expect(prompt).not.toContain('"이 이미지"');
     expect(prompt).not.toContain("SECRET_BASE64_IMAGE_DATA");
+  });
+
+  test("exposes only structured input metadata to the route planner", () => {
+    const prompt = createAgenticRoutePrompt({
+      ...input,
+      availableStructuredInputs: [
+        {
+          id: "gmail",
+          type: "mention",
+          name: "Gmail",
+          path: "app://gmail",
+          description: "Read and manage Gmail",
+          token: "$gmail",
+        },
+        {
+          id: "mcp:google-calendar",
+          type: "mention",
+          name: "Google Calendar",
+          path: "mcp://google-calendar",
+          description: "Manage calendar events",
+          token: "$google-calendar",
+        },
+      ],
+    });
+
+    expect(prompt).toContain('"id": "gmail"');
+    expect(prompt).toContain('"name": "Gmail"');
+    expect(prompt).toContain('"path": "app://gmail"');
+    expect(prompt).toContain('"id": "mcp:google-calendar"');
+    expect(prompt).toContain('"path": "mcp://google-calendar"');
+    expect(prompt).not.toContain("$gmail");
+    expect(prompt).not.toContain("$google-calendar");
   });
 
   test("extracts JSON route output even when the model wraps it in prose", () => {

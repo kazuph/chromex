@@ -12,6 +12,7 @@ import {
   toSeekActionId,
 } from "../src/adapters/youtube.js";
 import { inferActionCardsForOpenTab } from "../src/background/site-suggestions.js";
+import { getUiStrings } from "../src/sidepanel/i18n.js";
 import {
   createYouTubeCurrentMomentPrompt,
   formatYouTubeMomentTimestamp,
@@ -55,7 +56,8 @@ describe("youtube helpers", () => {
     });
 
     expect(prompt).toContain("1:02:03");
-    expect(prompt).toContain("3723초");
+    expect(prompt).toContain("3723 seconds");
+    expect(prompt).toContain("Answer in Korean");
     expect(prompt).toContain("State of the Claw");
     expect(prompt).toContain("Peter Steinberger");
   });
@@ -96,6 +98,35 @@ describe("youtube helpers", () => {
     expect(cards.map((card) => card.id)).toContain("youtube-summary-question");
     expect(cards[0]?.title).toBe("영상 핵심 요약");
     expect(cards[0]?.prompt).toContain("A useful video");
+  });
+
+  test("does not pin YouTube suggestions to Korean when the UI locale is different", () => {
+    const cards = inferActionCardsForOpenTab(
+      {
+        title: "A useful video - YouTube",
+        url: "https://www.youtube.com/watch?v=abc",
+      },
+      "en-US",
+    );
+
+    expect(cards.map((card) => card.title)).toEqual(
+      expect.arrayContaining(["Summarize video", "Explain this moment", "Chapter notes"]),
+    );
+    expect(cards.map((card) => card.title).join(" ")).not.toContain("영상");
+  });
+
+  test("keeps non-English non-Korean YouTube prompts in the selected output language", () => {
+    const cards = inferActionCardsForOpenTab(
+      {
+        title: "A useful video - YouTube",
+        url: "https://www.youtube.com/watch?v=abc",
+      },
+      "ja",
+    );
+
+    expect(cards[0]?.title).toBe(getUiStrings("ja").actionCards["youtube-summary-question"]);
+    expect(cards[0]?.prompt).toContain("Answer in the user's selected UI language (ja).");
+    expect(cards.map((card) => card.title).join(" ")).not.toContain("영상");
   });
 
   test("extracts visible YouTube transcript DOM segments with timestamps", () => {

@@ -51,7 +51,6 @@ describe("voice reconnect policy", () => {
       'unexpected status 404 Not Found: {"detail":"Not Found"}, url: https://chatgpt.com/backend-api/codex/realtime/calls',
       "failed to connect realtime websocket: HTTP error: 403 Forbidden",
       "Failed to update the voice session.",
-      "음성 세션을 업데이트하지 못했습니다.",
     ]) {
       expect(
         shouldAutoReconnectVoice({

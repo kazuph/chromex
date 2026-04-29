@@ -5,6 +5,7 @@ const TRANSIENT_DISCONNECT_PATTERNS = [
   /receiving end does not exist/i,
   /message port closed before a response was received/i,
   /extension context invalidated/i,
+  /frame with id \d+ was removed/i,
 ];
 
 const HOST_ACCESS_PATTERNS = [

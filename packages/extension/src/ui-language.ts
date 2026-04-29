@@ -158,6 +158,12 @@ export function getTranslatedUiLocale(locale: UiLocale | string | undefined): Tr
   return normalizeSupportedLocale(locale) ?? detectUiLocale(locale);
 }
 
+export function getPromptOutputLanguageName(locale: UiLocale | string | undefined): string {
+  const translatedLocale = getTranslatedUiLocale(locale);
+  const option = SUPPORTED_UI_LANGUAGE_OPTIONS.find((item) => item.locale === translatedLocale);
+  return option?.englishName ?? "English";
+}
+
 export function isRtlUiLocale(locale: UiLocale | string | undefined): boolean {
   const normalized = normalizeSupportedLocale(locale);
   return normalized ? RTL_LOCALES.has(normalized) : false;
@@ -165,15 +171,31 @@ export function isRtlUiLocale(locale: UiLocale | string | undefined): boolean {
 
 export function formatUiLanguageOptionLabel(option: UiLanguageOption, uiLocale: UiLocale | string): string {
   if (option.locale === "auto") {
-    return getTranslatedUiLocale(uiLocale) === "ko" ? option.koreanName : option.englishName;
-  }
-  if (getTranslatedUiLocale(uiLocale) === "ko") {
-    return `${option.nativeName} · ${option.koreanName}`;
-  }
-  if (option.nativeName === option.englishName) {
     return option.nativeName;
   }
-  return `${option.nativeName} · ${option.englishName}`;
+  const uiLanguageName = getLocalizedLanguageName(option, uiLocale);
+  if (option.nativeName === uiLanguageName) {
+    return option.nativeName;
+  }
+  return `${option.nativeName} · ${uiLanguageName}`;
+}
+
+function getLocalizedLanguageName(option: UiLanguageOption, uiLocale: UiLocale | string): string {
+  if (option.locale === "auto") {
+    return option.nativeName;
+  }
+
+  try {
+    const displayNames = new Intl.DisplayNames([getTranslatedUiLocale(uiLocale)], { type: "language" });
+    const localized = displayNames.of(option.locale);
+    if (localized) {
+      return localized;
+    }
+  } catch {
+    // Some embedded Chromium builds can lack Intl.DisplayNames data for a locale.
+  }
+
+  return option.englishName;
 }
 
 function normalizeSupportedLocale(value: unknown): UiLocale | null {

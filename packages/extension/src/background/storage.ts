@@ -238,7 +238,7 @@ export async function getCurrentConversation(): Promise<SavedConversation | null
 }
 
 export async function createConversation(profileId: string, model: string): Promise<SavedConversation> {
-  const conversation: SavedConversation = {
+  return {
     id: crypto.randomUUID(),
     title: "New chat",
     profileId,
@@ -251,9 +251,6 @@ export async function createConversation(profileId: string, model: string): Prom
     readStrategyOverride: "auto",
     updatedAt: Date.now(),
   };
-  await saveConversation(conversation);
-  await setCurrentConversationId(conversation.id);
-  return conversation;
 }
 
 export async function saveConversation(conversation: SavedConversation): Promise<SavedConversation> {
@@ -264,6 +261,14 @@ export async function saveConversation(conversation: SavedConversation): Promise
     title: buildConversationTitle(conversation),
     updatedAt: Date.now(),
   };
+  if (!shouldPersistConversationInHistory(nextConversation)) {
+    const remaining = conversations.filter((item) => item.id !== conversation.id);
+    await area.set({ [STORAGE_KEYS.conversations]: prepareConversationsForStorage(remaining) });
+    if ((await getCurrentConversationId()) === conversation.id) {
+      await setCurrentConversationId(null);
+    }
+    return nextConversation;
+  }
   const next = prepareConversationsForStorage([
     nextConversation,
     ...conversations.filter((item) => item.id !== conversation.id),
@@ -380,6 +385,7 @@ export function prepareConversationsForStorage(
 ): SavedConversation[] {
   const sanitized = conversations
     .map((conversation) => sanitizeConversationForStorage(conversation, options))
+    .filter(shouldPersistConversationInHistory)
     .slice(0, options.aggressive ? 8 : 20);
   const next: SavedConversation[] = [];
   for (const conversation of sanitized) {
@@ -393,6 +399,10 @@ export function prepareConversationsForStorage(
     next.push(conversation);
   }
   return next;
+}
+
+export function shouldPersistConversationInHistory(conversation: SavedConversation): boolean {
+  return (conversation.messages ?? []).length > 0;
 }
 
 export function sanitizeConversationForStorage(

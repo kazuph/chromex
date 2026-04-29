@@ -183,7 +183,7 @@ export function createSitePayload(tab: Pick<{ title: string; url: string }, "tit
   if (hostname === "mail.google.com") {
     return { platform: "gmail", title };
   }
-  if (isKoreanMailHost(hostname)) {
+  if (isRegionalMailHost(hostname)) {
     return { platform: "korean-mail", title, host: hostname };
   }
   if (hostname === "docs.google.com") {
@@ -239,16 +239,16 @@ export function createSitePayload(tab: Pick<{ title: string; url: string }, "tit
   if (isKanbanHost(hostname)) {
     return { platform: inferKanbanPlatform(hostname), title, host: hostname };
   }
-  if (isKoreanWritingHost(hostname)) {
+  if (isRegionalWritingHost(hostname)) {
     return { platform: "korean-writing", title, host: hostname };
   }
-  if (isKoreanWorkHost(hostname)) {
+  if (isRegionalWorkHost(hostname)) {
     return { platform: "korean-work", title, host: hostname };
   }
-  if (isKoreanCommunityHost(hostname)) {
+  if (isRegionalCommunityHost(hostname)) {
     return { platform: "korean-community", title, host: hostname };
   }
-  if (isKoreanHiringHost(hostname)) {
+  if (isRegionalHiringHost(hostname)) {
     return { platform: "korean-hiring", title, host: hostname };
   }
   if (isNewsHost(hostname)) {
@@ -256,7 +256,7 @@ export function createSitePayload(tab: Pick<{ title: string; url: string }, "tit
       platform: "news",
       title,
       host: hostname,
-      region: isKoreanNewsHost(hostname) ? "kr" : "global",
+      region: isRegionalNewsHost(hostname) ? "kr" : "global",
     };
   }
   if (hostname === "figma.com") {
@@ -298,7 +298,7 @@ function isShoppingHost(hostname: string): boolean {
   return (hostname.endsWith("naver.com") && hostname.startsWith("shopping.")) || matchesAnyHost(hostname, SHOPPING_HOST_SUFFIXES);
 }
 
-function isKoreanMailHost(hostname: string): boolean {
+function isRegionalMailHost(hostname: string): boolean {
   return matchesAnyHost(hostname, KOREAN_MAIL_HOSTS);
 }
 
@@ -356,27 +356,27 @@ function inferKanbanPlatform(hostname: string): string {
   return "clickup";
 }
 
-function isKoreanWritingHost(hostname: string): boolean {
+function isRegionalWritingHost(hostname: string): boolean {
   return matchesAnyHost(hostname, KOREAN_WRITING_HOSTS);
 }
 
-function isKoreanWorkHost(hostname: string): boolean {
+function isRegionalWorkHost(hostname: string): boolean {
   return matchesAnyHost(hostname, KOREAN_WORK_HOSTS);
 }
 
-function isKoreanCommunityHost(hostname: string): boolean {
+function isRegionalCommunityHost(hostname: string): boolean {
   return matchesAnyHost(hostname, KOREAN_COMMUNITY_HOSTS);
 }
 
-function isKoreanHiringHost(hostname: string): boolean {
+function isRegionalHiringHost(hostname: string): boolean {
   return matchesAnyHost(hostname, KOREAN_HIRING_HOSTS);
 }
 
 function isNewsHost(hostname: string): boolean {
-  return isKoreanNewsHost(hostname) || isGlobalNewsHost(hostname);
+  return isRegionalNewsHost(hostname) || isGlobalNewsHost(hostname);
 }
 
-function isKoreanNewsHost(hostname: string): boolean {
+function isRegionalNewsHost(hostname: string): boolean {
   return matchesAnyHost(hostname, KOREAN_NEWS_HOSTS);
 }
 

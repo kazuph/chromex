@@ -58,4 +58,11 @@ describe("voice message rendering", () => {
     expect(readFinalDeclaration(".message-card.user.voice-message .voice-transcript-content", "font-size")).toBe("16px");
     expect(readFinalDeclaration(".message-card.user.voice-message .voice-transcript-content", "line-height")).toBe("1.58");
   });
+
+  test("right-aligns the live voice duration with the user message edge", () => {
+    expect(readFinalDeclaration(".voice-message-meta.user", "align-self")).toBe("flex-end");
+    expect(readFinalDeclaration(".voice-message-meta.user", "justify-content")).toBe("flex-end");
+    expect(readFinalDeclaration(".voice-message-meta.user", "width")).toBe("100%");
+    expect(readFinalDeclaration(".voice-message-meta.user", "padding-right")).toBe("8px");
+  });
 });

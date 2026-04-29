@@ -6,6 +6,13 @@ import {
   getPromptActivityLabel,
   getPromptActivitySteps,
 } from "../src/sidepanel/prompt-activity.js";
+import {
+  getEffectivePromptActivityForActiveWork,
+  promotePromptActivityForAssistantProgress,
+  promotePromptActivityForTurnActivity,
+  shouldClearPromptActivityOnMessageCompleted,
+  shouldClearPromptActivityOnTurnCompleted,
+} from "../src/sidepanel/prompt-activity-lifecycle.js";
 
 describe("prompt activity labels", () => {
   test("renders Korean progress labels for context and response phases", () => {
@@ -37,7 +44,6 @@ describe("prompt activity labels", () => {
       { id: "preparing-image", label: "대상", state: "done" },
       { id: "editing-image", label: "편집", state: "done" },
       { id: "rendering-image-preview", label: "미리보기", state: "active" },
-      { id: "applying-image-preview", label: "적용", state: "pending" },
     ]);
   });
 
@@ -54,5 +60,65 @@ describe("prompt activity labels", () => {
       ),
     ).toBe("Reconnecting... 3/5");
     expect(getPromptActivityDetail("reconnecting", "ko")).toContain("자동으로 다시 시도");
+  });
+
+  test("keeps response progress visible while an active turn is still running", () => {
+    const activeTurn = { threadId: "thread-1", turnId: "turn-1" };
+    expect(
+      promotePromptActivityForAssistantProgress({
+        current: { clientRequestId: "prompt-1", phase: "waiting-for-codex" },
+        activeTurn,
+      }),
+    ).toEqual({ clientRequestId: "prompt-1", phase: "responding" });
+    expect(
+      shouldClearPromptActivityOnMessageCompleted({
+        current: { clientRequestId: "prompt-1", phase: "responding" },
+        activeTurn,
+      }),
+    ).toBe(false);
+    expect(
+      shouldClearPromptActivityOnTurnCompleted({
+        current: { clientRequestId: "prompt-1", phase: "responding" },
+        activeTurn,
+        completedTurnId: "turn-1",
+      }),
+    ).toBe(true);
+  });
+
+  test("restores a response progress indicator for tool-only activity events", () => {
+    expect(
+      promotePromptActivityForAssistantProgress({
+        current: null,
+        activeTurn: { threadId: "thread-1", turnId: "turn-tool-only" },
+      }),
+    ).toEqual({ clientRequestId: "turn:turn-tool-only", phase: "responding" });
+  });
+
+  test("derives a visible progress indicator when a tool turn is active but prompt activity was cleared", () => {
+    expect(
+      getEffectivePromptActivityForActiveWork({
+        current: null,
+        activeTurn: { threadId: "thread-1", turnId: "turn-tool-only" },
+      }),
+    ).toEqual({ clientRequestId: "turn:turn-tool-only", phase: "responding" });
+  });
+
+  test("routes image-generation tool activity to image progress instead of streaming response", () => {
+    expect(
+      promotePromptActivityForTurnActivity({
+        current: { clientRequestId: "prompt-image-1", phase: "responding" },
+        activeTurn: { threadId: "thread-1", turnId: "turn-image" },
+        kind: "image",
+        status: "running",
+      }),
+    ).toEqual({ clientRequestId: "prompt-image-1", phase: "editing-image" });
+    expect(
+      promotePromptActivityForTurnActivity({
+        current: { clientRequestId: "prompt-image-1", phase: "editing-image" },
+        activeTurn: { threadId: "thread-1", turnId: "turn-image" },
+        kind: "image",
+        status: "completed",
+      }),
+    ).toEqual({ clientRequestId: "prompt-image-1", phase: "rendering-image-preview" });
   });
 });

@@ -20,7 +20,7 @@ const HIGH_VALUE_CONTENT_SELECTORS = [
   '[data-legacy-message-id]',
   '[aria-label*="message" i]',
   '[aria-label*="email" i]',
-  '[aria-label*="메일" i]',
+  '[aria-label*="mail" i]',
   '[aria-label*="conversation" i]',
   '[aria-label*="thread" i]',
   '[aria-label*="channel" i]',

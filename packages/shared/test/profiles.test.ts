@@ -79,6 +79,9 @@ describe("profile templates", () => {
     expect(slideMaker.systemPrompt).toContain("one representative slide for each distinct part");
     expect(slideMaker.systemPrompt).toContain("Reference images or Input images");
     expect(slideMaker.systemPrompt).toContain("Previous slide prompt summary");
+    expect(slideMaker.systemPrompt).toContain("Reference image unavailable");
+    expect(slideMaker.systemPrompt).toContain("deck visual system contract");
+    expect(slideMaker.systemPrompt).toContain("same palette, typography, grid, spacing, component shapes");
     expect(slideMaker.preferredActions).toContain("create-slide-images");
   });
 });

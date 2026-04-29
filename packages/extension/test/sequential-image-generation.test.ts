@@ -17,4 +17,11 @@ describe("sequential image generation UI", () => {
     expect(sidepanelSource).toContain("isSlideImageGenerationActionCard");
     expect(sidepanelSource).toContain("createSlideImagesFromCurrentPage");
   });
+
+  test("keeps direct image generation results scoped to the originating conversation", () => {
+    expect(sidepanelSource).toContain("promptRequestConversationIds.set(clientRequestId, conversationIdAtStart)");
+    expect(sidepanelSource).toContain("conversationId: conversationIdAtStart");
+    expect(sidepanelSource).toContain("hydrateGeneratedImagesForDetachedConversation");
+    expect(backgroundSource).toContain("conversationId: normalizeOptionalConversationId(conversationIdInput)");
+  });
 });

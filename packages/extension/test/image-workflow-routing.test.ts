@@ -3,6 +3,8 @@ import { describe, expect, test } from "vitest";
 import {
   resolveUploadedImageReferenceInputs,
   resolveUploadedImageEditInput,
+  shouldHandleAgenticImageEditWorkflow,
+  shouldHandleAgenticImageGenerationWorkflow,
   shouldShowPendingImageWorkflowPlaceholder,
   shouldSuppressDefaultCurrentPageContextForImageGeneration,
   shouldDeferPageContextCollectionForImageWorkflow,
@@ -43,8 +45,34 @@ const basePlan: AgenticRoutePlan = {
 
 describe("image workflow routing", () => {
   test("marks actionable image edits as needing an immediate loading placeholder", () => {
+    expect(shouldHandleAgenticImageEditWorkflow(basePlan)).toBe(true);
     expect(shouldShowPendingImageWorkflowPlaceholder(basePlan)).toBe(true);
     expect(getPromptImageWorkflowKind(basePlan)).toBe("image-edit");
+  });
+
+  test("rejects inconsistent image-edit plans for current-page summaries", () => {
+    const summarizePlan: AgenticRoutePlan = {
+      ...basePlan,
+      task: "image-edit",
+      intent: {
+        summary: "Summarize the current page.",
+        action: "summarize",
+        target: "current-page",
+        constraints: [],
+        needsClarification: false,
+      },
+      imageEdit: {
+        shouldEdit: true,
+        target: "page-image",
+        prompt: "Summarize the current page.",
+        reason: "Stale image edit route leaked from a previous turn.",
+      },
+    };
+
+    expect(shouldHandleAgenticImageEditWorkflow(summarizePlan)).toBe(false);
+    expect(shouldShowPendingImageWorkflowPlaceholder(summarizePlan)).toBe(false);
+    expect(getPromptImageWorkflowKind(summarizePlan)).toBeNull();
+    expect(shouldDeferPageContextCollectionForImageWorkflow(summarizePlan)).toBe(false);
   });
 
   test("does not show image placeholders for ambiguous or skipped image plans", () => {
@@ -114,7 +142,35 @@ describe("image workflow routing", () => {
 
     expect(shouldShowPendingImageWorkflowPlaceholder(plan)).toBe(true);
     expect(getPromptImageWorkflowKind(plan)).toBe("generated-image");
+    expect(shouldHandleAgenticImageGenerationWorkflow(plan)).toBe(true);
     expect(shouldSuppressDefaultCurrentPageContextForImageGeneration(plan)).toBe(true);
+  });
+
+  test("rejects inconsistent image-generation plans unless intent executes generation", () => {
+    const plan: AgenticRoutePlan = {
+      ...basePlan,
+      task: "image-generate",
+      contextRequests: [{ source: "current-page", readStrategy: "dom", required: true, reason: "Summarize page text." }],
+      requiresVision: false,
+      pageReadStrategy: "dom",
+      intent: {
+        summary: "Summarize the current page.",
+        action: "summarize",
+        target: "current-page",
+        constraints: [],
+        needsClarification: false,
+      },
+      imageEdit: {
+        shouldEdit: false,
+        target: "none",
+        reason: "No image edit requested.",
+      },
+    };
+
+    expect(shouldHandleAgenticImageGenerationWorkflow(plan)).toBe(false);
+    expect(shouldShowPendingImageWorkflowPlaceholder(plan)).toBe(false);
+    expect(getPromptImageWorkflowKind(plan)).toBeNull();
+    expect(shouldSuppressDefaultCurrentPageContextForImageGeneration(plan)).toBe(false);
   });
 
   test("defers DOM page context collection for visible page image edits", () => {

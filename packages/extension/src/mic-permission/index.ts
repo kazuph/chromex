@@ -2,40 +2,12 @@ import {
   classifyMicrophonePermissionError,
   type MicrophonePermissionWindowResult,
 } from "../sidepanel/voice-permissions.js";
+import { getUiStrings } from "../sidepanel/i18n.js";
+import { getTranslatedUiLocale } from "../ui-language.js";
 
 const query = new URLSearchParams(window.location.search);
-const locale = query.get("locale") === "ko" || navigator.language.toLowerCase().startsWith("ko") ? "ko" : "en";
-
-const STRINGS = {
-  en: {
-    eyebrow: "Codex Live Voice",
-    title: "Allow microphone access",
-    copy: "Chrome needs microphone access before Codex can start a live voice conversation.",
-    button: "Allow microphone",
-    idle: "Click the button, then choose Allow in the Chrome permission prompt.",
-    requesting: "Waiting for Chrome microphone permission…",
-    granted: "Microphone access is ready. Returning to Codex…",
-    denied: "Microphone access is blocked. Allow this extension in Chrome microphone settings, then try again.",
-    dismissed: "The permission prompt was closed. Click the button again and choose Allow.",
-    unavailable: "No usable microphone was found.",
-    error: "Could not request microphone access.",
-  },
-  ko: {
-    eyebrow: "Codex 라이브 음성",
-    title: "마이크 접근 허용",
-    copy: "Codex가 라이브 음성 대화를 시작하려면 Chrome 마이크 권한이 필요합니다.",
-    button: "마이크 허용",
-    idle: "버튼을 누른 뒤 Chrome 권한 팝업에서 허용을 선택해 주세요.",
-    requesting: "Chrome 마이크 권한을 기다리는 중입니다…",
-    granted: "마이크 권한이 준비되었습니다. Codex로 돌아갑니다…",
-    denied: "마이크 접근이 차단되어 있습니다. Chrome 마이크 설정에서 이 확장 프로그램을 허용한 뒤 다시 시도해 주세요.",
-    dismissed: "권한 팝업이 닫혔습니다. 버튼을 다시 누르고 허용을 선택해 주세요.",
-    unavailable: "사용 가능한 마이크를 찾지 못했습니다.",
-    error: "마이크 권한을 요청하지 못했습니다.",
-  },
-} as const;
-
-const strings = STRINGS[locale];
+const locale = getTranslatedUiLocale(query.get("locale") || navigator.language);
+const strings = getUiStrings(locale).micPermission;
 document.documentElement.lang = locale;
 
 document.querySelectorAll<HTMLElement>("[data-i18n]").forEach((element) => {

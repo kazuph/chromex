@@ -67,4 +67,10 @@ describe("profile question card renderer", () => {
     expect(sidepanelSource).toContain("renderPendingProfileQuestionCard({");
     expect(sidepanelSource).not.toContain("function renderPendingProfileQuestion(");
   });
+
+  test("forces a full render when a streamed profile question card is created", () => {
+    expect(sidepanelSource).toContain("let profileQuestionCardRenderRequested = false;");
+    expect(sidepanelSource).toContain("profileQuestionCardRenderRequested = true;");
+    expect(sidepanelSource).toContain("if (profileQuestionCardRenderRequested) {");
+  });
 });

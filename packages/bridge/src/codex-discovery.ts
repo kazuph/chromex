@@ -184,16 +184,21 @@ function commonCodexCandidates(
   if (platformName === "win32") {
     const localAppData = readEnvValue(env, "LOCALAPPDATA") || win32.resolve(homeDirectory, "AppData", "Local");
     const appData = readEnvValue(env, "APPDATA") || win32.resolve(homeDirectory, "AppData", "Roaming");
+    const fallbackLocalAppData = win32.resolve(homeDirectory, "AppData", "Local");
+    const fallbackAppData = win32.resolve(homeDirectory, "AppData", "Roaming");
     const programFiles = readEnvValue(env, "ProgramFiles");
     const programFilesX86 = readEnvValue(env, "ProgramFiles(x86)");
-    return [
+    return dedupeCandidates([
       win32.resolve(localAppData, "Programs", "Codex", "codex.exe"),
       win32.resolve(appData, "npm", "codex.cmd"),
       win32.resolve(appData, "npm", "codex.exe"),
+      win32.resolve(fallbackLocalAppData, "Programs", "Codex", "codex.exe"),
+      win32.resolve(fallbackAppData, "npm", "codex.cmd"),
+      win32.resolve(fallbackAppData, "npm", "codex.exe"),
       win32.resolve(homeDirectory, "scoop", "shims", "codex.cmd"),
       ...(programFiles ? [win32.resolve(programFiles, "Codex", "codex.exe")] : []),
       ...(programFilesX86 ? [win32.resolve(programFilesX86, "Codex", "codex.exe")] : []),
-    ];
+    ]);
   }
 
   return [
@@ -207,6 +212,10 @@ function commonCodexCandidates(
     posix.resolve(homeDirectory, ".local/bin/codex"),
     posix.resolve(homeDirectory, "bin/codex"),
   ];
+}
+
+function dedupeCandidates(candidates: string[]): string[] {
+  return [...new Set(candidates)];
 }
 
 function getPathApi(platformName: NodeJS.Platform): typeof posix | typeof win32 {

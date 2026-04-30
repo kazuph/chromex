@@ -236,6 +236,12 @@ export interface ConversationMessageTraceItem {
   timestampMs: number;
 }
 
+export interface ConversationMessageContext {
+  platform?: string;
+  url?: string;
+  title?: string;
+}
+
 export interface ConversationMessage {
   id: string;
   role: "user" | "assistant";
@@ -255,6 +261,7 @@ export interface ConversationMessage {
   structuredInputs?: ConversationMessageStructuredInput[];
   profile?: ConversationMessageProfile;
   trace?: ConversationMessageTraceItem[];
+  context?: ConversationMessageContext;
 }
 
 export interface SavedConversation {

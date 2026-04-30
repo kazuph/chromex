@@ -15,6 +15,7 @@ import type {
 import type {
   ConversationMessage,
   ConversationMessageAttachment,
+  ConversationMessageContext,
   ConversationMessageImage,
   ConversationMessageProfile,
   ConversationMessageStructuredInput,
@@ -93,6 +94,7 @@ function normalizeMessages(messages: SavedConversation["messages"] | undefined):
         ...(attachments.length ? { attachments } : {}),
         ...(structuredInputs.length ? { structuredInputs } : {}),
         ...normalizeMessageTrace(message.trace),
+        ...normalizeMessageContext(message.context),
       } satisfies ConversationMessage;
       return normalized;
     })
@@ -270,6 +272,7 @@ export function serializeConversationMessagesForStorage(messages: ConversationMe
         ...(attachments.length ? { attachments } : {}),
         ...(structuredInputs.length ? { structuredInputs } : {}),
         ...(trace.length ? { trace } : {}),
+        ...normalizeMessageContext(message.context),
       } satisfies ConversationMessage;
     })
     .filter((message) => !isTraceOnlyProgressMessage(message));
@@ -321,6 +324,28 @@ function normalizeMessageNotice(
 
 function sanitizeMessageTextForStorage(text: string): string {
   return text.replace(/data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/=]+/giu, "[stored image asset]");
+}
+
+function normalizeMessageContext(
+  context: ConversationMessage["context"] | undefined,
+): Pick<ConversationMessage, "context"> | Record<string, never> {
+  if (!context || typeof context !== "object") {
+    return {};
+  }
+  const normalized: ConversationMessageContext = {};
+  const platform = stringOrDefault(context.platform, "").trim();
+  const url = stringOrDefault(context.url, "").trim();
+  const title = stringOrDefault(context.title, "").trim();
+  if (platform) {
+    normalized.platform = platform;
+  }
+  if (url) {
+    normalized.url = url;
+  }
+  if (title) {
+    normalized.title = title;
+  }
+  return Object.keys(normalized).length ? { context: normalized } : {};
 }
 
 function isTraceOnlyProgressMessage(message: ConversationMessage): boolean {

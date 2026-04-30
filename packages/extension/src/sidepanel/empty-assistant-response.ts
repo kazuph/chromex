@@ -21,6 +21,9 @@ export function shouldShowEmptyAssistantResponseNotice(input: EmptyAssistantResp
 
   const anchorIndex = resolveEmptyResponseAnchorIndex(input.messages, input.traceMessageId, input.activeUserMessageId);
   const scopedMessages = anchorIndex >= 0 ? input.messages.slice(anchorIndex + 1) : input.messages;
+  if (scopedMessages.some((message) => hasLaterAssistantTurnWork(message, input.traceMessageId))) {
+    return false;
+  }
   return !scopedMessages.some((message) => hasAssistantResponseContent(message, input.traceMessageId));
 }
 
@@ -70,7 +73,7 @@ export function clearResolvedEmptyAssistantResponseNotices(messages: Conversatio
 
     const nextUserIndex = findNextUserMessageIndex(messages, index + 1);
     const trailingMessages = messages.slice(index + 1, nextUserIndex >= 0 ? nextUserIndex : messages.length);
-    if (!trailingMessages.some((entry) => hasAssistantResponseContent(entry, message.id))) {
+    if (!trailingMessages.some((entry) => hasAssistantResponseContent(entry, message.id) || hasLaterAssistantTurnWork(entry, message.id))) {
       continue;
     }
 
@@ -121,6 +124,10 @@ function hasAssistantResponseContent(message: ConversationMessage, traceMessageI
   return (message.images ?? []).some(
     (image) => image.src || image.assetRef || image.status === "loading" || image.status === "ready" || image.status === "error" || image.status === "deleted",
   );
+}
+
+function hasLaterAssistantTurnWork(message: ConversationMessage, traceMessageId: string): boolean {
+  return message.role === "assistant" && message.id !== traceMessageId && Boolean(message.trace?.length);
 }
 
 function findLatestUserMessage(messages: ConversationMessage[]): ConversationMessage | null {

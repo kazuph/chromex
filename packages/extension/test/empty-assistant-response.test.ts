@@ -55,6 +55,30 @@ describe("empty assistant response fallback", () => {
     ).toBe(false);
   });
 
+  test("does not show a fallback for an earlier tool-only turn when a later turn is still working", () => {
+    expect(
+      shouldShowEmptyAssistantResponseNotice({
+        messages: [
+          userMessage("user-1"),
+          {
+            id: "turn-trace-thread-1-turn-1",
+            role: "assistant",
+            text: "",
+            trace: [{ id: "tool-1", kind: "tool", title: "Tool result ready", detail: "userMessage", status: "completed", timestampMs: 1 }],
+          },
+          {
+            id: "turn-trace-thread-1-turn-2",
+            role: "assistant",
+            text: "",
+            trace: [{ id: "tool-2", kind: "tool", title: "Tool running", detail: "gmail", status: "running", timestampMs: 2 }],
+          },
+        ],
+        traceMessageId: "turn-trace-thread-1-turn-1",
+        activeUserMessageId: "user-1",
+      }),
+    ).toBe(false);
+  });
+
   test("includes selected app or plugin names in the visible reason", () => {
     const messages: ConversationMessage[] = [
       {
@@ -108,6 +132,27 @@ describe("empty assistant response fallback", () => {
         id: "assistant-response-1",
         role: "assistant",
         text: "가장 가까운 유형은 소셜 카드입니다.",
+      },
+    ];
+
+    expect(clearResolvedEmptyAssistantResponseNotices(messages)).toBe(true);
+    expect(messages.find((message) => message.id === "turn-trace-thread-1-turn-1")?.text).toBe("");
+  });
+
+  test("clears a stale empty-response notice when later turn work continues before text arrives", () => {
+    const messages: ConversationMessage[] = [
+      userMessage("user-1"),
+      {
+        id: "turn-trace-thread-1-turn-1",
+        role: "assistant",
+        text: createEmptyAssistantResponseNotice({ locale: "ko", structuredInputNames: [] }),
+        trace: [{ id: "tool-1", kind: "tool", title: "Tool result ready", detail: "userMessage", status: "completed", timestampMs: 1 }],
+      },
+      {
+        id: "turn-trace-thread-1-turn-2",
+        role: "assistant",
+        text: "",
+        trace: [{ id: "tool-2", kind: "tool", title: "Tool running", detail: "gmail", status: "running", timestampMs: 2 }],
       },
     ];
 

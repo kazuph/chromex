@@ -99,6 +99,37 @@ describe("sidepanel state normalization", () => {
     expect(conversation?.profileId).toBe("default");
   });
 
+  test("preserves message page context for YouTube timestamp rendering", () => {
+    const conversation = normalizePanelConversation({
+      id: "youtube-chat",
+      title: "YouTube chat",
+      profileId: "youtube-summarizer",
+      messages: [
+        {
+          id: "user-1",
+          role: "user",
+          text: "Summarize video",
+          context: {
+            platform: "youtube",
+            url: "https://www.youtube.com/watch?v=demo",
+            title: "Demo Video",
+          },
+        },
+      ],
+    });
+
+    expect(conversation?.messages[0]?.context).toEqual({
+      platform: "youtube",
+      url: "https://www.youtube.com/watch?v=demo",
+      title: "Demo Video",
+    });
+    expect(serializeConversationMessagesForStorage(conversation?.messages ?? [])[0]?.context).toEqual({
+      platform: "youtube",
+      url: "https://www.youtube.com/watch?v=demo",
+      title: "Demo Video",
+    });
+  });
+
   test("preserves generated image previews when hydrating conversations", () => {
     const conversation = normalizePanelConversation({
       id: "chat-2",

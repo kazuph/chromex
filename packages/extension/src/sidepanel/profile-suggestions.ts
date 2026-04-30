@@ -352,7 +352,17 @@ export function mergeProfileAndSiteSuggestionCards(
 ): ActionCard[] {
   const seen = new Set<string>();
   const merged: ActionCard[] = [];
-  for (const card of [...profileCards, ...siteCards]) {
+  const reservedSiteCount =
+    siteCards.length >= 2
+      ? Math.min(2, Math.max(0, limit - 1))
+      : Math.min(siteCards.length, limit);
+  const primaryProfileCount = Math.max(0, limit - reservedSiteCount);
+  const orderedCards = [
+    ...profileCards.slice(0, primaryProfileCount),
+    ...siteCards,
+    ...profileCards.slice(primaryProfileCount),
+  ];
+  for (const card of orderedCards) {
     if (seen.has(card.id)) {
       continue;
     }

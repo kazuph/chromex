@@ -104,6 +104,29 @@ describe("profile suggestions", () => {
     expect(getSuggestionCardSource(merged[1]!)).toBe("site");
   });
 
+  test("reserves room for multiple site-specific suggestions when profile examples are present", () => {
+    const merged = mergeProfileAndSiteSuggestionCards(
+      [
+        suggestion("profile-marketing-strategist-hooks"),
+        suggestion("profile-marketing-strategist-campaigns"),
+        suggestion("profile-marketing-strategist-outreach"),
+      ],
+      [
+        suggestion("youtube-summary-question"),
+        suggestion("youtube-current-moment-question"),
+        suggestion("youtube-chapter-notes-question"),
+      ],
+      4,
+    );
+
+    expect(merged.map((card) => card.id)).toEqual([
+      "profile-marketing-strategist-hooks",
+      "profile-marketing-strategist-campaigns",
+      "youtube-summary-question",
+      "youtube-current-moment-question",
+    ]);
+  });
+
   test("uses up to three user-defined profile suggestions", () => {
     const cards = createProfileSuggestionCards({
       profile: {
@@ -244,3 +267,13 @@ describe("profile suggestions", () => {
     expect(source).not.toMatch(/[가-힣]/u);
   });
 });
+
+function suggestion(id: string) {
+  return {
+    id,
+    title: id,
+    description: "",
+    kind: "prompt" as const,
+    prompt: `${id} prompt`,
+  };
+}

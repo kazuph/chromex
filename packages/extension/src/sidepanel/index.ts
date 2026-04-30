@@ -27,6 +27,7 @@ import { createSubmittedComposerFileAttachmentState } from "./composer-attachmen
 import { createPendingComposerDraftState, createRestoredComposerDraftState } from "./composer-draft.js";
 import { getDroppedFiles, hasComposerDropPayload } from "./composer-drop.js";
 import { isTextFirstActionCard } from "./action-card-routing.js";
+import { mergePromptResultActionCards } from "./action-card-state.js";
 import { calculateComposerTextareaAutosize } from "./composer-textarea-autosize.js";
 import { canSendComposerMessage } from "./composer-send-guard.js";
 import {
@@ -601,7 +602,7 @@ const DEFAULT_PROFILE_VISUAL_COLOR = "#8b5cf6";
 const DEFAULT_PROFILE_VISUAL_ICON = DEFAULT_PROFILE_ICON_ID;
 const MAX_PROFILE_IMAGE_BYTES = 180_000;
 const EXTERNAL_IMAGE_PREVIEW_OBJECT_URL_REVOKE_MS = 60_000;
-const EMPTY_ASSISTANT_RESPONSE_NOTICE_DELAY_MS = 900;
+const EMPTY_ASSISTANT_RESPONSE_NOTICE_DELAY_MS = 3000;
 const autoSavedImageAssetRefs = new Set<string>();
 const pendingImageWorkflowMessageIdsByRequest = new Map<string, string>();
 const completedImageWorkflowMessageIdsByRequest = new Map<string, string>();
@@ -877,8 +878,12 @@ const streamingDeltaBuffer = createStreamingDeltaBuffer(
         messageIds.push(messageId);
       }
     }
+    const clearedEmptyNotices = clearResolvedEmptyAssistantResponseNotices(state.messages);
+    if (clearedEmptyNotices) {
+      scheduleConversationPersist();
+    }
     if (state.activeView === "chat") {
-      if (profileQuestionCardRenderRequested) {
+      if (clearedEmptyNotices || profileQuestionCardRenderRequested) {
         profileQuestionCardRenderRequested = false;
         render();
       } else if (!patchStreamingAssistantMessageDoms(messageIds)) {
@@ -4546,7 +4551,7 @@ function renderConversationMessage(message: ConversationMessage): string {
       : message.delivery === "voice"
       ? renderVoiceConversationBody(message)
       : `<div class="message-content">${renderMessageContentHtml(message.text, {
-          enableYouTubeTimestampLinks: shouldRenderYouTubeTimestampLinks(),
+          enableYouTubeTimestampLinks: shouldRenderYouTubeTimestampLinksForMessage(message),
         })}</div>`;
   const cardHtml = hasTextBody || traceHtml || imageHtml || userMetaHtml
     ? `
@@ -4804,7 +4809,7 @@ function renderVoiceConversationBody(message: ConversationMessage): string {
       <span>${escapeHtml(stringsForState().labels.voiceResponse)}</span>
     </div>
     <div class="message-content voice-transcript-content">${renderMessageContentHtml(message.text, {
-      enableYouTubeTimestampLinks: shouldRenderYouTubeTimestampLinks(),
+      enableYouTubeTimestampLinks: shouldRenderYouTubeTimestampLinksForMessage(message),
     })}</div>
   `;
 }
@@ -4850,14 +4855,64 @@ function renderMessageProfileBadge(profile: ConversationMessage["profile"] | und
 }
 
 function shouldRenderYouTubeTimestampLinks(): boolean {
-  const currentTab = getCurrentTabReference();
-  if (currentTab && isYouTubeLikeUrl(currentTab.url)) {
+  if (getYouTubeContextTabReference()) {
     return true;
   }
 
-  return state.openTabOptions
-    .filter((tab) => state.selectedTabIds.includes(tab.tabId))
-    .some((tab) => isYouTubeLikeUrl(tab.url));
+  return false;
+}
+
+function shouldRenderYouTubeTimestampLinksForMessage(message: ConversationMessage): boolean {
+  if (shouldRenderYouTubeTimestampLinks()) {
+    return true;
+  }
+  if (message.context?.platform === "youtube") {
+    return true;
+  }
+  if (message.role !== "assistant") {
+    return false;
+  }
+  const index = state.messages.findIndex((entry) => entry.id === message.id);
+  const previousUserMessage = index >= 0 ? findPreviousUserMessage(index) : null;
+  return previousUserMessage?.context?.platform === "youtube" || isLikelyYouTubePromptText(previousUserMessage?.text ?? "");
+}
+
+function findPreviousUserMessage(beforeIndex: number): ConversationMessage | null {
+  for (let index = beforeIndex - 1; index >= 0; index -= 1) {
+    const message = state.messages[index];
+    if (message?.role === "user") {
+      return message;
+    }
+  }
+  return null;
+}
+
+function createMessageContextSnapshot(): ConversationMessage["context"] | undefined {
+  const youtubeTab = getYouTubeContextTabReference();
+  if (!youtubeTab) {
+    return undefined;
+  }
+  return {
+    platform: "youtube",
+    url: youtubeTab.url,
+    title: youtubeTab.title,
+  };
+}
+
+function getYouTubeContextTabReference(): OpenTabContext | null {
+  const currentTab = getCurrentTabReference();
+  if (currentTab && isYouTubeLikeUrl(currentTab.url)) {
+    return currentTab;
+  }
+  return (
+    state.openTabOptions
+      .filter((tab) => state.selectedTabIds.includes(tab.tabId))
+      .find((tab) => isYouTubeLikeUrl(tab.url)) ?? null
+  );
+}
+
+function isLikelyYouTubePromptText(text: string): boolean {
+  return /(?:youtube|youtu\.be|유튜브|동영상|영상|timestamp|타임스탬프|chapter|챕터|장면)/iu.test(text);
 }
 
 function renderMessageEditComposer(
@@ -10858,6 +10913,7 @@ async function sendPrompt(
     const submittedRequestFileAttachments = submittedFileAttachmentState.requestFileAttachments;
     state.fileAttachments = submittedFileAttachmentState.composerFileAttachments;
     const messageProfile = createMessageProfileSnapshot();
+    const messageContext = createMessageContextSnapshot();
     const submittedMessageStructuredInputs = createConversationMessageStructuredInputs(state.structuredInputs);
     const submittedPromptStructuredInputs = getPromptStructuredInputs();
     userMessageId = `user-${Date.now()}`;
@@ -10877,6 +10933,7 @@ async function sendPrompt(
       ...(submittedMessageFileAttachments.length ? { attachments: createConversationMessageAttachments(submittedMessageFileAttachments) } : {}),
       ...(submittedMessageStructuredInputs.length ? { structuredInputs: submittedMessageStructuredInputs } : {}),
       ...(messageProfile ? { profile: messageProfile } : {}),
+      ...(messageContext ? { context: messageContext } : {}),
     });
     rememberCurrentConversationSnapshot();
     renderSync();
@@ -10974,7 +11031,7 @@ async function sendPrompt(
     }
     if (result.workflow === "image-edit") {
       state.currentConversationId = result.currentConversationId ?? state.currentConversationId;
-      state.actionCards = result.actionCards;
+      state.actionCards = mergePromptResultActionCards(state.actionCards, result.actionCards);
       state.promptActivity = null;
       clearActivePromptUserMessageId();
       state.streamingAssistantMessageIds.clear();
@@ -11000,7 +11057,7 @@ async function sendPrompt(
     }
     if (result.workflow === "generated-image") {
       state.currentConversationId = result.currentConversationId ?? state.currentConversationId;
-      state.actionCards = result.actionCards;
+      state.actionCards = mergePromptResultActionCards(state.actionCards, result.actionCards);
       state.promptActivity = null;
       clearActivePromptUserMessageId();
       state.streamingAssistantMessageIds.clear();
@@ -11047,7 +11104,7 @@ async function sendPrompt(
     removePendingImageWorkflowMessage(clientRequestId);
     if (result.workflow === "browser-action") {
       state.currentConversationId = result.currentConversationId ?? state.currentConversationId;
-      state.actionCards = result.actionCards;
+      state.actionCards = mergePromptResultActionCards(state.actionCards, result.actionCards);
       state.promptActivity = null;
       clearActivePromptUserMessageId();
       state.streamingAssistantMessageIds.clear();
@@ -11078,7 +11135,7 @@ async function sendPrompt(
     state.promptActivity = null;
     state.activeTurn = acceptedActiveTurn;
     state.currentConversationId = result.currentConversationId ?? state.currentConversationId;
-    state.actionCards = result.actionCards;
+    state.actionCards = mergePromptResultActionCards(state.actionCards, result.actionCards);
     if (composer) {
       composer.value = "";
     }
@@ -11371,7 +11428,7 @@ async function createInfographicFromCurrentPage(): Promise<void> {
       return;
     }
 
-    state.actionCards = result.actionCards ?? state.actionCards;
+    state.actionCards = mergePromptResultActionCards(state.actionCards, result.actionCards);
     state.promptActivity = null;
     state.streamingAssistantMessageIds.clear();
     const streamedPreviewRefs = consumeStreamedImagePreviewRefs(clientRequestId);
@@ -11508,7 +11565,7 @@ async function createSlideImagesFromCurrentPage(prompt: string): Promise<void> {
       return;
     }
 
-    state.actionCards = result.actionCards ?? state.actionCards;
+    state.actionCards = mergePromptResultActionCards(state.actionCards, result.actionCards);
     state.promptActivity = null;
     state.streamingAssistantMessageIds.clear();
     const streamedPreviewRefs = consumeStreamedImagePreviewRefs(clientRequestId);
@@ -11740,7 +11797,9 @@ type TurnTraceActivityInput = {
 };
 
 function upsertTurnActivityTrace(activity: TurnTraceActivityInput): void {
-  if (upsertTurnActivityTraceInMessages(state.messages, activity)) {
+  const changed = upsertTurnActivityTraceInMessages(state.messages, activity);
+  const clearedEmptyNotices = clearResolvedEmptyAssistantResponseNotices(state.messages);
+  if (changed || clearedEmptyNotices) {
     scheduleConversationPersist();
   }
 }
@@ -11749,7 +11808,10 @@ function upsertTurnActivityTraceForConversation(
   conversationId: string,
   activity: TurnTraceActivityInput,
 ): void {
-  if (upsertTurnActivityTraceInMessages(getDetachedConversationMessages(conversationId), activity)) {
+  const messages = getDetachedConversationMessages(conversationId);
+  const changed = upsertTurnActivityTraceInMessages(messages, activity);
+  const clearedEmptyNotices = clearResolvedEmptyAssistantResponseNotices(messages);
+  if (changed || clearedEmptyNotices) {
     void persistDetachedConversation(conversationId);
   }
 }

@@ -173,30 +173,6 @@ npm run smoke:install-browser
 packages/extension/dist
 ```
 
-## Chrome Web Store 패키지
-
-업로드 가능한 확장 프로그램 zip을 생성합니다.
-
-```bash
-npm run package:webstore
-```
-
-이 명령은 확장 프로그램을 다시 빌드하고, `packages/extension/dist`를 스테이징한 뒤, Web Store 업로드에 허용되지 않는 `manifest.key`, source map, 로컬 빌드 메타데이터를 제거하고 `output/chrome-web-store/`에 zip을 생성합니다.
-
-## 공개 소스 릴리즈
-
-정제된 공개 릴리즈 아티팩트를 생성합니다.
-
-```bash
-npm run package:public
-```
-
-`output/public-release/` 아래에 두 아티팩트가 생성됩니다.
-
-- `chromex-*-public-source-*.zip`: GitHub 공개용 소스 아카이브
-- `chromex-*-unpacked-extension-*.zip`: Chrome 개발자 모드에서 바로 로드할 수 있는 패키지. 압축 해제 후 **압축해제된 확장 프로그램을 로드합니다**에서 `chromex-extension` 폴더를 선택합니다.
-- `chromex-public-source.zip`, `chromex-unpacked-extension.zip`: GitHub Release 직접 다운로드 링크용 안정적인 asset 이름
-
 ## 릴리즈 관리
 
 Chromex는 `0.1.1`부터 일반 오픈소스 릴리즈 이력을 사용합니다. 버전 정책, pull request 흐름, 릴리즈 체크리스트는 [RELEASE.md](./RELEASE.md)에 정리되어 있습니다.

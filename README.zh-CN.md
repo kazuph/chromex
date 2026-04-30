@@ -173,30 +173,6 @@ npm run smoke:install-browser
 packages/extension/dist
 ```
 
-## Chrome Web Store 包
-
-创建可上传的扩展 ZIP:
-
-```bash
-npm run package:webstore
-```
-
-该命令会重新构建扩展，暂存 `packages/extension/dist`，移除 unpacked 安装用的 `manifest.key`、source maps 和本地构建元数据，验证 ZIP，并将包写入 `output/chrome-web-store/`。
-
-## 公开源码发布
-
-创建经过清理的公开发布产物:
-
-```bash
-npm run package:public
-```
-
-该命令会在 `output/public-release/` 下写入两个产物:
-
-- `chromex-*-public-source-*.zip`: 用于 GitHub 发布的源码归档
-- `chromex-*-unpacked-extension-*.zip`: 可直接解压并通过 Chrome Developer Mode 加载的包。解压后，在 **Load unpacked** 中选择 `chromex-extension` 文件夹。
-- `chromex-public-source.zip` 和 `chromex-unpacked-extension.zip`: 用于 GitHub Release 直接下载链接的稳定 asset 名称
-
 ## 发布管理
 
 Chromex 从 `0.1.1` 开始使用普通开源发布历史。版本策略、pull request 流程和发布检查清单见 [RELEASE.md](./RELEASE.md)。

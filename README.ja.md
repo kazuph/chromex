@@ -173,30 +173,6 @@ npm run smoke:install-browser
 packages/extension/dist
 ```
 
-## Chrome Web Store パッケージ
-
-アップロード可能な拡張機能 ZIP を作成します。
-
-```bash
-npm run package:webstore
-```
-
-このコマンドは拡張機能を再ビルドし、`packages/extension/dist` をステージングし、未パックインストール用の `manifest.key`、source map、ローカルビルドメタデータを取り除き、ZIP を検証して `output/chrome-web-store/` に書き出します。
-
-## 公開ソースリリース
-
-サニタイズ済みの公開リリース成果物を作成します。
-
-```bash
-npm run package:public
-```
-
-`output/public-release/` の下に次の成果物が作成されます。
-
-- `chromex-*-public-source-*.zip`: GitHub 公開用ソースアーカイブ
-- `chromex-*-unpacked-extension-*.zip`: Chrome Developer Mode でそのまま読み込めるパッケージ。展開後、**Load unpacked** で `chromex-extension` フォルダを選択します。
-- `chromex-public-source.zip` と `chromex-unpacked-extension.zip`: GitHub Release の直接ダウンロードリンク用の安定した asset 名
-
 ## リリース管理
 
 Chromex は `0.1.1` 以降、通常のオープンソースリリース履歴を使います。バージョニング、pull request フロー、リリースチェックリストは [RELEASE.md](./RELEASE.md) に記載されています。

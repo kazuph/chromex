@@ -105,7 +105,6 @@ export class CodexAppServerClient {
   async inspectRuntime() {
     const resolution = await this.#resolveCommandImpl({
       configuredCommand: this.#commandOverride,
-      envCommand: process.env.CODEX_BIN ?? null,
     });
     this.#lastCommandResolution = resolution;
     return resolution;

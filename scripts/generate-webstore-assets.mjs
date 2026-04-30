@@ -5,7 +5,6 @@ import { chromium } from "playwright-core";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const OUT_DIR = resolve(ROOT, "output/chrome-web-store-assets");
-const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const COLOR_ICON = resolve(ROOT, "packages/extension/public/icons/codex-128.png");
 const LINE_ICON = resolve(ROOT, "packages/extension/public/icons/chromex-line-source.png");
 const COLOR_ICON_DATA_URI = await toDataUri(COLOR_ICON, "image/png");
@@ -109,7 +108,11 @@ const promoAssets = [
 await mkdir(OUT_DIR, { recursive: true });
 await copyFile(COLOR_ICON, resolve(OUT_DIR, "icon-128.png"));
 
-const browser = await chromium.launch({ executablePath: CHROME, headless: true });
+const browserExecutablePath = readEnvValue(process.env, "BROWSER_EXECUTABLE_PATH")?.trim();
+const browser = await chromium.launch({
+  ...(browserExecutablePath ? { executablePath: browserExecutablePath } : {}),
+  headless: true,
+});
 try {
   for (const scenario of screenshotScenarios) {
     await renderPng({
@@ -699,6 +702,18 @@ function css() {
 
 async function toDataUri(file, mimeType) {
   return `data:${mimeType};base64,${(await readFile(file)).toString("base64")}`;
+}
+
+function readEnvValue(env, key) {
+  const exactValue = env[key];
+  if (typeof exactValue === "string") {
+    return exactValue;
+  }
+
+  const normalizedKey = key.toLowerCase();
+  const actualKey = Object.keys(env).find((candidate) => candidate.toLowerCase() === normalizedKey);
+  const value = actualKey ? env[actualKey] : undefined;
+  return typeof value === "string" ? value : undefined;
 }
 
 function escapeHtml(value) {

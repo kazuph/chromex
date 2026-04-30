@@ -173,30 +173,6 @@ The built extension is emitted to:
 packages/extension/dist
 ```
 
-## Chrome Web Store Package
-
-Create an upload-ready extension zip:
-
-```bash
-npm run package:webstore
-```
-
-The command rebuilds the extension, stages `packages/extension/dist`, removes the unpacked-install `manifest.key`, strips source maps and local build metadata, validates the zip, and writes the package to `output/chrome-web-store/`.
-
-## Public Source Release
-
-Create sanitized public release artifacts:
-
-```bash
-npm run package:public
-```
-
-This writes two artifacts under `output/public-release/`:
-
-- `chromex-*-public-source-*.zip`: source archive for GitHub publication.
-- `chromex-*-unpacked-extension-*.zip`: ready-to-unzip Chrome Developer Mode package. After unzip, select the `chromex-extension` folder in **Load unpacked**.
-- `chromex-public-source.zip` and `chromex-unpacked-extension.zip`: stable asset names for GitHub Release direct-download links.
-
 ## Release Management
 
 Chromex uses normal open-source release history from `0.1.1` onward. Versioning, pull request flow, and release checklist are documented in [RELEASE.md](./RELEASE.md).

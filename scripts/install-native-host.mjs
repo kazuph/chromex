@@ -119,6 +119,18 @@ console.log(`Allowed extension IDs: ${allowedExtensionIds.join(", ")}`);
 if (includeLegacyExtensionIds) {
   console.log("Legacy extension IDs were included because --include-legacy-extension-ids was set.");
 }
+if (currentPlatform === "win32") {
+  console.log("");
+  console.log("Windows checks:");
+  console.log("- Run: codex --version");
+  console.log("- Run: where codex");
+  console.log(`- Run: reg query HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\${NATIVE_HOST_NAME}`);
+  if (profileDirArg) {
+    console.log(
+      "- Note: Chrome on Windows uses the registry for native messaging. If a profile-dir install is still waiting, rerun with the extension ID and --browser=chrome.",
+    );
+  }
+}
 console.log("No API key was copied during installation. ChatGPT login remains the default auth path.");
 
 function isValidExtensionId(value) {
@@ -166,10 +178,10 @@ function resolveAppSupportDir(platformFamily) {
   }
 
   if (platformFamily === "win32") {
-    return resolve(process.env.LOCALAPPDATA || resolve(homedir(), "AppData/Local"), "CodexSidepanel");
+    return resolve(readEnvValue(process.env, "LOCALAPPDATA") || resolve(homedir(), "AppData/Local"), "CodexSidepanel");
   }
 
-  return resolve(process.env.XDG_CONFIG_HOME || resolve(homedir(), ".config"), "codex-sidepanel");
+  return resolve(readEnvValue(process.env, "XDG_CONFIG_HOME") || resolve(homedir(), ".config"), "codex-sidepanel");
 }
 
 function resolveInstallTargets({ platformFamily, homeDir, appSupportDir, selectedBrowsers, profileDir }) {
@@ -314,6 +326,8 @@ function collectExtensionPathCandidates({ repoRoot, homeDir }) {
       resolve(repoRoot, "packages/extension"),
       resolve(homeDir, "Desktop/chromex-extension"),
       resolve(homeDir, "Desktop/codex-sidepanel-extension"),
+      resolve(homeDir, "Downloads/chromex-extension"),
+      resolve(homeDir, "Downloads/codex-sidepanel-extension"),
     ].map((value) => resolve(value)),
   );
 }
@@ -400,7 +414,7 @@ function resolveProfileRoots(platformFamily, homeDir) {
   }
 
   if (platformFamily === "win32") {
-    const localAppData = process.env.LOCALAPPDATA || resolve(homeDir, "AppData/Local");
+    const localAppData = readEnvValue(process.env, "LOCALAPPDATA") || resolve(homeDir, "AppData/Local");
     return [
       resolve(localAppData, "Google/Chrome/User Data"),
       resolve(localAppData, "Google/Chrome Beta/User Data"),
@@ -469,6 +483,7 @@ async function writeLauncher({
       ? [
           "@echo off",
           `set "BRIDGE_ENTRY=${bridgeEntryPath}"`,
+          `set "PATH=${dirname(process.execPath)};%APPDATA%\\npm;%LOCALAPPDATA%\\Programs\\Codex;%USERPROFILE%\\scoop\\shims;%PATH%"`,
           `"${process.execPath}" "${hostPath}" %*`,
           "",
         ].join("\r\n")
@@ -497,4 +512,16 @@ async function assertBuiltAsset(path, label) {
   } catch {
     throw new Error(`Missing ${label}. Run "npm run build" before installing the native host.`);
   }
+}
+
+function readEnvValue(env, key) {
+  const exactValue = env[key];
+  if (typeof exactValue === "string") {
+    return exactValue;
+  }
+
+  const normalizedKey = key.toLowerCase();
+  const actualKey = Object.keys(env).find((candidate) => candidate.toLowerCase() === normalizedKey);
+  const value = actualKey ? env[actualKey] : undefined;
+  return typeof value === "string" ? value : undefined;
 }

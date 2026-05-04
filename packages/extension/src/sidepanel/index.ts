@@ -7808,6 +7808,13 @@ function ensureComposerProfileSelection(): string {
   return state.selectedProfileId;
 }
 
+function resolvePromptProfileId(profileId: string | null | undefined): string {
+  if (profileId?.trim()) {
+    return normalizeSelectedProfileIdForProfiles(profileId, state.profiles);
+  }
+  return ensureComposerProfileSelection();
+}
+
 function selectProfileForComposer(profileId: string, options: { visible: boolean }): string {
   const selectedProfileId = normalizeSelectedProfileIdForProfiles(profileId, state.profiles);
   state.selectedProfileId = selectedProfileId;
@@ -7857,13 +7864,6 @@ async function submitPendingProfileQuestion(answerOverride?: string): Promise<vo
   });
   render();
   await sendPrompt(answer);
-}
-
-function resolvePromptProfileId(profileId: string | null | undefined): string {
-  if (profileId?.trim()) {
-    return normalizeSelectedProfileIdForProfiles(profileId, state.profiles);
-  }
-  return ensureComposerProfileSelection();
 }
 
 function createMessageProfileSnapshot(profileId?: string): ConversationMessageProfile | undefined {
@@ -14248,7 +14248,7 @@ async function createInfographicFromCurrentPage(): Promise<void> {
   const userMessageText = stringsForState().prompts.createInfographicFromPage;
   const userMessageId = `user-infographic-${Date.now()}`;
   const clientRequestId = `infographic-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  const messageProfile = createMessageProfileSnapshot();
+  const messageProfile = createMessageProfileSnapshot(activeProfileId);
   state.activeView = "chat";
   state.promptActivity = {
     clientRequestId,
@@ -14390,7 +14390,7 @@ async function createSlideImagesFromCurrentPage(prompt: string): Promise<void> {
     prompt.trim() || stringsForState().prompts.createSlideImagesFromPage;
   const userMessageId = `user-slide-images-${Date.now()}`;
   const clientRequestId = `slide-images-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  const messageProfile = createMessageProfileSnapshot();
+  const messageProfile = createMessageProfileSnapshot(activeProfileId);
   state.activeView = "chat";
   state.promptActivity = {
     clientRequestId,

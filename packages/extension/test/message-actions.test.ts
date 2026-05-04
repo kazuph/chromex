@@ -1,12 +1,23 @@
 import { describe, expect, test } from "vitest";
 
 import { prepareMessageReplay } from "../src/sidepanel/message-actions.js";
+import { DEFAULT_PROFILE_ID } from "../src/sidepanel/profile-selection.js";
 import type { ConversationMessage } from "../src/types.js";
 
 const messages: ConversationMessage[] = [
   { id: "user-1", role: "user", text: "첫 질문" },
   { id: "assistant-1", role: "assistant", text: "첫 답변" },
-  { id: "user-2", role: "user", text: "두 번째 질문" },
+  {
+    id: "user-2",
+    role: "user",
+    text: "두 번째 질문",
+    profile: {
+      id: "research-assistant",
+      name: "Research Assistant",
+      color: "#3366ff",
+      icon: "search",
+    },
+  },
   { id: "assistant-2", role: "assistant", text: "두 번째 답변" },
 ];
 
@@ -16,7 +27,7 @@ describe("message actions", () => {
       prompt: "두 번째 질문",
       messagesBeforePrompt: messages.slice(0, 2),
       userMessageId: "user-2",
-      profileId: "default",
+      profileId: "research-assistant",
     });
   });
 
@@ -25,7 +36,7 @@ describe("message actions", () => {
       prompt: "수정한 첫 질문",
       messagesBeforePrompt: [],
       userMessageId: "user-1",
-      profileId: "default",
+      profileId: DEFAULT_PROFILE_ID,
     });
   });
 

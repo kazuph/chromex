@@ -118,7 +118,7 @@ describe("online image prompt extraction", () => {
     expect(manifest.content_scripts).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          matches: ["http://*/*", "https://*/*"],
+          matches: expect.arrayContaining(["http://*/*", "https://*/*", "file:///*"]),
           js: ["content.js"],
           run_at: "document_idle",
           all_frames: false,

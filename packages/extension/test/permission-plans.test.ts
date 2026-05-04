@@ -1,8 +1,11 @@
 import { describe, expect, test } from "vitest";
 
 import {
+  getCurrentPageSupport,
+  getFileUrlAccessHelpMessage,
   getPermissionRequestForMessage,
   getPermissionRequestForRuntimeResponse,
+  isFileUrl,
   isRestrictedBrowserUrl,
   toOriginPermissionPattern,
 } from "../src/permission-plans.js";
@@ -16,6 +19,11 @@ describe("permission plans", () => {
   test("treats browser-internal pages as restricted", () => {
     expect(isRestrictedBrowserUrl("chrome://extensions")).toBe(true);
     expect(toOriginPermissionPattern("chrome://extensions")).toBeNull();
+    expect(getCurrentPageSupport("chrome://extensions")).toEqual({
+      available: false,
+      blockedReason:
+        "Chrome blocks extensions from reading or modifying this protected browser page. Open a normal web page, then try again.",
+    });
   });
 
   test("treats the Chrome extensions gallery as restricted even though it uses https", () => {
@@ -24,6 +32,30 @@ describe("permission plans", () => {
     expect(isRestrictedBrowserUrl("https://chrome.google.com/webstore/detail/example/abc")).toBe(true);
     expect(toOriginPermissionPattern("https://chrome.google.com/webstore/detail/example/abc")).toBeNull();
     expect(isRestrictedBrowserUrl("https://chrome.google.com/search?q=codex")).toBe(false);
+    expect(getCurrentPageSupport("https://chromewebstore.google.com/detail/example/abc")).toEqual({
+      available: false,
+      blockedReason:
+        "Chrome Web Store pages cannot be scripted by extensions. Open the target site in a normal tab, then try again.",
+    });
+  });
+
+  test("allows local file pages to proceed so Chrome file access settings can be honored", () => {
+    expect(isFileUrl("file:///Users/test/page.html")).toBe(true);
+    expect(isRestrictedBrowserUrl("file:///Users/test/page.html")).toBe(false);
+    expect(toOriginPermissionPattern("file:///Users/test/page.html")).toBeNull();
+    expect(getCurrentPageSupport("file:///Users/test/page.html")).toEqual({
+      available: true,
+      blockedReason: "",
+    });
+    expect(getFileUrlAccessHelpMessage()).toContain("Allow access to file URLs");
+  });
+
+  test("separates unsupported schemes from browser-internal pages", () => {
+    expect(getCurrentPageSupport("mailto:test@example.com")).toEqual({
+      available: false,
+      blockedReason:
+        "This page uses an unsupported URL scheme for page reading. Open an http, https, or file page, then try again.",
+    });
   });
 
   test("requests history permission only for history search", () => {
@@ -128,7 +160,8 @@ describe("permission plans", () => {
       ),
     ).toEqual({
       rationale: "Allow Codex to read the current page before creating an infographic.",
-      blockedReason: "This page is a restricted browser page, so Codex cannot read or modify it.",
+      blockedReason:
+        "Chrome blocks extensions from reading or modifying this protected browser page. Open a normal web page, then try again.",
     });
   });
 
@@ -151,7 +184,8 @@ describe("permission plans", () => {
       ),
     ).toEqual({
       rationale: "Allow Codex to interact with the current page that you are already viewing.",
-      blockedReason: "This page is a restricted browser page, so Codex cannot read or modify it.",
+      blockedReason:
+        "Chrome blocks extensions from reading or modifying this protected browser page. Open a normal web page, then try again.",
     });
   });
 
@@ -165,7 +199,8 @@ describe("permission plans", () => {
       ),
     ).toEqual({
       rationale: "Allow Codex to interact with the current page that you are already viewing.",
-      blockedReason: "This page is a restricted browser page, so Codex cannot read or modify it.",
+      blockedReason:
+        "Chrome blocks extensions from reading or modifying this protected browser page. Open a normal web page, then try again.",
     });
   });
 

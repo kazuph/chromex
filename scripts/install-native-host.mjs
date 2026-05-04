@@ -101,14 +101,7 @@ for (const target of targets) {
   });
 
   if (target.kind === "windows-registry") {
-    const result = spawnSync(
-      "reg",
-      ["add", target.registryKey, "/ve", "/t", "REG_SZ", "/d", manifestPath, "/f"],
-      { encoding: "utf8" },
-    );
-    if (result.status !== 0) {
-      throw new Error(result.stderr.trim() || `Failed to register ${target.registryKey}`);
-    }
+    registerWindowsNativeHost(target.registryKey, manifestPath);
   }
 }
 
@@ -126,7 +119,13 @@ if (currentPlatform === "win32") {
   console.log("Windows checks:");
   console.log("- Run: codex --version");
   console.log("- Run: where codex");
-  console.log(`- Run: reg query HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\${NATIVE_HOST_NAME}`);
+  console.log("- Optional: where codex-app-server if you installed the standalone app-server artifact");
+  console.log(
+    "- If Codex is still not detected, set the Chromex Codex binary path to %APPDATA%\\npm\\codex.cmd or to the standalone codex-app-server*.exe",
+  );
+  console.log(`- Run: reg query HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\${NATIVE_HOST_NAME} /reg:32`);
+  console.log(`- Run: reg query HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\${NATIVE_HOST_NAME} /reg:64`);
+  console.log("- Close every Chrome window, reopen Chrome, then click Reload on the Chromex extension card.");
   if (profileDirArg) {
     console.log(
       "- Note: --profile-dir is ignored on Windows because Chrome native messaging uses the current-user registry. If setup is still waiting, rerun with the extension ID and --browser=chrome.",
@@ -134,6 +133,19 @@ if (currentPlatform === "win32") {
   }
 }
 console.log("No API key was copied during installation. ChatGPT login remains the default auth path.");
+
+function registerWindowsNativeHost(registryKey, manifestPath) {
+  for (const registryView of ["/reg:32", "/reg:64"]) {
+    const result = spawnSync(
+      "reg",
+      ["add", registryKey, "/ve", "/t", "REG_SZ", "/d", manifestPath, "/f", registryView],
+      { encoding: "utf8" },
+    );
+    if (result.status !== 0) {
+      throw new Error(result.stderr.trim() || `Failed to register ${registryKey} ${registryView}`);
+    }
+  }
+}
 
 function isValidExtensionId(value) {
   return /^[a-p]{32}$/u.test(value);

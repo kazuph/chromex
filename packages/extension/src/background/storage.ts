@@ -11,6 +11,7 @@ import type {
   ConversationSummary,
   ExtensionSettings,
   SavedConversation,
+  VoiceInputAudioSource,
 } from "../types.js";
 import { normalizeStoredProfiles } from "../profile-templates.js";
 import type { SkillOption } from "../sidepanel/skills.js";
@@ -46,8 +47,10 @@ export const DEFAULT_SETTINGS: ExtensionSettings = {
   allowVoiceNavigation: true,
   allowBrowserActions: true,
   browserActionPermissionMode: "ask",
+  planModeEnabled: false,
   playwrightBrowserControlEnabled: false,
   preferredVoice: "",
+  voiceInputAudioSource: "microphone",
   workspaceRoot: "",
   codexBinPath: "",
   enabledCodexSkillIds: [],
@@ -70,7 +73,9 @@ export async function getStoredSettings(): Promise<ExtensionSettings> {
     uiLanguage: normalizeUiLanguageSetting(settings.uiLanguage),
     uiTheme: normalizeUiThemeSetting(settings.uiTheme),
     preferredVoice: normalizeCodexRealtimeVoice(settings.preferredVoice),
+    voiceInputAudioSource: normalizeVoiceInputAudioSource(settings.voiceInputAudioSource),
     browserActionPermissionMode: normalizeBrowserActionPermissionMode(settings.browserActionPermissionMode),
+    planModeEnabled: settings.planModeEnabled === true,
     playwrightBrowserControlEnabled: settings.playwrightBrowserControlEnabled === true,
     enabledCodexSkillIds: normalizeEnabledCodexSkillIds(settings.enabledCodexSkillIds),
     customSiteSuggestions: normalizeCustomSiteSuggestions(settings.customSiteSuggestions),
@@ -86,9 +91,13 @@ export async function updateStoredSettings(patch: Partial<ExtensionSettings>): P
     uiLanguage: normalizeUiLanguageSetting(patch.uiLanguage ?? current.uiLanguage),
     uiTheme: normalizeUiThemeSetting(patch.uiTheme ?? current.uiTheme),
     preferredVoice: normalizeCodexRealtimeVoice(patch.preferredVoice ?? current.preferredVoice),
+    voiceInputAudioSource: normalizeVoiceInputAudioSource(
+      patch.voiceInputAudioSource ?? current.voiceInputAudioSource,
+    ),
     browserActionPermissionMode: normalizeBrowserActionPermissionMode(
       patch.browserActionPermissionMode ?? current.browserActionPermissionMode,
     ),
+    planModeEnabled: (patch.planModeEnabled ?? current.planModeEnabled) === true,
     playwrightBrowserControlEnabled: (patch.playwrightBrowserControlEnabled ?? current.playwrightBrowserControlEnabled) === true,
     enabledCodexSkillIds: normalizeEnabledCodexSkillIds(
       patch.enabledCodexSkillIds ?? current.enabledCodexSkillIds,
@@ -106,6 +115,10 @@ export async function updateStoredSettings(patch: Partial<ExtensionSettings>): P
 
 function normalizeBrowserActionPermissionMode(value: unknown): BrowserActionPermissionMode {
   return value === "auto-review" || value === "full" || value === "ask" ? value : "ask";
+}
+
+function normalizeVoiceInputAudioSource(value: unknown): VoiceInputAudioSource {
+  return value === "computer" ? "computer" : "microphone";
 }
 
 export async function resetStoredSettings(): Promise<ExtensionSettings> {

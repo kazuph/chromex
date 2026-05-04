@@ -44,6 +44,9 @@ export function shouldLogBackgroundMessageError(error: unknown): boolean {
 function isExpectedRecoverableBackgroundError(error: unknown): boolean {
   const message = getErrorMessage(error).toLowerCase();
   return (
+    message.includes("allow access to file urls") ||
+    message.includes("chrome blocks extensions from reading or modifying this protected browser page") ||
+    message.includes("chrome web store pages cannot be scripted") ||
     message.includes("generated image asset is no longer available") ||
     message.includes("extensions gallery cannot be scripted") ||
     /\bthread not found\b|no turns for conversation|unknown conversation/iu.test(message)

@@ -25,8 +25,6 @@ Published by **GenexisAI CHOI**.
 
 ## ソースからインストール
 
-GitHub Releases ではソースコードのみを配布します。`chromex-extension` の unpacked-extension ZIP は配布しません。ブラウザ UI フォルダとソースフォルダを混同し、`package.json` のない場所で `npm install` を実行する問題があったためです。
-
 ソース checkout または [`chromex-public-source.zip`](https://github.com/GENEXIS-AI/chromex/releases/latest/download/chromex-public-source.zip) を使用してください。
 
 ```bash
@@ -37,7 +35,7 @@ npm run build
 node scripts/install-native-host.mjs
 ```
 
-その後、`chrome://extensions` で **Developer mode** を有効にし、**Load unpacked** から次のフォルダを選択します。
+その後、すべての Chrome ウィンドウを閉じて開き直し、`chrome://extensions` で **Developer mode** を有効にし、**Load unpacked** から次のフォルダを選択します。
 
 ```text
 packages/extension/dist
@@ -79,6 +77,16 @@ node scripts/install-native-host.mjs <extension-id> --browser=chrome
 公開リリースで想定される ID は `menmlhahmendmkiicbjihgjhppkgaeom` です。Chrome に別の ID が表示される場合は、Chrome に表示された ID を使用してください。
 
 ログイン時に `Failed to start codex app-server` が出る場合、Chromex はローカルブリッジには接続できていますが Codex CLI を起動できていません。`codex --version` を再確認してください。Windows が Codex を見つけられない場合は、optional Codex binary path に `%APPDATA%\npm\codex.cmd` を設定するか、フォルダとして `%APPDATA%\npm` を設定します。workspace フォルダと Codex executable path は別の設定なので、Codex binary 欄にプロジェクトフォルダを入れないでください。
+
+Windows で実行ファイル検出を確認するには:
+
+```powershell
+npm install -g @openai/codex
+where codex
+codex --version
+```
+
+`where codex` が `C:\Users\<you>\AppData\Roaming\npm\codex.cmd` を表示する場合は、Chromex settings で optional Codex binary path を `%APPDATA%\npm\codex.cmd` に設定して保存し、すべての Chrome ウィンドウを閉じて開き直してから **Check connection** を押してください。
 
 ## ランタイム境界
 
@@ -163,6 +171,7 @@ Chromex は `0.1.1` 以降、通常のオープンソースリリース履歴を
 ## トラブルシューティング
 
 - **Native host missing or forbidden**: `npm run build` を実行し、続けて `node scripts/install-native-host.mjs --browser=chrome` を実行します。`chrome://extensions` で拡張機能を再読み込みし、Chromex のオンボーディングまたはシステム状態を確認してください。Chrome に別の extension ID が表示される場合は、`node scripts/install-native-host.mjs <extension-id> --browser=chrome` で再インストールしてください。
+- **Codex executable is not detected**: `npm install -g @openai/codex`、`where codex`、`codex --version` を実行します。必要なら Chromex の optional Codex binary path に `%APPDATA%\npm\codex.cmd` を設定して保存し、Chrome を完全に再起動して **Check connection** を押してください。
 - **モデル一覧が読み込まれない**: native bridge が接続されていることを確認し、app-server ベースのログインフローでサインインしてください。
 - **ページ文脈を利用できない**: 対象タブから Chromex を開くか、ワークフローが要求する Chrome サイト権限を許可してください。
 - **Chrome に古い UI が表示され続ける**: `npm run build` を実行し、拡張機能カードを再読み込みして、Chrome が `packages/extension/dist` を読み込んでいることを確認してください。

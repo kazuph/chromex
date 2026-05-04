@@ -34,12 +34,15 @@ describe("auth onboarding", () => {
     expect(getUiStrings("en").onboarding.nativeHostSetup).toContain("local bridge");
     expect(getUiStrings("en").onboarding.codexBinaryMissing).toContain("Codex");
     expect(getUiStrings("en").onboarding.codexBinaryMissing).toContain("npm install -g @openai/codex");
+    expect(getUiStrings("en").onboarding.codexBinaryMissing).toContain("%APPDATA%\\npm\\codex.cmd");
     expect(getUiStrings("en").onboarding.installBody).toContain("package.json");
+    expect(getUiStrings("en").onboarding.installBody).toContain("close every Chrome window");
     expect(getUiStrings("ko").onboarding.title).toBe("Welcome to Chromex");
     expect(getUiStrings("ko").onboarding.apiCta).toBe("API 키로 사용");
     expect(getUiStrings("ko").onboarding.nativeHostSetup).toContain("로컬 브리지");
     expect(getUiStrings("ko").onboarding.webOnlyUnavailable).toContain("로컬 브리지");
     expect(getUiStrings("ko").onboarding.installBody).toContain("package.json");
+    expect(getUiStrings("ko").onboarding.codexBinaryMissing).toContain("where codex");
   });
 
   test("renders a centered internal onboarding surface with existing login actions", () => {

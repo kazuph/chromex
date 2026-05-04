@@ -25,8 +25,6 @@ Published by **GenexisAI CHOI**.
 
 ## 从源码安装
 
-GitHub Releases 只发布源码包，不再发布单独的 `chromex-extension` unpacked-extension ZIP。这样可以避免用户把浏览器 UI 文件夹和源码文件夹混在一起，在没有 `package.json` 的位置运行 `npm install`。
-
 请使用源码 checkout 或 [`chromex-public-source.zip`](https://github.com/GENEXIS-AI/chromex/releases/latest/download/chromex-public-source.zip):
 
 ```bash
@@ -37,7 +35,7 @@ npm run build
 node scripts/install-native-host.mjs
 ```
 
-然后打开 `chrome://extensions`，启用 **Developer mode**，点击 **Load unpacked**，选择:
+然后关闭所有 Chrome 窗口并重新打开 Chrome，在 `chrome://extensions` 中启用 **Developer mode**，点击 **Load unpacked**，选择:
 
 ```text
 packages/extension/dist
@@ -79,6 +77,16 @@ node scripts/install-native-host.mjs <extension-id> --browser=chrome
 公开 release 的预期 ID 是 `menmlhahmendmkiicbjihgjhppkgaeom`。如果 Chrome 显示不同 ID，请使用 Chrome 中显示的 ID。
 
 如果登录时出现 `Failed to start codex app-server`，说明 Chromex 已连接到本地 bridge，但无法启动 Codex CLI。请再次运行 `codex --version`。如果 Windows 找不到 Codex，请将 optional Codex binary path 设置为 `%APPDATA%\npm\codex.cmd`，或将文件夹设置为 `%APPDATA%\npm`。workspace 文件夹和 Codex executable path 是两个不同设置，不要把项目文件夹填到 Codex binary 字段。
+
+在 Windows 上强制确认可执行文件检测:
+
+```powershell
+npm install -g @openai/codex
+where codex
+codex --version
+```
+
+如果 `where codex` 输出 `C:\Users\<you>\AppData\Roaming\npm\codex.cmd`，请在 Chromex settings 中把 optional Codex binary path 设置为 `%APPDATA%\npm\codex.cmd`，保存后关闭所有 Chrome 窗口并重新打开 Chrome，然后点击 **Check connection**。
 
 ## 运行时边界
 
@@ -163,6 +171,7 @@ Chromex 从 `0.1.1` 开始使用普通开源发布历史。版本策略、pull r
 ## 故障排查
 
 - **Native host missing or forbidden**: 运行 `npm run build`，然后运行 `node scripts/install-native-host.mjs --browser=chrome`，在 `chrome://extensions` 中重新加载扩展，并检查 Chromex onboarding/system status。如果 Chrome 显示不同 extension ID，请运行 `node scripts/install-native-host.mjs <extension-id> --browser=chrome` 重新安装。
+- **Codex executable is not detected**: 运行 `npm install -g @openai/codex`、`where codex` 和 `codex --version`。必要时在 Chromex 中把 optional Codex binary path 设置为 `%APPDATA%\npm\codex.cmd`，保存后完全重启 Chrome，然后点击 **Check connection**。
 - **模型列表无法加载**: 确认 native bridge 已连接，然后通过 app-server-backed 登录流程登录。
 - **页面上下文不可用**: 从目标标签页打开 Chromex，或批准工作流请求的 Chrome 站点权限。
 - **Chrome 仍显示旧 UI**: 运行 `npm run build`，重新加载扩展卡片，并确认 Chrome 正在加载 `packages/extension/dist`。

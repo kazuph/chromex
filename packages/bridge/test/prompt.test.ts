@@ -54,6 +54,8 @@ describe("createCodexTurnInput", () => {
     expect(result).toContain("renderable preview");
     expect(result).toContain("parallel");
     expect(result).toContain("Do not parallelize image edits");
+    expect(result).toContain("When the user asks to fact-check");
+    expect(result).toContain("use available web/search/read-only tools");
     expect(result).toContain("PRIVATE PROFILE QUESTION TOOL - DO NOT MENTION");
     expect(result).toContain("<chromex_ask_user_question>");
     expect(result).toContain("Answer precisely.");

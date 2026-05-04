@@ -82,6 +82,19 @@ describe("background error responses", () => {
     expect(shouldLogBackgroundMessageError(new Error("The extensions gallery cannot be scripted."))).toBe(false);
   });
 
+  test("keeps expected protected-page and local-file access guidance out of noisy background logs", () => {
+    expect(
+      shouldLogBackgroundMessageError(
+        new Error("Chrome blocks extensions from reading or modifying this protected browser page."),
+      ),
+    ).toBe(false);
+    expect(
+      shouldLogBackgroundMessageError(
+        new Error("Local file pages require Chrome's Allow access to file URLs setting for Chromex."),
+      ),
+    ).toBe(false);
+  });
+
   test("keeps unexpected errors visible in diagnostics", () => {
     expect(toExpectedPermissionErrorResponse(new Error("boom"))).toBeNull();
     expect(shouldLogBackgroundMessageError(new Error("boom"))).toBe(true);

@@ -24,8 +24,6 @@ Published by **GenexisAI CHOI**.
 
 ## Install From Source
 
-GitHub Releases publish source code only. They do not ship a separate `chromex-extension` unpacked-extension ZIP because users were mixing that browser UI folder with the source folder and running `npm install` where no `package.json` exists.
-
 Use the source checkout or [`chromex-public-source.zip`](https://github.com/GENEXIS-AI/chromex/releases/latest/download/chromex-public-source.zip):
 
 ```bash
@@ -36,7 +34,7 @@ npm run build
 node scripts/install-native-host.mjs
 ```
 
-Then open `chrome://extensions`, enable **Developer mode**, select **Load unpacked**, and choose:
+Then close every Chrome window, reopen Chrome, open `chrome://extensions`, enable **Developer mode**, select **Load unpacked**, and choose:
 
 ```text
 packages/extension/dist
@@ -78,6 +76,16 @@ node scripts/install-native-host.mjs <extension-id> --browser=chrome
 The expected public release ID is `menmlhahmendmkiicbjihgjhppkgaeom`. If Chrome shows a different ID, use the ID shown in Chrome.
 
 If login fails with `Failed to start codex app-server`, Chromex can reach the local bridge but cannot start the Codex CLI. Re-run `codex --version`. If Windows cannot find it, set the optional Codex binary path to `%APPDATA%\npm\codex.cmd`, or set the folder to `%APPDATA%\npm`. Do not put your workspace folder in the Codex binary field; the workspace folder and Codex executable path are separate settings.
+
+To force executable detection on Windows:
+
+```powershell
+npm install -g @openai/codex
+where codex
+codex --version
+```
+
+If `where codex` prints `C:\Users\<you>\AppData\Roaming\npm\codex.cmd`, open Chromex settings and set the optional Codex binary path to `%APPDATA%\npm\codex.cmd`, save, close every Chrome window, reopen Chrome, and press **Check connection**.
 
 ## Runtime Boundary
 
@@ -162,6 +170,7 @@ Chromex uses normal open-source release history from `0.1.1` onward. Versioning,
 ## Troubleshooting
 
 - **Native host missing or forbidden**: run `npm run build`, then `node scripts/install-native-host.mjs --browser=chrome`, reload the extension in `chrome://extensions`, and check Chromex onboarding/system status. If Chrome shows a different extension ID, run `node scripts/install-native-host.mjs <extension-id> --browser=chrome`.
+- **Codex executable is not detected**: run `npm install -g @openai/codex`, `where codex`, and `codex --version`. If needed, set the optional Codex binary path in Chromex to `%APPDATA%\npm\codex.cmd`, save, fully restart Chrome, and press **Check connection**.
 - **Model list does not load**: confirm the native bridge is connected, then sign in through the app-server-backed login flow.
 - **Page context is unavailable**: open Chromex from the target tab or approve the Chrome site permission prompt when the workflow requests access.
 - **Chrome still shows old UI**: run `npm run build`, reload the extension card, and confirm Chrome is loading `packages/extension/dist`.

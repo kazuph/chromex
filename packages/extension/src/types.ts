@@ -127,6 +127,15 @@ export interface UiInitPayload {
   };
 }
 
+export interface UiSettingsSnapshotPayload {
+  settings: ExtensionSettings;
+  profiles: ProfileTemplate[];
+  selectedProfileId: string;
+  selectedModel: string;
+  selectedReasoningEffort: string;
+  selectedServiceTier: string;
+}
+
 export interface RuntimeConfigSnapshot {
   workspaceRoot: string;
   codexBinPath: string;
@@ -148,12 +157,26 @@ export interface PromptRequestPayload {
   selectedTabIds?: number[];
   historyQuery?: string;
   attachments: Array<"current-page" | "open-tabs" | "history" | "selection" | "image">;
+  selectedTextContext?: SelectedPageTextContext;
   fileAttachments?: UserFileAttachment[];
   structuredInputs?: CodexStructuredInput[];
   confirmedOperations?: HarnessPermissionOperation[];
   resetThread?: boolean;
   suppressPageContext?: boolean;
   conversationMessageCount?: number;
+  planMode?: boolean;
+  useGoal?: boolean;
+  goalObjective?: string;
+}
+
+export interface SelectedPageTextContext {
+  text: string;
+  contextText?: string;
+  url: string;
+  title: string;
+  domain: string;
+  tabId?: number;
+  favIconUrl?: string;
 }
 
 export interface PromptResponsePayload {
@@ -166,6 +189,8 @@ export interface TabListPayload {
   tabs: OpenTabContext[];
 }
 
+export type VoiceInputAudioSource = "microphone" | "computer";
+
 export interface ExtensionSettings {
   uiLanguage: UiLanguageSetting;
   uiTheme: UiThemeSetting;
@@ -176,8 +201,10 @@ export interface ExtensionSettings {
   allowVoiceNavigation: boolean;
   allowBrowserActions: boolean;
   browserActionPermissionMode: BrowserActionPermissionMode;
+  planModeEnabled: boolean;
   playwrightBrowserControlEnabled: boolean;
   preferredVoice: string;
+  voiceInputAudioSource: VoiceInputAudioSource;
   workspaceRoot: string;
   codexBinPath: string;
   enabledCodexSkillIds: string[];
@@ -189,6 +216,7 @@ export interface CustomSiteSuggestion {
   id: string;
   siteKey: string;
   siteLabel: string;
+  command: string;
   prompt: string;
   createdAt: number;
 }
@@ -240,12 +268,23 @@ export interface ConversationMessageContext {
   platform?: string;
   url?: string;
   title?: string;
+  domain?: string;
+  favIconUrl?: string;
+  tabId?: number;
+  source?: "selection";
+  selectionText?: string;
+  contextText?: string;
+}
+
+export interface ConversationMessagePlan extends CodexTurnPlan {
+  accepted?: boolean;
 }
 
 export interface ConversationMessage {
   id: string;
   role: "user" | "assistant";
   text: string;
+  steer?: boolean;
   notice?: {
     type: "context-compaction";
     state: "running" | "completed";
@@ -262,6 +301,7 @@ export interface ConversationMessage {
   profile?: ConversationMessageProfile;
   trace?: ConversationMessageTraceItem[];
   context?: ConversationMessageContext;
+  plan?: ConversationMessagePlan;
 }
 
 export interface SavedConversation {

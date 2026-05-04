@@ -32,6 +32,9 @@ const NATIVE_HOST_SETUP_PATTERNS = [
 const NATIVE_HOST_RECONNECT_PATTERNS = [
   "native host disconnected",
   "native host has exited",
+  "found but exited immediately",
+  "exited immediately",
+  "failed to start native messaging host",
 ];
 
 export function getNativeHostHealth(input: {

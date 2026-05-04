@@ -11,12 +11,14 @@ import {
   ChevronRight,
   CodeXml,
   Copy,
+  CornerDownRight,
   ExternalLink,
   FileText,
   Globe,
   Hand,
   Image,
   List,
+  ListChecks,
   Menu,
   MessageCircle,
   Mic,
@@ -25,9 +27,11 @@ import {
   MoreVertical,
   PanelRight,
   Paperclip,
+  Pencil,
   Plus,
   RefreshCw,
   ScanLine,
+  Search,
   Send,
   Settings,
   ShieldAlert,
@@ -54,12 +58,14 @@ export type UiIconName =
   | "chevron-right"
   | "code"
   | "copy"
+  | "corner-down-right"
   | "external-link"
   | "file-text"
   | "globe"
   | "hand"
   | "image"
   | "list"
+  | "list-checks"
   | "menu"
   | "message"
   | "mic"
@@ -68,10 +74,12 @@ export type UiIconName =
   | "more-vertical"
   | "panel"
   | "paperclip"
+  | "pencil"
   | "plus"
   | "question"
   | "refresh"
   | "scan"
+  | "search"
   | "send"
   | "settings"
   | "shield-alert"
@@ -95,12 +103,14 @@ const UI_ICON_NODES: Record<UiIconName, IconNode> = {
   "chevron-right": ChevronRight,
   code: CodeXml,
   copy: Copy,
+  "corner-down-right": CornerDownRight,
   "external-link": ExternalLink,
   "file-text": FileText,
   globe: Globe,
   hand: Hand,
   image: Image,
   list: List,
+  "list-checks": ListChecks,
   menu: Menu,
   message: MessageCircle,
   mic: Mic,
@@ -109,10 +119,12 @@ const UI_ICON_NODES: Record<UiIconName, IconNode> = {
   "more-vertical": MoreVertical,
   panel: PanelRight,
   paperclip: Paperclip,
+  pencil: Pencil,
   plus: Plus,
   question: BadgeQuestionMark,
   refresh: RefreshCw,
   scan: ScanLine,
+  search: Search,
   send: Send,
   settings: Settings,
   "shield-alert": ShieldAlert,

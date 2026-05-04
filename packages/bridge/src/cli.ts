@@ -7,6 +7,7 @@ import { CodexAppServerClient } from "./codex-app-server.js";
 import { BridgeDiagnosticLogStore } from "./diagnostics.js";
 import { BridgeHarnessRuntime } from "./harness.js";
 import { BridgeImageAssetStore, resolveGeneratedImageOutputDir } from "./image-assets.js";
+import { BridgeLocalFilePlane } from "./local-files.js";
 import { BridgeRpcRouter } from "./router.js";
 import { InMemoryBridgeSecrets } from "./secrets.js";
 import { ExternalSkillArchiveStore } from "./skill-archives.js";
@@ -16,7 +17,7 @@ import type { BridgeRequest } from "./types.js";
 const secrets = new InMemoryBridgeSecrets();
 const client = new CodexAppServerClient({
   experimentalApi: true,
-  enabledFeatures: ["realtime_conversation"],
+  enabledFeatures: ["realtime_conversation", "goals", "collaboration_modes"],
 });
 const harness = new BridgeHarnessRuntime();
 const diagnostics = new BridgeDiagnosticLogStore();
@@ -42,6 +43,7 @@ const router = new BridgeRpcRouter({
     diagnostics,
   }),
   image: new CodexImagePlane(harness, { imageAssets, diagnostics }),
+  localFiles: new BridgeLocalFilePlane(),
   route: new CodexAgenticRouterPlane({
     client,
     harness,

@@ -89,12 +89,14 @@ function normalizeMessages(messages: SavedConversation["messages"] | undefined):
         text: stringOrDefault(message.text, ""),
         ...normalizeMessageNotice(message.notice),
         ...normalizeMessageDelivery(message),
+        ...normalizeMessageSteer(message),
         ...(message.role === "user" ? normalizeMessageProfile(message.profile) : {}),
         ...(images.length ? { images } : {}),
         ...(attachments.length ? { attachments } : {}),
         ...(structuredInputs.length ? { structuredInputs } : {}),
         ...normalizeMessageTrace(message.trace),
         ...normalizeMessageContext(message.context),
+        ...(message.role === "assistant" ? normalizeMessagePlan(message.plan) : {}),
       } satisfies ConversationMessage;
       return normalized;
     })
@@ -267,12 +269,14 @@ export function serializeConversationMessagesForStorage(messages: ConversationMe
         text: sanitizeMessageTextForStorage(message.text),
         ...normalizeMessageNotice(message.notice),
         ...normalizeMessageDelivery(message),
+        ...normalizeMessageSteer(message),
         ...(message.role === "user" ? normalizeMessageProfile(message.profile) : {}),
         ...(images.length ? { images } : {}),
         ...(attachments.length ? { attachments } : {}),
         ...(structuredInputs.length ? { structuredInputs } : {}),
         ...(trace.length ? { trace } : {}),
         ...normalizeMessageContext(message.context),
+        ...(message.role === "assistant" ? normalizeMessagePlan(message.plan) : {}),
       } satisfies ConversationMessage;
     })
     .filter((message) => !isTraceOnlyProgressMessage(message));
@@ -322,6 +326,10 @@ function normalizeMessageNotice(
   };
 }
 
+function normalizeMessageSteer(message: ConversationMessage): Pick<ConversationMessage, "steer"> | Record<string, never> {
+  return message.role === "user" && message.steer === true ? { steer: true } : {};
+}
+
 function sanitizeMessageTextForStorage(text: string): string {
   return text.replace(/data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/=]+/giu, "[stored image asset]");
 }
@@ -336,6 +344,10 @@ function normalizeMessageContext(
   const platform = stringOrDefault(context.platform, "").trim();
   const url = stringOrDefault(context.url, "").trim();
   const title = stringOrDefault(context.title, "").trim();
+  const domain = stringOrDefault(context.domain, "").trim();
+  const favIconUrl = stringOrDefault(context.favIconUrl, "").trim();
+  const selectionText = stringOrDefault(context.selectionText, "").trim();
+  const tabId = Number(context.tabId);
   if (platform) {
     normalized.platform = platform;
   }
@@ -345,6 +357,19 @@ function normalizeMessageContext(
   if (title) {
     normalized.title = title;
   }
+  if (domain) {
+    normalized.domain = domain;
+  }
+  if (favIconUrl) {
+    normalized.favIconUrl = favIconUrl;
+  }
+  if (Number.isFinite(tabId)) {
+    normalized.tabId = tabId;
+  }
+  if (context.source === "selection" && selectionText) {
+    normalized.source = "selection";
+    normalized.selectionText = selectionText.slice(0, 12_000);
+  }
   return Object.keys(normalized).length ? { context: normalized } : {};
 }
 
@@ -353,9 +378,39 @@ function isTraceOnlyProgressMessage(message: ConversationMessage): boolean {
     message.role === "assistant" &&
     !message.text.trim() &&
     Boolean(message.trace?.length) &&
+    !message.plan?.steps.length &&
     !(message.images ?? []).length &&
     !(message.attachments ?? []).length
   );
+}
+
+function normalizeMessagePlan(
+  plan: ConversationMessage["plan"] | undefined,
+): Pick<ConversationMessage, "plan"> | Record<string, never> {
+  if (!plan || typeof plan !== "object") {
+    return {};
+  }
+  const threadId = stringOrDefault(plan.threadId, "").trim();
+  const turnId = stringOrDefault(plan.turnId, "").trim();
+  const steps = arrayOrEmpty(plan.steps)
+    .map((step) => ({
+      step: stringOrDefault(step.step, "").trim().slice(0, 500),
+      status: stringOrDefault(step.status, "pending").trim().slice(0, 40) || "pending",
+    }))
+    .filter((step) => step.step);
+  if (!threadId || !turnId || !steps.length) {
+    return {};
+  }
+  const explanation = stringOrDefault(plan.explanation ?? "", "").trim().slice(0, 1200);
+  return {
+    plan: {
+      threadId,
+      turnId,
+      explanation: explanation || null,
+      steps,
+      ...(plan.accepted === true ? { accepted: true } : {}),
+    },
+  };
 }
 
 function serializeConversationAttachmentsForStorage(

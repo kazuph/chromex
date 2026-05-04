@@ -5,8 +5,27 @@ export interface CatalogRefreshDecisionInput {
   force: boolean | undefined;
 }
 
+export interface CatalogAffectingSettingsInput {
+  previousWorkspaceRoot: string | undefined;
+  nextWorkspaceRoot: string | undefined;
+  previousCodexBinPath: string | undefined;
+  nextCodexBinPath: string | undefined;
+}
+
 export function normalizeCatalogWorkspaceRoot(workspaceRoot?: string): string {
   return workspaceRoot?.trim() ?? "";
+}
+
+export function normalizeCatalogSettingsPath(value?: string): string {
+  let normalized = value?.trim() ?? "";
+  while (
+    normalized.length >= 2 &&
+    ((normalized.startsWith("\"") && normalized.endsWith("\"")) ||
+      (normalized.startsWith("'") && normalized.endsWith("'")))
+  ) {
+    normalized = normalized.slice(1, -1).trim();
+  }
+  return normalized;
 }
 
 export function shouldTriggerCatalogRefresh(input: CatalogRefreshDecisionInput): boolean {
@@ -19,6 +38,13 @@ export function shouldTriggerCatalogRefresh(input: CatalogRefreshDecisionInput):
   }
 
   return normalizeCatalogWorkspaceRoot(input.workspaceRoot) !== input.lastRequestedWorkspaceRoot;
+}
+
+export function shouldRefreshCatalogAfterSettingsUpdate(input: CatalogAffectingSettingsInput): boolean {
+  return (
+    normalizeCatalogSettingsPath(input.previousWorkspaceRoot) !== normalizeCatalogSettingsPath(input.nextWorkspaceRoot) ||
+    normalizeCatalogSettingsPath(input.previousCodexBinPath) !== normalizeCatalogSettingsPath(input.nextCodexBinPath)
+  );
 }
 
 export function resolveCatalogModelState(input: {

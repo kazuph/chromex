@@ -2,8 +2,10 @@ import { describe, expect, test } from "vitest";
 
 import {
   resolveCatalogModelState,
+  normalizeCatalogSettingsPath,
   normalizeCatalogWorkspaceRoot,
   resolveSelectedCatalogModel,
+  shouldRefreshCatalogAfterSettingsUpdate,
   shouldTriggerCatalogRefresh,
 } from "../src/background/catalog-refresh.js";
 
@@ -11,6 +13,11 @@ describe("catalog refresh decisions", () => {
   test("normalizes missing workspace roots", () => {
     expect(normalizeCatalogWorkspaceRoot()).toBe("");
     expect(normalizeCatalogWorkspaceRoot("  /tmp/workspace  ")).toBe("/tmp/workspace");
+  });
+
+  test("normalizes quoted catalog-affecting settings paths", () => {
+    expect(normalizeCatalogSettingsPath('  "/Users/me/workspace"  ')).toBe("/Users/me/workspace");
+    expect(normalizeCatalogSettingsPath(" '/usr/local/bin/codex' ")).toBe("/usr/local/bin/codex");
   });
 
   test("refreshes before the first request", () => {
@@ -59,6 +66,50 @@ describe("catalog refresh decisions", () => {
         lastRequestedWorkspaceRoot: "/tmp/workspace",
         workspaceRoot: "/tmp/workspace",
         force: true,
+      }),
+    ).toBe(true);
+  });
+
+  test("does not refresh the catalog when unrelated settings change", () => {
+    expect(
+      shouldRefreshCatalogAfterSettingsUpdate({
+        previousWorkspaceRoot: "/tmp/workspace",
+        nextWorkspaceRoot: "/tmp/workspace",
+        previousCodexBinPath: "/usr/local/bin/codex",
+        nextCodexBinPath: "/usr/local/bin/codex",
+      }),
+    ).toBe(false);
+  });
+
+  test("does not refresh the catalog when path formatting changes without changing the value", () => {
+    expect(
+      shouldRefreshCatalogAfterSettingsUpdate({
+        previousWorkspaceRoot: '"/tmp/workspace"',
+        nextWorkspaceRoot: "/tmp/workspace",
+        previousCodexBinPath: "'/usr/local/bin/codex'",
+        nextCodexBinPath: "/usr/local/bin/codex",
+      }),
+    ).toBe(false);
+  });
+
+  test("refreshes the catalog when the workspace root changes", () => {
+    expect(
+      shouldRefreshCatalogAfterSettingsUpdate({
+        previousWorkspaceRoot: "/tmp/workspace",
+        nextWorkspaceRoot: "/tmp/other-workspace",
+        previousCodexBinPath: "/usr/local/bin/codex",
+        nextCodexBinPath: "/usr/local/bin/codex",
+      }),
+    ).toBe(true);
+  });
+
+  test("refreshes the catalog when the Codex binary path changes", () => {
+    expect(
+      shouldRefreshCatalogAfterSettingsUpdate({
+        previousWorkspaceRoot: "/tmp/workspace",
+        nextWorkspaceRoot: "/tmp/workspace",
+        previousCodexBinPath: "/usr/local/bin/codex",
+        nextCodexBinPath: "/opt/homebrew/bin/codex",
       }),
     ).toBe(true);
   });

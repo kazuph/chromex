@@ -9,6 +9,16 @@ describe("native host diagnostics", () => {
     ).toContain("--browser=chrome");
   });
 
+  test("does not report an exited Windows launcher as an uninstalled host", () => {
+    const message = toFriendlyNativeHostErrorMessage("Native host has exited.");
+
+    expect(message).toContain("exited immediately");
+    expect(message).toContain("reload the extension");
+    expect(message).toContain("Connection");
+    expect(message).not.toContain("is not installed");
+    expect(message).not.toContain("do not start codex app-server --listen manually");
+  });
+
   test("explains extension id mismatches clearly", () => {
     const message = toFriendlyNativeHostErrorMessage(
       "Access to the specified native messaging host is forbidden.",

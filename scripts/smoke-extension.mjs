@@ -228,11 +228,11 @@ try {
   if (
     !slashNoMatchState ||
     slashNoMatchState.slashQuery !== "definitelynomatch" ||
-    slashNoMatchState.slashSuggestionCount !== 0 ||
+    slashNoMatchState.slashSuggestionCount !== 1 ||
     slashNoMatchState.suggestionCount !== 1 ||
-    !/no commands|결과 없음/i.test(slashNoMatchState.popoverText)
+    !/create manually|직접 만들기/i.test(slashNoMatchState.popoverText)
   ) {
-    throw new Error(`Smoke test failed: / command no-result state did not stay open (${JSON.stringify(slashNoMatchState)}).`);
+    throw new Error(`Smoke test failed: / command no-match state did not keep direct profile creation (${JSON.stringify(slashNoMatchState)}).`);
   }
   await page.evaluate(() => window.__CODEX_SIDEPANEL_SMOKE__?.enableDryRunSubmit?.());
   const slashNoMatchEnterState = await page.evaluate(() =>
@@ -242,12 +242,14 @@ try {
     !slashNoMatchEnterState ||
     slashNoMatchEnterState.submissionCount !== 0 ||
     slashNoMatchEnterState.commandPills !== 0 ||
-    slashNoMatchEnterState.composerValue !== "/definitelynomatch"
+    slashNoMatchEnterState.composerValue !== ""
   ) {
     throw new Error(
-      `Smoke test failed: Enter submitted while / command search had no results (${JSON.stringify(slashNoMatchEnterState)}).`,
+      `Smoke test failed: Enter did not apply direct profile creation for an unmatched / command (${JSON.stringify(slashNoMatchEnterState)}).`,
     );
   }
+  await page.locator("#cancel-profile-editor").click({ timeout: 2_000 }).catch(() => undefined);
+  await page.locator('[data-view="chat"]').click({ timeout: 2_000 }).catch(() => undefined);
   const slashEnterState = await page.evaluate(() =>
     window.__CODEX_SIDEPANEL_SMOKE__?.submitWithEnter?.("/research") ?? null,
   );
@@ -266,14 +268,17 @@ try {
       option.getAttribute("data-slash-option-id"),
     ),
     skillOptions: Array.from(document.querySelectorAll("[data-slash-option-id]")).filter(
-      (option) => !String(option.getAttribute("data-slash-option-id") ?? "").startsWith("profile:"),
+      (option) => {
+        const optionId = String(option.getAttribute("data-slash-option-id") ?? "");
+        return !optionId.startsWith("profile:") && optionId !== "create-profile";
+      },
     ).length,
   }));
   if (
     selectedSlashCommandState.slashOptions.length < 1 ||
     selectedSlashCommandState.skillOptions !== 0
   ) {
-    throw new Error(`Smoke test failed: / command should list profiles only (${JSON.stringify(selectedSlashCommandState)}).`);
+    throw new Error(`Smoke test failed: / command should list profiles plus direct creation only (${JSON.stringify(selectedSlashCommandState)}).`);
   }
 
   await page.locator("#composer").fill("/");
@@ -864,7 +869,7 @@ try {
     ),
   }));
   if (
-    settingsControls.settingsCards !== 4 ||
+    settingsControls.settingsCards !== 3 ||
     settingsControls.navItems !== 0 ||
     !settingsControls.backButton ||
     !settingsControls.profileSelect ||

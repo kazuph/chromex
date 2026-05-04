@@ -230,6 +230,22 @@ describe("BridgeRpcRouter", () => {
     });
   });
 
+  test("reveals local files through the bridge local file plane", async () => {
+    const router = new BridgeRpcRouter(createDependencies());
+
+    const result = await router.handle({
+      id: "local-file-reveal",
+      method: "local.file.reveal",
+      params: { path: "/tmp/codex-images/generated.pdf" },
+    });
+
+    expect(result.result).toEqual({
+      opened: true,
+      path: "/tmp/codex-images/generated.pdf",
+      folder: "/tmp/codex-images",
+    });
+  });
+
   test("deletes a generated image asset through the image plane", async () => {
     const router = new BridgeRpcRouter(createDependencies());
 
@@ -719,6 +735,79 @@ describe("BridgeRpcRouter", () => {
       },
     ]);
   });
+
+  test("routes dictation transcription through the voice transport without exposing voice RPC names", async () => {
+    const start = vi.fn(async () => ({
+      status: "active" as const,
+      threadId: "thread-dictation",
+      sessionId: "sidepanel-dictation-1",
+      transport: "websocket" as const,
+    }));
+    const appendAudio = vi.fn(async () => undefined);
+    const stop = vi.fn(async () => undefined);
+    const router = new BridgeRpcRouter(
+      createDependencies({
+        voice: {
+          start,
+          appendText: vi.fn(),
+          appendAudio,
+          stop,
+        },
+      }),
+    );
+
+    const result = await router.handle({
+      id: "dictation-start",
+      method: "dictation.transcription.start",
+      params: {
+        outputModality: "text",
+        sessionId: "sidepanel-dictation-1",
+        prompt: "Transcribe only.",
+      },
+    });
+    await router.handle({
+      id: "dictation-audio",
+      method: "dictation.transcription.append_audio",
+      params: {
+        threadId: "thread-dictation",
+        audio: {
+          data: "AA==",
+          sampleRate: 24000,
+          numChannels: 1,
+          samplesPerChannel: 1,
+        },
+      },
+    });
+    await router.handle({
+      id: "dictation-stop",
+      method: "dictation.transcription.stop",
+      params: { threadId: "thread-dictation" },
+    });
+
+    expect(start).toHaveBeenCalledWith(
+      {
+        outputModality: "text",
+        sessionId: "sidepanel-dictation-1",
+        prompt: "Transcribe only.",
+      },
+      expect.any(Function),
+    );
+    expect(appendAudio).toHaveBeenCalledWith({
+      threadId: "thread-dictation",
+      audio: {
+        data: "AA==",
+        sampleRate: 24000,
+        numChannels: 1,
+        samplesPerChannel: 1,
+      },
+    });
+    expect(stop).toHaveBeenCalledWith({ threadId: "thread-dictation" });
+    expect(result.result).toMatchObject({
+      status: "active",
+      threadId: "thread-dictation",
+      sessionId: "sidepanel-dictation-1",
+    });
+  });
 });
 
 function createDependencies(overrides: Partial<BridgeDependencies> = {}): BridgeDependencies {
@@ -890,6 +979,13 @@ function createDependencies(overrides: Partial<BridgeDependencies> = {}): Bridge
         deleted: true,
         previewRef,
         path: "/tmp/codex-images/generated.png",
+      }),
+    },
+    localFiles: {
+      reveal: async ({ path }: { path: string }) => ({
+        opened: true,
+        path,
+        folder: "/tmp/codex-images",
       }),
     },
     route: {

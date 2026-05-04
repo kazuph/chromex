@@ -66,6 +66,8 @@ describe("background error responses", () => {
     expect(shouldLogBackgroundMessageError(new Error("Codex temporarily lost its connection to this tab. Try the action once more."))).toBe(
       false,
     );
+    expect(shouldLogBackgroundMessageError(new Error("No tab with id: 355471561"))).toBe(false);
+    expect(shouldLogBackgroundMessageError(new Error("Could not load file: 'content.js'."))).toBe(false);
   });
 
   test("keeps expired OAuth sessions out of noisy background failure logs", () => {
@@ -74,6 +76,27 @@ describe("background error responses", () => {
         new Error(
           "Your access token could not be refreshed because you have since logged out or signed in to another account. Please sign in again.",
         ),
+      ),
+    ).toBe(false);
+  });
+
+  test("keeps expected user/account request failures out of noisy background logs", () => {
+    expect(
+      shouldLogBackgroundMessageError(
+        new Error(
+          "unexpected status 401 Unauthorized: Incorrect API key provided: sk-proj-abc123, auth error code: invalid_api_key",
+        ),
+      ),
+    ).toBe(false);
+    expect(shouldLogBackgroundMessageError(new Error("You've hit your usage limit. Try again later."))).toBe(false);
+    expect(
+      shouldLogBackgroundMessageError(
+        new Error("Invalid image in your last message. Please remove it and try again."),
+      ),
+    ).toBe(false);
+    expect(
+      shouldLogBackgroundMessageError(
+        new Error("failed to load configuration: No such file or directory (os error 2)"),
       ),
     ).toBe(false);
   });

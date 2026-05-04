@@ -85,9 +85,9 @@ describe("online image prompt extraction", () => {
     expect(prompt).not.toContain("참고 맥락");
   });
 
-  test("wires the hover icon click through background into an auto-sent sidepanel prompt", () => {
+  test("wires the hover icon click through background into a composer image attachment", () => {
     expect(contentSource).toContain('message.type === "page.image-prompt-hover.install"');
-    expect(contentSource).toContain('type: "page.image-prompt.extract"');
+    expect(contentSource).toContain('type: "page.image-attachment.add"');
     expect(contentSource).toContain("const imageCandidate = describePageImage(image)");
     expect(contentSource).toContain("chromex-image-prompt-button");
     expect(contentSource).toContain("IMAGE_PROMPT_HOVER_ICON_DATA_URL");
@@ -103,15 +103,15 @@ describe("online image prompt extraction", () => {
     expect(backgroundSource).toContain("function installImagePromptHoverForTab");
     expect(backgroundSource).toContain("void installImagePromptHoverForTab(activeTab).catch(() => undefined)");
     expect(backgroundSource).toContain('case "page.image-prompt-hover.install"');
+    expect(backgroundSource).toContain('case "page.image-attachment.add"');
     expect(backgroundSource).toContain('case "page.image-prompt.extract"');
     expect(backgroundSource).toContain("chrome.sidePanel.open");
-    expect(backgroundSource).toContain('pendingImagePromptExtraction');
-    expect(sidepanelSource).toContain('message.type === "ui.image-prompt.extract"');
-    expect(sidepanelSource).toContain("handleOnlineImagePromptExtraction");
-    expect(sidepanelSource).toContain("await startNewChat()");
+    expect(backgroundSource).toContain("handlePageImageAttachmentAdd");
+    expect(backgroundSource).toContain("pendingImageAttachment");
+    expect(sidepanelSource).toContain('message.type === "ui.image-attachment.pending"');
+    expect(sidepanelSource).toContain("takePendingContextMenuImageAttachment");
     expect(sidepanelSource).toContain("createRemoteImageAttachment");
     expect(sidepanelSource).toContain("normalizeOnlineImagePromptAttachment");
-    expect(sidepanelSource).toContain("await sendPrompt(prompt)");
   });
 
   test("loads the hover button content script automatically on normal web pages", () => {
@@ -174,7 +174,7 @@ describe("online image prompt extraction", () => {
     expect(runtimeCase).toContain("sendResponse(await installImagePromptHoverForTab");
     expect(backgroundInstaller).toContain("return { ok: true, installed: false }");
     expect(backgroundInstaller).toContain("await sendMessageToTab");
-    expect(backgroundInstaller).toContain("isRetryableRuntimeMessageError(error)");
+    expect(backgroundInstaller).toContain("isRecoverableTabMessagingError(error)");
     expect(backgroundInstaller).toContain("extension.image_prompt.hover_install.transient_disconnect");
     expect(backgroundInstaller).toContain("return { ok: true, installed: true }");
     expect(backgroundInstaller).not.toContain(".catch(() => undefined)");
@@ -293,6 +293,10 @@ describe("online image prompt extraction", () => {
   test("keeps the hover button stable while the pointer moves from the image onto the button", () => {
     const pointerOverHandler = getFunctionSource(contentSource, "handleImagePromptPointerOver");
 
+    expect(pointerOverHandler).toContain("isImagePromptHoverButtonEventTarget(event.target)");
+    expect(pointerOverHandler.indexOf("isImagePromptHoverButtonEventTarget(event.target)")).toBeLessThan(
+      pointerOverHandler.indexOf("findPromptExtractableImageFromPointerEvent(event)"),
+    );
     expect(pointerOverHandler).toContain("isPointerInsideImagePromptHoverSurface");
     expect(pointerOverHandler.indexOf("isPointerInsideImagePromptHoverSurface")).toBeLessThan(
       pointerOverHandler.indexOf("findPromptExtractableImageFromPointerEvent(event)"),
@@ -390,11 +394,12 @@ describe("online image prompt extraction", () => {
     expect(installer).toContain('document.addEventListener("click", handleImagePromptButtonClick, listenerOptions)');
     expect(getButton).toContain('pointerEvents: "auto"');
     expect(getButton).toContain('button.addEventListener("click", handleImagePromptButtonClick');
+    expect(clickHandler).toContain("isImagePromptHoverButtonEventTarget(event.target)");
     expect(clickHandler).toContain("isPointInsideRect(imagePromptHoverButtonRect");
     expect(clickHandler).toContain("event.preventDefault()");
     expect(clickHandler).toContain("event.stopPropagation()");
     expect(clickHandler).toContain("event.stopImmediatePropagation()");
-    expect(clickHandler).toContain("void extractPromptFromHoveredImage()");
+    expect(clickHandler).toContain("void attachHoveredImageToComposer()");
   });
 
   test("finds prompt images when pointer events target wrappers or overlay siblings", () => {
@@ -490,10 +495,13 @@ describe("online image prompt extraction", () => {
     );
 
     const clickHandler = getFunctionSource(contentSource, "extractPromptFromHoveredImage");
+    const attachmentHandler = getFunctionSource(contentSource, "attachHoveredImageToComposer");
     expect(clickHandler).toContain('type: "page.image-prompt.extract"');
     expect(clickHandler).toContain("imageUrl,");
     expect(clickHandler).toContain("const imageCandidate = target.candidate");
     expect(clickHandler).toContain("imageCandidate,");
+    expect(attachmentHandler).toContain('type: "page.image-attachment.add"');
+    expect(attachmentHandler).toContain("imageCandidate,");
     expect(clickHandler).not.toContain("pageTitle: document.title");
     expect(clickHandler).not.toContain("pageUrl: window.location.href");
     expect(clickHandler).not.toContain("alt: image.alt.trim()");

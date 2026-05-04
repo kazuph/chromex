@@ -276,6 +276,7 @@ import {
 } from "./i18n.js";
 import { normalizeUiThemeSetting, resolveUiTheme } from "../ui-theme.js";
 import { classifyRuntimeMessageError, isRetryableRuntimeMessageError, toErrorMessage } from "../runtime-errors.js";
+import { getSpecificRuntimeErrorMessage } from "./runtime-error-copy.js";
 import { isCurrentPageAttachment, sanitizeUnavailableCurrentPageAttachments } from "../page-context.js";
 import { MAX_PROFILE_SYSTEM_PROMPT_LENGTH } from "../profile-templates.js";
 import {
@@ -360,6 +361,7 @@ type NativeTextDialogState = {
         message: string;
         displayMessage: string;
         resetThread?: boolean;
+        profileId?: string;
       }
     | { kind: "retry-live-voice" }
     | { kind: "retry-composer-dictation"; target: ComposerVoiceInputTarget };
@@ -700,6 +702,7 @@ if (!rootElement) {
   throw new Error("Missing #app root");
 }
 const root: HTMLDivElement = rootElement;
+root.addEventListener("click", handleYouTubeTimestampClick);
 const initialLocale = detectUiLocale(getBrowserUiLanguage());
 
 function createFallbackPlaywrightRuntime(): UiInitPayload["playwrightRuntime"] {
@@ -2035,10 +2038,18 @@ function normalizePendingDictationShortcut(value: unknown): PendingDictationShor
 }
 
 function createContextMenuImageAttachment(value: unknown): UserFileAttachment | null {
+  const directAttachment = normalizeOnlineImagePromptAttachment(value);
+  if (directAttachment) {
+    return directAttachment;
+  }
   if (!value || typeof value !== "object") {
     return null;
   }
   const input = value as Record<string, unknown>;
+  const nestedAttachment = normalizeOnlineImagePromptAttachment(input.attachment);
+  if (nestedAttachment) {
+    return nestedAttachment;
+  }
   const imageUrl = typeof input.imageUrl === "string" ? input.imageUrl.trim() : "";
   if (isHttpUrl(imageUrl)) {
     return createRemoteImageAttachment(imageUrl);
@@ -2426,8 +2437,10 @@ function rememberCurrentConversationSnapshot(): void {
   if (!state.currentConversationId) {
     return;
   }
+  const profileId =
+    conversationProfilesById.get(state.currentConversationId) ?? state.selectedProfileId ?? DEFAULT_PROFILE_ID;
   conversationMessagesById.set(state.currentConversationId, cloneConversationMessages(state.messages));
-  conversationProfilesById.set(state.currentConversationId, state.selectedProfileId || DEFAULT_PROFILE_ID);
+  conversationProfilesById.set(state.currentConversationId, profileId);
   conversationModelsById.set(state.currentConversationId, state.selectedModel || undefined);
   if (state.threadId) {
     rememberConversationThreadId(state.currentConversationId, state.threadId);
@@ -7846,9 +7859,16 @@ async function submitPendingProfileQuestion(answerOverride?: string): Promise<vo
   await sendPrompt(answer);
 }
 
-function createMessageProfileSnapshot(): ConversationMessageProfile | undefined {
-  ensureComposerProfileSelection();
-  const profile = getSelectedProfile();
+function resolvePromptProfileId(profileId: string | null | undefined): string {
+  if (profileId?.trim()) {
+    return normalizeSelectedProfileIdForProfiles(profileId, state.profiles);
+  }
+  return ensureComposerProfileSelection();
+}
+
+function createMessageProfileSnapshot(profileId?: string): ConversationMessageProfile | undefined {
+  const resolvedProfileId = resolvePromptProfileId(profileId);
+  const profile = state.profiles.find((candidate) => candidate.id === resolvedProfileId) ?? null;
   if (!profile || profile.id === DEFAULT_PROFILE_ID) {
     return undefined;
   }
@@ -13071,16 +13091,6 @@ function bindEvents(): void {
     });
   });
 
-  root.querySelectorAll<HTMLButtonElement>("[data-youtube-seek]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const seconds = Number(button.dataset.youtubeSeek);
-      if (!Number.isFinite(seconds)) {
-        return;
-      }
-      void seekYouTubeTimestamp(seconds);
-    });
-  });
-
   root.querySelectorAll<HTMLAnchorElement>("[data-local-file-path]").forEach((link) => {
     link.addEventListener("click", (event) => {
       event.preventDefault();
@@ -13456,6 +13466,7 @@ type SendPromptOptions = {
   resetThread?: boolean;
   displayMessage?: string;
   preserveComposerDraft?: boolean;
+  profileId?: string;
 };
 
 function clearOrRestoreComposerDraftAfterSubmit(
@@ -13566,7 +13577,7 @@ async function sendPrompt(
       restoreComposerDraftAfterProgrammaticSend(preservedComposerDraft, composer);
     }
     state.activeView = conferenceQuestionContextActiveAtSubmit ? "conference" : "chat";
-    const activeProfileId = ensureComposerProfileSelection();
+    const activeProfileId = resolvePromptProfileId(options.profileId);
     if (!state.currentConversationId) {
       const created = await sendRuntimeMessage<{ conversation: SavedConversation }>({
         type: "conversation.new",
@@ -13576,6 +13587,9 @@ async function sendPrompt(
       hydrateConversation(created.conversation);
     }
     conversationIdAtStart = state.currentConversationId;
+    if (conversationIdAtStart) {
+      conversationProfilesById.set(conversationIdAtStart, activeProfileId);
+    }
     if (options.resetThread) {
       state.threadId = "";
       state.activeTurn = null;
@@ -13599,7 +13613,7 @@ async function sendPrompt(
     const submittedMessageFileAttachments = submittedFileAttachmentState.messageFileAttachments;
     const submittedRequestFileAttachments = submittedFileAttachmentState.requestFileAttachments;
     state.fileAttachments = submittedFileAttachmentState.composerFileAttachments;
-    const messageProfile = createMessageProfileSnapshot();
+    const messageProfile = createMessageProfileSnapshot(activeProfileId);
     const messageContext = createMessageContextSnapshot();
     const submittedMessageStructuredInputs = createConversationMessageStructuredInputs(state.structuredInputs);
     const submittedPromptStructuredInputs = getPromptStructuredInputs();
@@ -14005,6 +14019,7 @@ function createPromptRetryAfterOAuthFallback(
     message,
     displayMessage,
     ...(options.resetThread ? { resetThread: true } : {}),
+    ...(options.profileId ? { profileId: options.profileId } : {}),
   };
 }
 
@@ -14016,6 +14031,7 @@ function createRetrySendPromptOptions(
     ...(displayMessage ? { displayMessage } : {}),
     ...(options.resetThread ? { resetThread: true } : {}),
     ...(options.preserveComposerDraft ? { preserveComposerDraft: true } : {}),
+    ...(options.profileId ? { profileId: options.profileId } : {}),
   };
 }
 
@@ -14124,6 +14140,24 @@ function shouldPreserveComposerDraftForActionCard(card: ActionCard | undefined, 
     return true;
   }
   return Boolean(card && getSuggestionCardSource(card) === "site");
+}
+
+function handleYouTubeTimestampClick(event: MouseEvent): void {
+  const target = event.target;
+  if (!(target instanceof Element)) {
+    return;
+  }
+  const button = target.closest<HTMLButtonElement>("[data-youtube-seek]");
+  if (!button || !root.contains(button)) {
+    return;
+  }
+  const seconds = Number(button.dataset.youtubeSeek);
+  if (!Number.isFinite(seconds)) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  void seekYouTubeTimestamp(seconds);
 }
 
 async function seekYouTubeTimestamp(seconds: number): Promise<void> {
@@ -14494,10 +14528,38 @@ async function copyConversationMessage(messageId: string | undefined): Promise<v
     return;
   }
 
-  await navigator.clipboard.writeText(message.text);
+  await writeTextToClipboard(message.text);
   state.actionStatus = "";
   markMessageCopied(message.id);
   render();
+}
+
+async function writeTextToClipboard(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // Extension pages can briefly lose clipboard access in some browser
+      // contexts. Keep copy actions usable with a local fallback.
+    }
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.top = "-1000px";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  try {
+    if (!document.execCommand("copy")) {
+      throw new Error("copy command was rejected");
+    }
+  } finally {
+    textarea.remove();
+  }
 }
 
 async function deleteConversationFromUi(conversationId: string): Promise<void> {
@@ -14676,7 +14738,7 @@ async function copyMessageCodeBlock(button: HTMLButtonElement): Promise<void> {
     return;
   }
 
-  await navigator.clipboard.writeText(code);
+  await writeTextToClipboard(code);
   const strings = stringsForState();
   state.actionStatus = strings.status.messageCopied;
   render();
@@ -14700,7 +14762,7 @@ async function replayConversationFromMessage(
   state.threadId = "";
   state.activeTurn = null;
   scheduleConversationPersist();
-  await sendPrompt(replay.prompt, { resetThread: true });
+  await sendPrompt(replay.prompt, { resetThread: true, profileId: replay.profileId });
 }
 
 function isSlideImageGenerationActionCard(card: ActionCard): boolean {
@@ -15393,7 +15455,7 @@ function patchStreamingAssistantMessageDoms(itemIds: string[]): boolean {
       return false;
     }
     content.innerHTML = renderMessageContentHtml(message.text, {
-      enableYouTubeTimestampLinks: shouldRenderYouTubeTimestampLinks(),
+      enableYouTubeTimestampLinks: shouldRenderYouTubeTimestampLinksForMessage(message),
     });
   }
   restoreScrollPositions(scrollState);
@@ -19981,8 +20043,10 @@ function flushConversationPersist(): void {
 }
 
 async function persistConversation(): Promise<void> {
-  const activeProfileId = ensureComposerProfileSelection();
   let conversationIdForSave = state.currentConversationId;
+  const activeProfileId = conversationIdForSave
+    ? (conversationProfilesById.get(conversationIdForSave) ?? ensureComposerProfileSelection())
+    : ensureComposerProfileSelection();
   const messages = serializeConversationMessagesForStorage(state.messages);
   if (!shouldPersistConversationMessagesForStorage(state.messages)) {
     if (conversationIdForSave) {
@@ -20200,8 +20264,13 @@ function toUserFacingRuntimeError(error: unknown, fallback?: string): string {
   if (planModeError) {
     return planModeError;
   }
+  const specificMessage = getSpecificRuntimeErrorMessage(error, getTranslatedUiLocale(state.uiLocale));
+  if (specificMessage) {
+    return specificMessage;
+  }
   switch (classifyRuntimeMessageError(error)) {
     case "transient-disconnect":
+    case "stale-tab":
       return strings.errors.runtimeDisconnected;
     case "host-access":
       return strings.errors.pageAccess;

@@ -57,7 +57,12 @@ import {
   BrowserPermissionRequiredError,
   isBrowserPermissionRequiredError,
 } from "../browser-permission-errors.js";
-import { classifyRuntimeMessageError, isRetryableRuntimeMessageError, toErrorMessage } from "../runtime-errors.js";
+import {
+  classifyRuntimeMessageError,
+  isRecoverableTabMessagingError,
+  isRetryableRuntimeMessageError,
+  toErrorMessage,
+} from "../runtime-errors.js";
 import {
   createConversation,
   clearConversations,
@@ -226,6 +231,7 @@ type PendingImagePromptExtraction = {
 type PendingImageAttachment = {
   imageUrl: string;
   pageUrl?: string;
+  attachment?: UserFileAttachment;
   createdAt: number;
 };
 type PendingContextMenuAction = "summarize-page" | "summarize-video";
@@ -917,6 +923,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           return;
         case "page.image-prompt-hover.install":
           sendResponse(await installImagePromptHoverForTab(await getActiveTab().catch(() => null)));
+          return;
+        case "page.image-attachment.add":
+          sendResponse(await handlePageImageAttachmentAdd(message, sender.tab));
           return;
         case "page.image-prompt.extract":
           sendResponse(await handlePageImagePromptExtraction(message, sender.tab));
@@ -3039,7 +3048,7 @@ async function installImagePromptHoverForTab(
       type: "page.image-prompt-hover.install",
     });
   } catch (error) {
-    if (isRetryableRuntimeMessageError(error)) {
+    if (isRecoverableTabMessagingError(error)) {
       void recordDiagnostic("extension.image_prompt.hover_install.transient_disconnect", {
         tabId: tab.id,
         url: tab.url,
@@ -3225,6 +3234,49 @@ async function handlePageImagePromptExtraction(
       extraction: pendingExtraction,
     })
     .catch(() => undefined);
+  return { ok: true };
+}
+
+async function handlePageImageAttachmentAdd(
+  message: Record<string, unknown>,
+  tab: chrome.tabs.Tab | undefined,
+): Promise<{ ok: true } | { error: string }> {
+  const extraction = normalizePendingImagePromptExtraction(message);
+  if (!extraction) {
+    return { error: "No online image URL was provided." };
+  }
+
+  let sidePanelOpenPromise: Promise<void> | null = null;
+  if (tab?.windowId) {
+    state.browserWindowId = tab.windowId;
+    sidePanelOpenPromise = chrome.sidePanel.open({ windowId: tab.windowId }).catch(() => undefined);
+  }
+
+  const attachment = await createOnlineImagePromptAttachment(extraction, tab);
+  if (!attachment) {
+    const error = buildOnlineImagePromptAttachmentError(extraction);
+    await chrome.storage.session.set({ pendingImagePromptError: error });
+    await sidePanelOpenPromise;
+    await chrome.runtime
+      .sendMessage({
+        type: "ui.image-prompt.error",
+        error,
+      })
+      .catch(() => undefined);
+    return { error: "Chromex could not read this page image for attachment." };
+  }
+
+  await chrome.storage.session.set({
+    pendingImageAttachment: {
+      imageUrl: extraction.imageUrl,
+      ...(tab?.url || extraction.pageUrl ? { pageUrl: extraction.pageUrl ?? tab?.url } : {}),
+      attachment,
+      createdAt: Date.now(),
+    },
+  });
+  await chrome.storage.session.remove(["pendingAction", "pendingSelectionContext"]);
+  await sidePanelOpenPromise;
+  await chrome.runtime.sendMessage({ type: "ui.image-attachment.pending" }).catch(() => undefined);
   return { ok: true };
 }
 
@@ -3531,12 +3583,14 @@ function normalizePendingImageAttachment(value: unknown): PendingImageAttachment
   }
   const input = value as Record<string, unknown>;
   const imageUrl = typeof input.imageUrl === "string" ? input.imageUrl.trim() : "";
-  if (!isFetchableImagePromptSource(imageUrl)) {
+  const attachment = normalizePromptImageAttachment(input.attachment);
+  if (!attachment && !isFetchableImagePromptSource(imageUrl)) {
     return null;
   }
   return {
-    imageUrl,
+    imageUrl: imageUrl || attachment?.sourceUrl || "",
     createdAt: Math.max(0, Number(input.createdAt) || Date.now()),
+    ...(attachment ? { attachment } : {}),
     ...(typeof input.pageUrl === "string" && input.pageUrl.trim() ? { pageUrl: input.pageUrl.trim() } : {}),
   };
 }

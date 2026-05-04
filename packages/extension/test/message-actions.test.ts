@@ -16,6 +16,7 @@ describe("message actions", () => {
       prompt: "두 번째 질문",
       messagesBeforePrompt: messages.slice(0, 2),
       userMessageId: "user-2",
+      profileId: "default",
     });
   });
 
@@ -24,10 +25,35 @@ describe("message actions", () => {
       prompt: "수정한 첫 질문",
       messagesBeforePrompt: [],
       userMessageId: "user-1",
+      profileId: "default",
     });
   });
 
   test("rejects empty edited messages", () => {
     expect(prepareMessageReplay(messages, "user-2", "   ")).toBeNull();
+  });
+
+  test("keeps the original user message profile when regenerating an assistant answer", () => {
+    const profiledMessages: ConversationMessage[] = [
+      {
+        id: "user-research",
+        role: "user",
+        text: "이 논문 요약해줘",
+        profile: {
+          id: "research",
+          name: "Research Assistant",
+          color: "#2563eb",
+          icon: "book-open",
+        },
+      },
+      { id: "assistant-research", role: "assistant", text: "요약입니다." },
+    ];
+
+    expect(prepareMessageReplay(profiledMessages, "assistant-research")).toEqual({
+      prompt: "이 논문 요약해줘",
+      messagesBeforePrompt: [],
+      userMessageId: "user-research",
+      profileId: "research",
+    });
   });
 });

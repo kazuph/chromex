@@ -42,6 +42,19 @@ export function shouldLogBackgroundMessageError(error: unknown): boolean {
 }
 
 function isExpectedRecoverableBackgroundError(error: unknown): boolean {
+  switch (classifyRuntimeMessageError(error)) {
+    case "auth-expired":
+    case "extension-reload-required":
+    case "invalid-api-key":
+    case "invalid-image":
+    case "missing-configuration":
+    case "stale-tab":
+    case "usage-limit":
+      return true;
+    default:
+      break;
+  }
+
   const message = getErrorMessage(error).toLowerCase();
   return (
     message.includes("allow access to file urls") ||

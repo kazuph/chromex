@@ -872,6 +872,9 @@ function handleImagePromptPointerOver(event: MouseEvent): void {
       return;
     }
     rememberImagePromptPointer(event);
+    if (isImagePromptHoverButtonEventTarget(event.target)) {
+      return;
+    }
     if (isPointerInsideImagePromptHoverSurface(event.clientX, event.clientY)) {
       return;
     }
@@ -1295,6 +1298,10 @@ function isPointerInsideImagePromptHoverSurface(clientX: number, clientY: number
   );
 }
 
+function isImagePromptHoverButtonEventTarget(target: EventTarget | null): boolean {
+  return target instanceof Node && Boolean(imagePromptHoverButton?.contains(target));
+}
+
 function isPointInsideRect(rect: DOMRect | null | undefined, clientX: number, clientY: number, padding = 0): boolean {
   if (!rect) {
     return false;
@@ -1431,15 +1438,19 @@ function positionImagePromptHoverButton(rect: DOMRect, button: HTMLButtonElement
 
 function handleImagePromptButtonClick(event: MouseEvent): void {
   try {
-    if (!isActiveContentScriptInstance() || !isPointInsideRect(imagePromptHoverButtonRect, event.clientX, event.clientY)) {
+    const isButtonTarget = isImagePromptHoverButtonEventTarget(event.target);
+    if (
+      !isActiveContentScriptInstance() ||
+      (!isButtonTarget && !isPointInsideRect(imagePromptHoverButtonRect, event.clientX, event.clientY))
+    ) {
       return;
     }
     event.preventDefault();
     event.stopPropagation();
     event.stopImmediatePropagation();
-    void extractPromptFromHoveredImage().catch((error: unknown) => {
+    void attachHoveredImageToComposer().catch((error: unknown) => {
       if (!handleImagePromptRuntimeError(error)) {
-        console.warn("[Chromex] Failed to extract an image prompt.", error);
+        console.warn("[Chromex] Failed to attach the hovered image.", error);
       }
     });
   } catch (error) {
@@ -1524,6 +1535,41 @@ async function extractPromptFromHoveredImage(): Promise<void> {
     const attachment = await createImagePromptAttachmentForHoveredTarget(target, imageUrl);
     await runtime.sendMessage({
       type: "page.image-prompt.extract",
+      imageUrl,
+      imageCandidate,
+      ...(attachment ? { attachment } : {}),
+    });
+  } catch (error) {
+    if (handleImagePromptRuntimeError(error)) {
+      return;
+    }
+    throw error;
+  }
+}
+
+async function attachHoveredImageToComposer(): Promise<void> {
+  if (!isActiveContentScriptInstance()) {
+    return;
+  }
+  const target = imagePromptHoverTarget;
+  if (!target) {
+    return;
+  }
+  const imageUrl = target.url;
+  if (!isSupportedImagePromptSource(imageUrl)) {
+    return;
+  }
+  const imageCandidate = target.candidate;
+  hideImagePromptHoverButton();
+  const runtime = getSafeChromeRuntime();
+  if (!runtime) {
+    cleanupContentScriptInstance();
+    return;
+  }
+  try {
+    const attachment = await createImagePromptAttachmentForHoveredTarget(target, imageUrl);
+    await runtime.sendMessage({
+      type: "page.image-attachment.add",
       imageUrl,
       imageCandidate,
       ...(attachment ? { attachment } : {}),

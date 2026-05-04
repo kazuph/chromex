@@ -116,7 +116,7 @@ describe("InMemoryBridgeSecrets", () => {
     tempDirs.push(dir);
     const secretPath = join(dir, "secrets.json");
     const previousEnvKey = process.env[OPENAI_API_KEY_ENV_NAME];
-    process.env[OPENAI_API_KEY_ENV_NAME] = "sk-env-should-not-be-used";
+    process.env[OPENAI_API_KEY_ENV_NAME] = "test-env-key-should-not-be-used";
 
     try {
       const store = new InMemoryBridgeSecrets({ secretPath });
@@ -173,9 +173,9 @@ describe("Codex app-server startup", () => {
   test("does not forward provider API key environment values into Codex app-server", () => {
     const env = createCodexAppServerProcessEnv({
       PATH: "/usr/bin",
-      OPENAI_API_KEY: "sk-openai",
+      OPENAI_API_KEY: "test-openai-env-key",
       OpenAI_Api_Key_File: "/tmp/openai-key",
-      CODEX_API_KEY: "sk-codex",
+      CODEX_API_KEY: "test-codex-env-key",
       CODEX_API_KEY_FILE: "/tmp/codex-key",
     });
 

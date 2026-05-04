@@ -840,6 +840,9 @@ function clamp(value: number, min: number, max: number): number {
 function installImagePromptHover(): void {
   if (imagePromptHoverInstalled) {
     removeImagePromptHoverButtons(imagePromptHoverButton);
+    if (imagePromptHoverButton?.isConnected && imagePromptHoverTargetRect) {
+      positionImagePromptHoverButton(imagePromptHoverTargetRect, imagePromptHoverButton);
+    }
     return;
   }
   imagePromptHoverInstalled = true;

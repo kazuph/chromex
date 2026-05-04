@@ -129,6 +129,21 @@ describe("online image prompt extraction", () => {
     expect(manifest.permissions).toContain("offscreen");
   });
 
+  test("keeps hover installation idempotent so active tab refreshes do not hide the button", () => {
+    const installer = getFunctionSource(contentSource, "installImagePromptHover");
+    const installedBranch = installer.slice(
+      installer.indexOf("if (imagePromptHoverInstalled)"),
+      installer.indexOf("imagePromptHoverInstalled = true"),
+    );
+
+    expect(installedBranch).toContain("removeImagePromptHoverButtons(imagePromptHoverButton)");
+    expect(installedBranch).toContain("imagePromptHoverButton?.isConnected && imagePromptHoverTargetRect");
+    expect(installedBranch).toContain("positionImagePromptHoverButton(imagePromptHoverTargetRect, imagePromptHoverButton)");
+    expect(installedBranch).not.toContain("hideImagePromptHoverButton");
+    expect(installedBranch).not.toContain("imagePromptHoverTarget = null");
+    expect(installedBranch).not.toContain("setImagePromptHoverButtonVisible");
+  });
+
   test("removes stale hover buttons from the page instead of leaving hidden DOM behind", () => {
     expect(contentSource).toContain("function removeImagePromptHoverButtons");
     expect(contentSource).toContain("function safeRemoveElement");

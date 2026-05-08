@@ -2,9 +2,11 @@ import { describe, expect, test } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const sidepanelSource = readFileSync(resolve(process.cwd(), "src/sidepanel/index.ts"), "utf8");
-const backgroundSource = readFileSync(resolve(process.cwd(), "src/background/index.ts"), "utf8");
-const sidepanelCss = readFileSync(resolve(process.cwd(), "public/sidepanel.css"), "utf8");
+const normalizeLineEndings = (value: string): string => value.replace(/\r\n/gu, "\n");
+
+const sidepanelSource = normalizeLineEndings(readFileSync(resolve(process.cwd(), "src/sidepanel/index.ts"), "utf8"));
+const backgroundSource = normalizeLineEndings(readFileSync(resolve(process.cwd(), "src/background/index.ts"), "utf8"));
+const sidepanelCss = normalizeLineEndings(readFileSync(resolve(process.cwd(), "public/sidepanel.css"), "utf8"));
 
 describe("plan input request handling", () => {
   test("starts composer plan mode without wiring it through /goal", () => {

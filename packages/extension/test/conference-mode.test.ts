@@ -514,6 +514,22 @@ describe("conference mode", () => {
     expect(voiceErrorBody).toContain('getRealtimeApiKeyRequiredMessage(');
   });
 
+  test("invalidates queued conference audio frames when live transcription is stopped", () => {
+    const startAudioBody = extractFunctionBody("startConferenceModeAudioInput");
+    const queueBody = extractFunctionBody("queueConferenceModeAudioFrame");
+    const stopBody = extractFunctionBody("stopConferenceMode");
+    const cleanupBody = extractFunctionBody("cleanupConferenceModeResources");
+
+    expect(sidepanelSource).toContain("let conferenceModeAudioGeneration = 0");
+    expect(startAudioBody).toContain("const audioGeneration = ++conferenceModeAudioGeneration");
+    expect(startAudioBody).toContain("queueConferenceModeAudioFrame(threadId, samples, sourceSampleRate, audioGeneration)");
+    expect(queueBody).toContain("audioGeneration !== conferenceModeAudioGeneration");
+    expect(queueBody).toContain("!state.conferenceMode.active");
+    expect(queueBody).toContain("state.conferenceMode.threadId !== threadId");
+    expect(stopBody).toContain("conferenceModeAudioGeneration += 1");
+    expect(cleanupBody).toContain("conferenceModeAudioGeneration += 1");
+  });
+
   test("uses the available sidepanel width for conference transcript and chat panes", () => {
     expect(readFinalDeclaration(".conference-view", "padding")).toBe("0 6px 10px");
     expect(readFinalDeclaration(".conference-view-shell", "gap")).toBe("10px");

@@ -101,6 +101,9 @@ describe("realtime interpreter mode", () => {
     expect(renderBody).toContain("realtime-interpreter-cost-note");
     expect(renderBody).toContain("labels.costGuideTitle");
     expect(renderBody).toContain("labels.costGuideBody");
+    expect(renderBody).toContain('id="realtime-interpreter-output-volume"');
+    expect(renderBody).toContain("labels.outputVolume");
+    expect(renderBody).toContain("labels.outputVolumeHelp");
     expect(sidepanelSource).toContain('state.realtimeInterpreter.inputSource === "microphone"');
     expect(sidepanelSource).toContain("requestRealtimeInterpreterMicrophoneStream");
     expect(sidepanelSource).toContain("requestComputerAudioStreamForDictation");
@@ -143,14 +146,14 @@ describe("realtime interpreter mode", () => {
     expect(sidepanelCss).toMatch(/\.realtime-interpreter-refresh-button svg\s*\{[^}]*display:\s*block/su);
   });
 
-  test("suppresses captured tab audio playback only after confirming the selected surface is a browser tab", () => {
+  test("requests tab audio suppression at capture time and confirms it for browser tabs", () => {
     const displayCaptureBody = extractFunctionBody("requestRealtimeInterpreterDisplayAudioStream");
     const displayOptionsBody = extractFunctionBody("createComputerAudioDisplayMediaOptions");
     const suppressBody = extractFunctionBody("suppressBrowserTabLocalAudioPlayback");
     const shouldSuppressBody = extractFunctionBody("shouldSuppressLocalAudioPlaybackForDisplaySurface");
 
     expect(displayCaptureBody).toContain("requestComputerAudioStreamForDictation({");
-    expect(displayCaptureBody).toContain("suppressLocalAudioPlayback: false");
+    expect(displayCaptureBody).toContain("suppressLocalAudioPlayback: Boolean(options.suppressLocalAudioPlayback)");
     expect(displayCaptureBody).toContain("shouldSuppressLocalAudioPlaybackForDisplaySurface(displaySurface)");
     expect(displayCaptureBody).toContain("suppressBrowserTabLocalAudioPlayback(stream)");
     expect(shouldSuppressBody).toContain('displaySurface === "browser"');
@@ -160,12 +163,19 @@ describe("realtime interpreter mode", () => {
     expect(displayOptionsBody).toContain("suppressLocalAudioPlayback");
   });
 
-  test("plays translated remote audio even when WebRTC sends a track without streams", () => {
+  test("plays translated remote audio with the configured interpreter volume even when WebRTC sends a track without streams", () => {
     const peerBody = extractFunctionBody("attachRealtimeInterpreterPeerHandlers");
+    const bindBody = extractFunctionBody("bindRealtimeInterpreterControls");
 
     expect(peerBody).toContain("event.streams[0] ?? new MediaStream([event.track])");
     expect(peerBody).toContain("realtimeInterpreterAudio.muted = false");
-    expect(peerBody).toContain("realtimeInterpreterAudio.volume = 1");
+    expect(peerBody).toContain("applyRealtimeInterpreterOutputVolume()");
+    expect(sidepanelSource).toContain("function clampRealtimeInterpreterOutputVolume");
+    expect(sidepanelSource).toContain("function applyRealtimeInterpreterOutputVolume");
+    expect(sidepanelSource).toContain("outputVolume: 1");
+    expect(bindBody).toContain("#realtime-interpreter-output-volume");
+    expect(bindBody).toContain("state.realtimeInterpreter.outputVolume = volume");
+    expect(bindBody).toContain("applyRealtimeInterpreterOutputVolume()");
   });
 
   test("routes translation client secret creation through the native bridge only", () => {

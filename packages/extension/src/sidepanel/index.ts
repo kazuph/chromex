@@ -399,6 +399,7 @@ type RealtimeInterpreterState = {
   stopping: boolean;
   settingsOpen: boolean;
   livePlaybackEnabled: boolean;
+  outputVolume: number;
   error: string;
   sourceLabel: string;
   inputSource: RealtimeInterpreterInputSource;
@@ -819,6 +820,7 @@ function createRealtimeInterpreterState(): RealtimeInterpreterState {
     stopping: false,
     settingsOpen: false,
     livePlaybackEnabled: false,
+    outputVolume: 1,
     error: "",
     sourceLabel: "",
     inputSource: "display",
@@ -1041,6 +1043,7 @@ let conferenceModeAudioSource: MediaStreamAudioSourceNode | null = null;
 let conferenceModeAudioWorkletNode: AudioWorkletNode | null = null;
 let conferenceModeAudioSamples: number[] = [];
 let conferenceModeAudioSendChain: Promise<void> = Promise.resolve();
+let conferenceModeAudioGeneration = 0;
 let conferenceModeDataChannel: RTCDataChannel | null = null;
 let conferenceModePendingTranslationRequests: string[] = [];
 let conferenceModeTranslationInFlight = false;
@@ -6494,6 +6497,8 @@ function renderRealtimeInterpreterControls(): string {
   const microphoneDisabled = controlsDisabled || state.realtimeInterpreter.inputSource !== "microphone";
   const displaySelected = state.realtimeInterpreter.inputSource === "display";
   const microphoneSelected = state.realtimeInterpreter.inputSource === "microphone";
+  const outputVolume = clampRealtimeInterpreterOutputVolume(state.realtimeInterpreter.outputVolume);
+  const outputVolumePercent = Math.round(outputVolume * 100);
 
   return `
     <section class="realtime-interpreter-controls" aria-label="${escapeAttribute(labels.controls)}">
@@ -6530,6 +6535,24 @@ function renderRealtimeInterpreterControls(): string {
         <strong>${escapeHtml(labels.costGuideRate)}</strong>
         <small>${escapeHtml(labels.costGuideBody)}</small>
       </div>
+      <label class="realtime-interpreter-control realtime-interpreter-volume-control">
+        <span>${escapeHtml(labels.outputVolume)}</span>
+        <div class="realtime-interpreter-volume-row">
+          <input
+            id="realtime-interpreter-output-volume"
+            type="range"
+            min="0"
+            max="100"
+            step="5"
+            value="${escapeAttribute(String(outputVolumePercent))}"
+            aria-label="${escapeAttribute(labels.outputVolume)}"
+          />
+          <output id="realtime-interpreter-output-volume-value" for="realtime-interpreter-output-volume">${escapeHtml(
+            `${outputVolumePercent}%`,
+          )}</output>
+        </div>
+        <small>${escapeHtml(labels.outputVolumeHelp)}</small>
+      </label>
     </section>
   `;
 }
@@ -6554,6 +6577,20 @@ function getRealtimeInterpreterTargetLanguageLabel(value: string): string {
     return value.toUpperCase();
   }
   return isKoreanUiLocale() ? option.ko : option.en;
+}
+
+function clampRealtimeInterpreterOutputVolume(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 1;
+  }
+  return Math.min(1, Math.max(0, value));
+}
+
+function applyRealtimeInterpreterOutputVolume(): void {
+  if (!realtimeInterpreterAudio) {
+    return;
+  }
+  realtimeInterpreterAudio.volume = clampRealtimeInterpreterOutputVolume(state.realtimeInterpreter.outputVolume);
 }
 
 function partitionPromptActivityMessages(messages: ConversationMessage[]): {
@@ -18641,6 +18678,7 @@ async function stopConferenceMode(options: {
   if (options.preserveEntries) {
     commitConferenceModePartialIfReady({ force: true, allowSourceOnly: true });
   }
+  conferenceModeAudioGeneration += 1;
   state.conferenceMode.stopping = wasActive;
   state.conferenceMode.active = false;
   state.conferenceMode.starting = false;
@@ -18679,6 +18717,7 @@ async function stopConferenceMode(options: {
 function cleanupConferenceModeResources(reason?: string): void {
   cancelPendingVoiceAnswer(reason);
   cancelConferenceModeTranslationRetry();
+  conferenceModeAudioGeneration += 1;
   conferenceModeAudioWorkletNode?.port.close();
   conferenceModeAudioWorkletNode?.disconnect();
   conferenceModeAudioWorkletNode = null;
@@ -18846,6 +18885,7 @@ function handleConferenceModeTranslationPayload(payload: Record<string, unknown>
 
 async function startConferenceModeAudioInput(stream: MediaStream, threadId: string): Promise<void> {
   cleanupConferenceModeAudioInput();
+  const audioGeneration = ++conferenceModeAudioGeneration;
   conferenceModeAudioContext = new AudioContext();
   await conferenceModeAudioContext.audioWorklet.addModule(chrome.runtime.getURL("realtime-audio-input-worklet.js"));
   conferenceModeAudioSource = conferenceModeAudioContext.createMediaStreamSource(stream);
@@ -18869,7 +18909,7 @@ async function startConferenceModeAudioInput(stream: MediaStream, threadId: stri
     const chunkSize = Math.max(1, Math.floor((sourceSampleRate * REALTIME_AUDIO_CHUNK_MS) / 1000));
     while (conferenceModeAudioSamples.length >= chunkSize) {
       const samples = conferenceModeAudioSamples.splice(0, chunkSize);
-      queueConferenceModeAudioFrame(threadId, samples, sourceSampleRate);
+      queueConferenceModeAudioFrame(threadId, samples, sourceSampleRate, audioGeneration);
     }
   };
   conferenceModeAudioSource.connect(conferenceModeAudioWorkletNode);
@@ -18878,6 +18918,7 @@ async function startConferenceModeAudioInput(stream: MediaStream, threadId: stri
 }
 
 function cleanupConferenceModeAudioInput(): void {
+  conferenceModeAudioGeneration += 1;
   conferenceModeAudioWorkletNode?.port.close();
   conferenceModeAudioWorkletNode?.disconnect();
   conferenceModeAudioWorkletNode = null;
@@ -18891,7 +18932,12 @@ function cleanupConferenceModeAudioInput(): void {
   conferenceModeAudioSendChain = Promise.resolve();
 }
 
-function queueConferenceModeAudioFrame(threadId: string, samples: number[], sourceSampleRate: number): void {
+function queueConferenceModeAudioFrame(
+  threadId: string,
+  samples: number[],
+  sourceSampleRate: number,
+  audioGeneration: number,
+): void {
   if (!threadId || !samples.length) {
     return;
   }
@@ -18903,6 +18949,13 @@ function queueConferenceModeAudioFrame(threadId: string, samples: number[], sour
   const data = encodePcm16Base64(resampled);
   conferenceModeAudioSendChain = conferenceModeAudioSendChain
     .then(async () => {
+      if (
+        audioGeneration !== conferenceModeAudioGeneration ||
+        !state.conferenceMode.active ||
+        state.conferenceMode.threadId !== threadId
+      ) {
+        return;
+      }
       await chrome.runtime.sendMessage({
         type: "dictation.transcription.append_audio",
         threadId,
@@ -18915,7 +18968,11 @@ function queueConferenceModeAudioFrame(threadId: string, samples: number[], sour
       });
     })
     .catch((error) => {
-      if (state.conferenceMode.active && state.conferenceMode.threadId === threadId) {
+      if (
+        audioGeneration === conferenceModeAudioGeneration &&
+        state.conferenceMode.active &&
+        state.conferenceMode.threadId === threadId
+      ) {
         handleConferenceModeError(toUserFacingVoiceStartError(error));
         render();
       }
@@ -19175,6 +19232,17 @@ function bindRealtimeInterpreterControls(): void {
   });
   root.querySelector<HTMLButtonElement>("#realtime-interpreter-refresh-devices")?.addEventListener("click", () => {
     void refreshRealtimeInterpreterMicrophones();
+  });
+  root.querySelector<HTMLInputElement>("#realtime-interpreter-output-volume")?.addEventListener("input", (event) => {
+    const input = event.currentTarget as HTMLInputElement | null;
+    const volume = clampRealtimeInterpreterOutputVolume(Number(input?.value ?? 100) / 100);
+    state.realtimeInterpreter.outputVolume = volume;
+    applyRealtimeInterpreterOutputVolume();
+    const valueOutput = root.querySelector<HTMLOutputElement>("#realtime-interpreter-output-volume-value");
+    if (valueOutput) {
+      valueOutput.value = `${Math.round(volume * 100)}%`;
+      valueOutput.textContent = valueOutput.value;
+    }
   });
   root.querySelector<HTMLButtonElement>("#realtime-interpreter-start")?.addEventListener("click", () => {
     void startRealtimeInterpreterMode();
@@ -19516,7 +19584,7 @@ async function requestRealtimeInterpreterDisplayAudioStream(
   options: ComputerAudioCaptureOptions = {},
 ): Promise<RealtimeInterpreterAudioStreamResult> {
   const stream = await requestComputerAudioStreamForDictation({
-    suppressLocalAudioPlayback: false,
+    suppressLocalAudioPlayback: Boolean(options.suppressLocalAudioPlayback),
   });
   const displaySurface = getDisplaySurfaceFromStream(stream);
   if (options.suppressLocalAudioPlayback && shouldSuppressLocalAudioPlaybackForDisplaySurface(displaySurface)) {
@@ -19653,7 +19721,7 @@ function attachRealtimeInterpreterPeerHandlers(
     realtimeInterpreterAudio = new Audio();
     realtimeInterpreterAudio.autoplay = true;
     realtimeInterpreterAudio.muted = false;
-    realtimeInterpreterAudio.volume = 1;
+    applyRealtimeInterpreterOutputVolume();
     realtimeInterpreterAudio.setAttribute("playsinline", "true");
     realtimeInterpreterAudio.srcObject = stream;
     void realtimeInterpreterAudio.play().catch(() => undefined);

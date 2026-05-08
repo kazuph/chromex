@@ -12140,6 +12140,31 @@ button.primary,
   line-height: 1.38;
 }
 
+.realtime-interpreter-volume-control small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.realtime-interpreter-volume-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 42px;
+  gap: 8px;
+  align-items: center;
+}
+
+.realtime-interpreter-volume-row input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.realtime-interpreter-volume-row output {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+  text-align: right;
+}
+
 .realtime-interpreter-button {
   min-height: 32px;
   border: 1px solid var(--line);

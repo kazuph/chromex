@@ -1226,10 +1226,7 @@ export class AppServerCodexPlane implements BridgeCodexPlane {
         throw new Error("API key login requires params.apiKey");
       }
       this.#secrets.setOpenAiApiKey(apiKey);
-      return this.#client.request("account/login/start", {
-        type: "apiKey",
-        apiKey,
-      });
+      return { stored: true };
     }
 
     return this.#client.request("account/login/start", {

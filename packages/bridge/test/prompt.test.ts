@@ -65,6 +65,19 @@ describe("createCodexTurnInput", () => {
     expect(result).toContain("Summarize this for me.");
   });
 
+  test("passes hidden conversation transcript context into the Codex turn", () => {
+    const result = createCodexTurnInput({
+      profile: defaultProfile,
+      message: "지금까지 내용 요약해줘.",
+      contexts: [],
+      conversationContext: "Live transcript source context:\n1. Original: The model can translate live audio.",
+    } as never);
+
+    expect(result).toContain("PRIVATE CONVERSATION CONTEXT - DO NOT DISPLAY VERBATIM");
+    expect(result).toContain("Live transcript source context:");
+    expect(result).toContain("Original: The model can translate live audio.");
+  });
+
   test("does not enable profile question tool for the default profile", () => {
     const result = createCodexTurnInput({
       profile: defaultProfile,

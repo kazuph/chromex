@@ -331,7 +331,7 @@ async function flushAsyncWork(): Promise<void> {
 }
 
 describe("AppServerCodexPlane", () => {
-  test("starts API-key login through the app-server and stores the key only in bridge secrets", async () => {
+  test("stores API keys for realtime translation without switching Codex app-server auth", async () => {
     const secretDir = await mkdtemp(join(tmpdir(), "chromex-api-key-test-"));
     const secrets = new InMemoryBridgeSecrets({
       secretPath: join(secretDir, "secrets.json"),
@@ -347,12 +347,7 @@ describe("AppServerCodexPlane", () => {
     await plane.login({ type: "apiKey", apiKey: "sk-test" });
 
     expect(secrets.getOpenAiApiKey()).toBe("sk-test");
-    expect(client.calls.find((call) => call.method === "account/login/start")).toMatchObject({
-      params: {
-        type: "apiKey",
-        apiKey: "sk-test",
-      },
-    });
+    expect(client.calls.find((call) => call.method === "account/login/start")).toBeUndefined();
   });
 
   test("does not switch to a stored API key without receiving the key again", async () => {

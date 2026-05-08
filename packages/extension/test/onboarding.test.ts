@@ -53,6 +53,10 @@ describe("auth onboarding", () => {
     expect(sidepanelSource).toContain('id="onboarding-reconnect"');
     expect(sidepanelSource).toContain('id="onboarding-open-settings"');
     expect(sidepanelSource).toContain('class="auth-onboarding-install"');
+    expect(sidepanelSource).toContain("getNativeHostInstallCopy(strings)");
+    expect(sidepanelSource).toContain("isChromeWebStoreInstall");
+    expect(sidepanelSource).toContain("odlalmnpmmakfigepbaabimjcmcppgfo");
+    expect(sidepanelSource).toContain("syncAuthOnboardingAutoReconnect");
     expect(sidepanelSource).toContain("getNativeHostInstallCommand(strings)");
     expect(sidepanelSource).toContain("formatNativeHostInstallCommand");
     expect(sidepanelSource).toContain('.join("\\n")');

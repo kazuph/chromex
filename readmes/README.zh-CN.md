@@ -20,7 +20,8 @@ Published by **GenexisAI CHOI**.
 - 在用户请求时，基于当前网页、已选择的打开标签页、截图、上传文件、PDF、Office 文件、图片和浏览器历史进行对话。
 - 总结和比较页面内容、YouTube 视频、新闻文章、研究页面、PDF 和 arXiv 论文。
 - 通过 Codex 图片工作流编辑或生成图片，并在本地处理输出。
-- 支持语音转写、实时语音模式、页面感知建议、自定义配置文件和可选 Codex skills。
+- 支持语音转写、计划模式、页面感知建议、自定义配置文件和可选 Codex skills。
+- 在翻译/直播模式中使用实时转写、可选实时翻译以及基于转写内容的后续聊天。
 - 通过 Chrome content scripts 执行浏览器控制工作流，并在页面内显示可见的活动状态。
 
 ## 从源码安装
@@ -114,6 +115,7 @@ Chromex 默认自动跟随浏览器语言。用户也可以在 **Settings > Gene
 - 扩展不会把原始 OpenAI API key、OAuth token 或 ChatGPT session token 存入 Chrome extension storage。
 - Codex OAuth / ChatGPT 登录通过本地 Codex app-server 流程处理。
 - API key 登录是可选的本地 fallback，不会在没有用户确认的情况下自动使用。
+- 实时翻译使用单独确认的 OpenAI API key 路径，并可在设置中断开连接。
 - 页面内容、标签页数据、截图、浏览器历史、麦克风输入和浏览器操作只会用于用户请求的工作流。
 - `history`、`tabs`、屏幕捕获、麦克风和站点访问权限只在功能需要时请求。
 - 对话历史默认仅限当前会话。持久化本地聊天历史需要用户主动开启。
@@ -128,8 +130,12 @@ Chromex 默认自动跟随浏览器语言。用户也可以在 **Settings > Gene
 - 自动路由页面、文件、图片、历史、语音和浏览器控制请求
 - 用于选择一个或多个打开标签页的 `@` picker
 - 用于选择配置文件的 `/` picker
+- 在执行前把模糊请求整理成明确计划的计划模式
 - 支持图片、文本、PDF、DOCX、CSV、TSV、XLSX 和 XLSM 附件
 - 面向 DOM、vision、hybrid 和 site-adapter 工作流的读取策略
+- 选中文本上下文注入、事实核查建议和右键向 AI 提问流程
+- 可将可见命令和实际发送 prompt 分开的站点建议
+- 带实时转写历史、可选实时翻译播放和基于转写内容后续聊天的翻译/直播模式
 - 面向 YouTube、新闻、研究、邮件、协作、笔记、任务工具、购物、旅行和韩国工作服务的站点感知建议
 - YouTube adapter 支持当前时间戳上下文和跳转动作
 - 针对上传图片、页面图片或可见屏幕截图的非破坏式图片编辑

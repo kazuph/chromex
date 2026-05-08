@@ -148,6 +148,7 @@ export interface PromptRequestPayload {
   conversationId?: string;
   message: string;
   contextHint?: string;
+  conversationContext?: string;
   profileId: string;
   clientRequestId?: string;
   model?: string;
@@ -304,12 +305,31 @@ export interface ConversationMessage {
   plan?: ConversationMessagePlan;
 }
 
+export interface ConferenceTranscriptSnapshotEntry {
+  id: string;
+  sourceText: string;
+  translationText: string;
+  createdAt: number;
+}
+
+export interface ConversationConferenceModeSnapshot {
+  sourceLabel?: string;
+  entries: ConferenceTranscriptSnapshotEntry[];
+  partialSourceText?: string;
+  partialTranslationText?: string;
+  targetLanguage?: string;
+  livePlaybackEnabled?: boolean;
+  updatedAt?: number;
+}
+
 export interface SavedConversation {
   id: string;
   title: string;
   profileId: string;
   model?: string;
   threadId?: string;
+  conversationMode?: "chat" | "conference";
+  conferenceMode?: ConversationConferenceModeSnapshot;
   messages: ConversationMessage[];
   attachments: PromptRequestPayload["attachments"];
   structuredInputs: CodexStructuredInput[];
@@ -323,6 +343,7 @@ export interface ConversationSummary {
   id: string;
   title: string;
   profileId: string;
+  conversationMode?: "chat" | "conference";
   updatedAt: number;
 }
 

@@ -143,6 +143,7 @@ export interface PromptSendParams {
   clientRequestId?: string;
   profile: ProfileTemplate;
   message: string;
+  conversationContext?: string;
   contexts: PageContextEnvelope[];
   fileAttachments?: UserFileAttachment[];
   routePlan?: PromptRoutingPlan;
@@ -309,6 +310,20 @@ export interface VoiceAppendAudioParams {
   };
 }
 
+export interface RealtimeTranslationClientSecretParams {
+  targetLanguage?: string;
+  sourceTranscriptionModel?: string;
+  ttlSeconds?: number;
+}
+
+export interface RealtimeTranslationClientSecretResult {
+  value: string;
+  expiresAt: number | null;
+  sessionId: string | null;
+  model: "gpt-realtime-translate";
+  targetLanguage: string;
+}
+
 export interface BridgeCodexPlane {
   accountStatus(): Promise<AccountStatus>;
   login(params: LoginParams): Promise<unknown>;
@@ -382,6 +397,14 @@ export interface BridgeLocalFilePlane {
   reveal(params: { path: string }): Promise<{ opened: true; path: string; folder: string }>;
 }
 
+export interface BridgeRealtimeTranslationPlane {
+  saveApiKey(params: { apiKey: string }): Promise<{ stored: true }>;
+  clearApiKey(): Promise<{ cleared: true }>;
+  createClientSecret(
+    params?: RealtimeTranslationClientSecretParams,
+  ): Promise<RealtimeTranslationClientSecretResult>;
+}
+
 export interface BridgeRoutePlane {
   plan(params: AgenticRouteInput, emit: (event: BridgeEvent) => void): Promise<AgenticRoutePlan>;
 }
@@ -396,6 +419,7 @@ export interface BridgeBrowserActionPlane {
 export interface BridgeDependencies {
   codex: BridgeCodexPlane;
   voice: BridgeVoicePlane;
+  translation: BridgeRealtimeTranslationPlane;
   image: BridgeImagePlane;
   localFiles: BridgeLocalFilePlane;
   route: BridgeRoutePlane;

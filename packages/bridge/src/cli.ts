@@ -10,6 +10,7 @@ import { BridgeImageAssetStore, resolveGeneratedImageOutputDir } from "./image-a
 import { BridgeLocalFilePlane } from "./local-files.js";
 import { BridgeRpcRouter } from "./router.js";
 import { InMemoryBridgeSecrets } from "./secrets.js";
+import { RealtimeTranslationPlane } from "./realtime-translation.js";
 import { ExternalSkillArchiveStore } from "./skill-archives.js";
 import { PlaywrightRuntimeManager } from "./playwright-runtime.js";
 import type { BridgeRequest } from "./types.js";
@@ -42,6 +43,7 @@ const router = new BridgeRpcRouter({
     emitEvent: emit,
     diagnostics,
   }),
+  translation: new RealtimeTranslationPlane({ secrets }),
   image: new CodexImagePlane(harness, { imageAssets, diagnostics }),
   localFiles: new BridgeLocalFilePlane(),
   route: new CodexAgenticRouterPlane({

@@ -5,6 +5,8 @@ import {
 } from "@codex-sidepanel/shared";
 
 import type {
+  ConferenceTranscriptSnapshotEntry,
+  ConversationConferenceModeSnapshot,
   ConversationMessage,
   ConversationMessageAttachment,
   ConversationMessageImage,
@@ -350,17 +352,23 @@ export function toConversationSummary(conversation: SavedConversation): Conversa
     id: conversation.id,
     title: conversation.title,
     profileId: conversation.profileId,
+    conversationMode: conversation.conversationMode === "conference" ? "conference" : "chat",
     updatedAt: conversation.updatedAt,
   };
 }
 
 function buildConversationTitle(conversation: SavedConversation): string {
   const firstUserMessage = conversation.messages.find((message) => message.role === "user")?.text.trim();
-  if (!firstUserMessage) {
-    return "New chat";
+  const titleSource =
+    firstUserMessage ||
+    conversation.conferenceMode?.entries.find((entry) => entry.translationText || entry.sourceText)?.translationText.trim() ||
+    conversation.conferenceMode?.entries.find((entry) => entry.translationText || entry.sourceText)?.sourceText.trim() ||
+    "";
+  if (!titleSource) {
+    return conversation.conversationMode === "conference" ? "Live transcript" : "New chat";
   }
 
-  return firstUserMessage.length <= 48 ? firstUserMessage : `${firstUserMessage.slice(0, 47).trimEnd()}…`;
+  return titleSource.length <= 48 ? titleSource : `${titleSource.slice(0, 47).trimEnd()}…`;
 }
 
 function normalizeStoredSkills(skills: SkillOption[]): SkillOption[] {
@@ -415,15 +423,21 @@ export function prepareConversationsForStorage(
 }
 
 export function shouldPersistConversationInHistory(conversation: SavedConversation): boolean {
-  return (conversation.messages ?? []).length > 0;
+  return (conversation.messages ?? []).length > 0 || hasConferenceModeHistory(conversation);
 }
 
 export function sanitizeConversationForStorage(
   conversation: SavedConversation,
   options: { aggressive?: boolean } = {},
 ): SavedConversation {
+  const conferenceMode = sanitizeConferenceModeSnapshot(conversation.conferenceMode);
+  const baseConversation: SavedConversation = { ...conversation };
+  delete baseConversation.conferenceMode;
+  delete baseConversation.conversationMode;
   return {
-    ...conversation,
+    ...baseConversation,
+    conversationMode: conferenceMode || conversation.conversationMode === "conference" ? "conference" : "chat",
+    ...(conferenceMode ? { conferenceMode } : {}),
     messages: (conversation.messages ?? []).map((message) => {
       const images: ConversationMessageImage[] = (message.images ?? [])
         .map((image) => {
@@ -491,6 +505,50 @@ export function sanitizeConversationForStorage(
     historyQuery: conversation.historyQuery ?? "",
     readStrategyOverride: conversation.readStrategyOverride ?? "auto",
   };
+}
+
+function hasConferenceModeHistory(conversation: SavedConversation): boolean {
+  const snapshot = sanitizeConferenceModeSnapshot(conversation.conferenceMode);
+  return Boolean(
+    snapshot &&
+      (snapshot.entries.length > 0 ||
+        snapshot.partialSourceText ||
+        snapshot.partialTranslationText),
+  );
+}
+
+function sanitizeConferenceModeSnapshot(
+  snapshot: SavedConversation["conferenceMode"] | undefined,
+): ConversationConferenceModeSnapshot | null {
+  if (!snapshot || typeof snapshot !== "object") {
+    return null;
+  }
+  const entries: ConferenceTranscriptSnapshotEntry[] = (snapshot.entries ?? [])
+    .map((entry, index) => ({
+      id: (typeof entry.id === "string" && entry.id.trim()) || `conference-transcript-${index + 1}`,
+      sourceText: typeof entry.sourceText === "string" ? entry.sourceText.trim() : "",
+      translationText: typeof entry.translationText === "string" ? entry.translationText.trim() : "",
+      createdAt: Number.isFinite(entry.createdAt) ? Number(entry.createdAt) : Date.now(),
+    }))
+    .filter((entry) => entry.sourceText || entry.translationText);
+  const sourceLabel = typeof snapshot.sourceLabel === "string" ? snapshot.sourceLabel.trim() : "";
+  const partialSourceText = typeof snapshot.partialSourceText === "string" ? snapshot.partialSourceText.trim() : "";
+  const partialTranslationText =
+    typeof snapshot.partialTranslationText === "string" ? snapshot.partialTranslationText.trim() : "";
+  const targetLanguage = typeof snapshot.targetLanguage === "string" ? snapshot.targetLanguage.trim() : "";
+  const updatedAt = Number(snapshot.updatedAt);
+  const next: ConversationConferenceModeSnapshot = {
+    entries,
+    ...(sourceLabel ? { sourceLabel } : {}),
+    ...(partialSourceText ? { partialSourceText } : {}),
+    ...(partialTranslationText ? { partialTranslationText } : {}),
+    ...(targetLanguage ? { targetLanguage } : {}),
+    ...(typeof snapshot.livePlaybackEnabled === "boolean"
+      ? { livePlaybackEnabled: snapshot.livePlaybackEnabled }
+      : {}),
+    ...(Number.isFinite(updatedAt) ? { updatedAt } : {}),
+  };
+  return entries.length || partialSourceText || partialTranslationText ? next : null;
 }
 
 function trimConversationToStorageBudget(conversation: SavedConversation, maxBytes: number): SavedConversation {

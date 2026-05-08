@@ -7,6 +7,9 @@ describe("native host diagnostics", () => {
     expect(
       toFriendlyNativeHostErrorMessage("Specified native messaging host not found."),
     ).toContain("--browser=chrome");
+    expect(
+      toFriendlyNativeHostErrorMessage("Specified native messaging host not found."),
+    ).toContain("Chrome Web Store installs");
   });
 
   test("does not report an exited Windows launcher as an uninstalled host", () => {

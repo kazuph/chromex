@@ -547,7 +547,6 @@ try {
   ]);
 
   const composerPlaceholder = await page.locator("#composer").getAttribute("placeholder");
-  const micButtonVisible = await page.locator("#voice-input-toggle").isVisible();
 
   if (!chipLabels.some((label) => label.includes("brief.txt"))) {
     throw new Error("Smoke test failed: text attachment chip did not render.");
@@ -557,9 +556,6 @@ try {
   }
   if (!composerPlaceholder) {
     throw new Error("Smoke test failed: composer placeholder is missing.");
-  }
-  if (!micButtonVisible) {
-    throw new Error("Smoke test failed: composer microphone button is missing.");
   }
   await page.waitForSelector("[data-composer-file-group]", { timeout: 2_000 });
   const composerAttachmentLayout = await page.evaluate(() => {
@@ -723,7 +719,6 @@ try {
     composerControls.permissionPill ||
     composerControls.shieldIcon ||
     !composerControls.modelReasoningGroup ||
-    !composerControls.microphone ||
     (!composerControls.sendButton && !composerControls.liveButton)
   ) {
     throw new Error(`Smoke test failed: composer control bar is incomplete (${JSON.stringify(composerControls)}).`);
@@ -860,6 +855,7 @@ try {
     browserActionsSwitch: Boolean(document.querySelector("#setting-browser-actions")),
     voiceSwitch: Boolean(document.querySelector("#setting-live-captions")),
     voiceOptions: Array.from(document.querySelectorAll("#voice-select option")).map((option) => option.value),
+    voiceSelectPresent: Boolean(document.querySelector("#voice-select")),
     generatedImages: Boolean(document.querySelector("#refresh-image-folder")) && Boolean(document.querySelector("#open-image-folder")),
     workspaceRulesVisible: Array.from(document.querySelectorAll(".settings-row")).some((row) =>
       /Workspace rules|워크스페이스 규칙/i.test(row.textContent ?? ""),
@@ -874,10 +870,10 @@ try {
     !settingsControls.backButton ||
     !settingsControls.profileSelect ||
     !settingsControls.createProfile ||
-    !settingsControls.modelSelect ||
+    settingsControls.modelSelect ||
     settingsControls.browserActionsSwitch ||
     !settingsControls.voiceSwitch ||
-    !settingsControls.voiceOptions.includes("sage") ||
+    (settingsControls.voiceSelectPresent && !settingsControls.voiceOptions.includes("sage")) ||
     settingsControls.voiceOptions.some((value) => /samantha|google|microsoft/i.test(value)) ||
     !settingsControls.generatedImages ||
     settingsControls.workspaceRulesVisible ||
@@ -891,23 +887,20 @@ try {
   await page.locator("#save-profile-editor").click();
   await page.waitForFunction(
     () => {
-      const select = document.querySelector("#profile-select");
-      return Array.from(select?.options ?? []).some((option) => option.textContent === "Smoke Profile");
+      const label = document.querySelector('[data-settings-select-root="profile-select"] .settings-select-value');
+      return label?.textContent === "Smoke Profile";
     },
     undefined,
     { timeout: 5_000 },
   );
   const createdProfileState = await page.evaluate(() => {
-    const select = document.querySelector("#profile-select");
-    const selectedOption = select?.selectedOptions?.[0] ?? null;
+    const label = document.querySelector('[data-settings-select-root="profile-select"] .settings-select-value');
     return {
-      selectedValue: select?.value ?? "",
-      selectedLabel: selectedOption?.textContent ?? "",
-      hasSmokeProfile: Array.from(select?.options ?? []).some((option) => option.textContent === "Smoke Profile"),
+      selectedLabel: label?.textContent ?? "",
+      hasSmokeProfile: label?.textContent === "Smoke Profile",
     };
   });
   if (
-    !createdProfileState.selectedValue.startsWith("custom-smoke-profile") ||
     createdProfileState.selectedLabel !== "Smoke Profile" ||
     !createdProfileState.hasSmokeProfile
   ) {
@@ -1184,13 +1177,14 @@ async function assertComposerControlsInsideFrame(page, label) {
     const sendButton = document.querySelector("#send-prompt, #stop-turn, #live-toggle")?.getBoundingClientRect();
     const modelTrigger = document.querySelector("#composer-model-menu-trigger")?.getBoundingClientRect();
     const voiceButton = document.querySelector("#voice-input-toggle")?.getBoundingClientRect();
+    const modelGapTarget = voiceButton ?? sendButton;
     return {
       frameRight: Math.round(frame?.right ?? 0),
       controlBarRight: Math.round(controlBar?.right ?? 0),
       sendButtonRight: Math.round(sendButton?.right ?? 0),
       modelTriggerRight: Math.round(modelTrigger?.right ?? 0),
       voiceButtonLeft: Math.round(voiceButton?.left ?? 0),
-      modelToVoiceGap: Math.round((voiceButton?.left ?? 0) - (modelTrigger?.right ?? 0)),
+      modelToVoiceGap: Math.round((modelGapTarget?.left ?? 0) - (modelTrigger?.right ?? 0)),
       sendRightInset: Math.round((frame?.right ?? 0) - (sendButton?.right ?? 0)),
     };
   });

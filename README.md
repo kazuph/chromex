@@ -19,7 +19,8 @@ Published by **GenexisAI CHOI**.
 - Chat with the current webpage, selected open tabs, screenshots, uploaded files, PDFs, Office files, images, and browser history when requested.
 - Summarize and compare page content, YouTube videos, news articles, research pages, PDFs, and arXiv papers.
 - Edit or generate images through Codex image workflows with local output handling.
-- Use voice transcription, live voice mode, page-aware suggestions, custom profiles, and optional Codex skills.
+- Use voice transcription, plan mode, page-aware suggestions, custom profiles, and optional Codex skills.
+- Run the unified Translation/Live mode for live transcripts, optional realtime translation, and follow-up chat over the captured transcript.
 - Run browser-control workflows through Chrome content scripts with visible in-page activity indicators.
 
 ## Install From Source
@@ -113,6 +114,7 @@ The extension ships Chrome `_locales` entries for English, Korean, Japanese, Chi
 - The extension does not store raw OpenAI API keys, OAuth tokens, or ChatGPT session tokens in Chrome extension storage.
 - Codex OAuth / ChatGPT login is handled through the local Codex app-server flow.
 - API-key login is an optional local fallback and is never used automatically without user confirmation.
+- Realtime translation uses a separately confirmed OpenAI API key path and can be disconnected from settings.
 - Page content, tab data, screenshots, browser history, microphone input, and browser actions are used only for user-requested workflows.
 - `history`, `tabs`, screen capture, microphone, and site access are requested only when a feature needs them.
 - Conversation history is session-only by default. Persistent local chat history is opt-in.
@@ -127,8 +129,12 @@ Read [SECURITY.md](./SECURITY.md) and [PRIVACY.md](./PRIVACY.md) before publishi
 - Automatic routing for page, file, image, history, voice, and browser-control requests.
 - `@` picker for selecting one or more open tabs.
 - `/` picker for profile selection.
+- Plan mode for turning ambiguous requests into an explicit plan before execution.
 - Attachments for images, text, PDF, DOCX, CSV, TSV, XLSX, and XLSM.
 - Read strategy policy for DOM, vision, hybrid, and site-adapter workflows.
+- Selected-text context injection with fact-check suggestions and right-click ask flow.
+- Editable site suggestions where the visible command and the sent prompt can be different.
+- Translation/Live mode with live transcript history, optional realtime translation playback, and transcript-grounded follow-up chat.
 - Site-aware suggestions for YouTube, news, research, mail, collaboration, notes, task tools, shopping, travel, and Korean work services.
 - YouTube adapter with current timestamp context and seek actions.
 - Non-destructive image editing for uploaded images, page images, or visible screen captures.

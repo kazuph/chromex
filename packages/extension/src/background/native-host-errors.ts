@@ -18,7 +18,7 @@ export function toFriendlyNativeHostErrorMessage(rawMessage: string | undefined)
   const normalized = message.toLowerCase();
 
   if (MISSING_HOST_PATTERNS.some((pattern) => normalized.includes(pattern))) {
-    return "Codex native host is not installed for this browser profile yet. Install the local bridge once, then reload the extension. On Windows, run node scripts/install-native-host.mjs <extension-id> --browser=chrome, then verify both reg query commands with /reg:32 and /reg:64.";
+    return "Codex native host is not installed for this browser profile yet. Install the local bridge once, then reload the extension. Chrome Web Store installs must use the latest Chromex local bridge installer, which includes the Store extension ID automatically. On Windows, run node scripts/install-native-host.mjs --browser=chrome, then verify both reg query commands with /reg:32 and /reg:64.";
   }
 
   if (EXITED_HOST_PATTERNS.some((pattern) => normalized.includes(pattern))) {

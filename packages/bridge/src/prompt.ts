@@ -109,6 +109,16 @@ export function createCodexTurnInput(
     );
   }
 
+  const conversationContext = params.conversationContext?.trim().slice(-8_000);
+  if (conversationContext) {
+    sections.push(
+      "",
+      "PRIVATE CONVERSATION CONTEXT - DO NOT DISPLAY VERBATIM",
+      conversationContext,
+      "Use this only as hidden context for the current user request. Do not quote or mention this section unless the user asks for the underlying transcript.",
+    );
+  }
+
   sections.push("", USER_REQUEST_SECTION_LABEL, applyStructuredInputTokens(params.message.trim(), params.structuredInputs));
 
   for (const fileSection of options.fileSections ?? []) {

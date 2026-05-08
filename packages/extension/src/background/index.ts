@@ -203,6 +203,11 @@ let offscreenDocumentPromise: Promise<void> | null = null;
 const conversationRuntime = new ConversationRuntimeRegistry();
 type ReadableBrowserTab = chrome.tabs.Tab & { id: number; url: string; windowId: number };
 type PromptStatusEmitter = (phase: PromptActivityPhase, workflow?: PromptImageWorkflowKind) => void;
+type CurrentPageContextResult = {
+  envelope: PageContextEnvelope;
+  readStrategy: ReadStrategy;
+  actionCards: ActionCard[];
+};
 type PromptTurnResult = { threadId: string; turnId: string };
 type CompletedAssistantMessageEvent = {
   type: "message.completed";
@@ -868,6 +873,35 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             await bridge.request("dictation.transcription.stop", buildVoiceSessionStopParams(message, undefined)),
           );
           return;
+        case "translation.api_key.save":
+          assertApiKeyLoginExplicitlyConfirmed({
+            loginType: "apiKey",
+            apiKey: message.apiKey,
+            confirmed: message.confirmed,
+          });
+          sendResponse(
+            await bridge.request("translation.api_key.save", {
+              apiKey: typeof message.apiKey === "string" ? message.apiKey : "",
+            }),
+          );
+          return;
+        case "translation.api_key.clear":
+          sendResponse(await bridge.request("translation.api_key.clear"));
+          if (state.accountStatus) {
+            state.accountStatus = {
+              ...state.accountStatus,
+              openAiApiKeyConfigured: false,
+            };
+          }
+          return;
+        case "translation.client_secret.create":
+          sendResponse(
+            await bridge.request("translation.client_secret.create", {
+              targetLanguage: typeof message.targetLanguage === "string" ? message.targetLanguage : undefined,
+              ttlSeconds: typeof message.ttlSeconds === "number" ? message.ttlSeconds : undefined,
+            }),
+          );
+          return;
         case "voice.context.snapshot":
           sendResponse({ prompt: await collectVoiceSessionContextPrompt() });
           return;
@@ -1500,6 +1534,7 @@ async function handlePromptSend(payload: PromptRequestPayload) {
     clientRequestId: payload.clientRequestId,
     profile: prepared.profile,
     message: payload.message,
+    conversationContext: payload.conversationContext ?? payload.contextHint ?? "",
     contexts: prepared.contexts,
     fileAttachments: prepared.fileAttachments,
     routePlan: prepared.routePlan,
@@ -1638,6 +1673,7 @@ async function handleTurnSteer(payload: PromptRequestPayload) {
       clientRequestId: payload.clientRequestId,
       profile: prepared.profile,
       message: payload.message,
+      conversationContext: payload.conversationContext ?? payload.contextHint ?? "",
       contexts: prepared.contexts,
       fileAttachments: prepared.fileAttachments,
       routePlan: prepared.routePlan,
@@ -1799,7 +1835,7 @@ async function buildPromptRequest(
     !payload.attachments.includes("current-page") &&
     !payload.attachments.includes("image");
   const routeContextRequests = payload.suppressPageContext
-    ? filterSuppressedPageContextRequests(agenticRoutePlan.contextRequests)
+    ? filterSuppressedPageContextRequests(agenticRoutePlan.contextRequests, payload.attachments)
     : agenticRoutePlan.contextRequests;
   const requestedContextRequests = selectionOnlyContextRequested
     ? routeContextRequests.filter((request) => request.source !== "current-page" && request.source !== "image")
@@ -2658,7 +2694,7 @@ function normalizeImageGeneratePreviewRefs(previewRefs: string[] | undefined, pr
 }
 
 async function collectInfographicPageContext() {
-  let domContext: Awaited<ReturnType<typeof collectCurrentPageContext>>;
+  let domContext: CurrentPageContextResult;
   try {
     domContext = await collectCurrentPageContext("dom");
   } catch (error) {
@@ -2698,8 +2734,8 @@ function shouldFallbackToVisionForInfographic(envelope: PageContextEnvelope): bo
 }
 
 function mergeInfographicContextFallback(
-  domContext: Awaited<ReturnType<typeof collectCurrentPageContext>>,
-  hybridContext: Awaited<ReturnType<typeof collectCurrentPageContext>>,
+  domContext: CurrentPageContextResult,
+  hybridContext: CurrentPageContextResult,
 ) {
   return {
     envelope: {
@@ -2722,7 +2758,7 @@ function mergeInfographicContextFallback(
 }
 
 async function collectVisibleScreenOnlyInfographicContext(
-  baseContext: Awaited<ReturnType<typeof collectCurrentPageContext>> | null,
+  baseContext: CurrentPageContextResult | null,
 ) {
   const activeTab = await getActiveTab();
   assertPageReadable(activeTab.url);
@@ -2765,7 +2801,7 @@ async function collectVisibleScreenOnlyInfographicContext(
 function createMinimalVisibleScreenContext(
   activeTab: chrome.tabs.Tab & { url: string },
   locale = "",
-): Awaited<ReturnType<typeof collectCurrentPageContext>> {
+): CurrentPageContextResult {
   return {
     envelope: {
       metadata: {
@@ -2871,7 +2907,7 @@ async function handleYouTubeCurrentMomentPrompt() {
   });
 }
 
-async function collectCurrentPageContext(readOverride: ReadStrategy | "auto") {
+async function collectCurrentPageContext(readOverride: ReadStrategy | "auto"): Promise<CurrentPageContextResult> {
   const activeTab = await getActiveTab();
   const locale = await getActiveUiLocale();
 
@@ -2882,17 +2918,11 @@ async function collectCurrentPageContext(readOverride: ReadStrategy | "auto") {
       type: "page.collect",
     })) as ContentProbeResult;
   } catch (error) {
-    const fallback =
-      createPaperPdfFallbackContext(activeTab, locale) ??
-      createGenericSiteFallbackContext(activeTab, locale);
-    if (!fallback) {
-      throw error;
-    }
-    void recordDiagnostic("extension.pdf_page_context.fallback", {
+    void recordDiagnostic("extension.page_context.dom_failed", {
       url: activeTab.url,
       error: toErrorMessage(error),
     });
-    return fallback;
+    return collectVisibleScreenFallbackContext(activeTab, locale, error);
   }
 
   const adapterMatched = Boolean(probe.rawCapture.adapterPayload);
@@ -2931,6 +2961,53 @@ async function collectCurrentPageContext(readOverride: ReadStrategy | "auto") {
   });
 
   return { envelope, readStrategy, actionCards };
+}
+
+async function collectVisibleScreenFallbackContext(
+  activeTab: chrome.tabs.Tab & { id: number; url: string; windowId: number },
+  locale: string,
+  sourceError: unknown,
+): Promise<CurrentPageContextResult> {
+  const fallbackContext =
+    createPaperPdfFallbackContext(activeTab, locale) ??
+    createGenericSiteFallbackContext(activeTab, locale) ??
+    createMinimalVisibleScreenContext(activeTab, locale);
+  try {
+    const screenshotRef = await captureVisibleTab(activeTab);
+    const adapterPayload = fallbackContext.envelope.adapterPayload;
+    return {
+      envelope: {
+        ...fallbackContext.envelope,
+        domSummary:
+          fallbackContext.envelope.domSummary ||
+          "DOM text was not available. Use the attached visible-screen screenshot as the primary source context.",
+        visionAssets: [
+          {
+            ref: screenshotRef,
+            kind: "screenshot" as const,
+          },
+          ...fallbackContext.envelope.visionAssets,
+        ],
+      },
+      readStrategy: "vision" as const,
+      actionCards: fallbackContext.actionCards.length
+        ? fallbackContext.actionCards
+        : inferActionCards({
+            readStrategy: "vision",
+            adapterActions: [],
+            availableSources: ["current-page"],
+            adapterPayload,
+            locale,
+          }),
+    };
+  } catch (captureError) {
+    void recordDiagnostic("extension.page_context.vision_fallback_failed", {
+      url: activeTab.url,
+      sourceError: toErrorMessage(sourceError),
+      captureError: toErrorMessage(captureError),
+    });
+    return fallbackContext;
+  }
 }
 
 async function collectAutomaticDocumentAttachments(

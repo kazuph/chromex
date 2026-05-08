@@ -36,6 +36,7 @@ import {
   Settings,
   ShieldAlert,
   ShieldCheck,
+  Sparkles,
   Square,
   Trash2,
   Video,
@@ -84,6 +85,7 @@ export type UiIconName =
   | "settings"
   | "shield-alert"
   | "shield-check"
+  | "sparkles"
   | "stop"
   | "stop-filled"
   | "trash"
@@ -129,6 +131,7 @@ const UI_ICON_NODES: Record<UiIconName, IconNode> = {
   settings: Settings,
   "shield-alert": ShieldAlert,
   "shield-check": ShieldCheck,
+  sparkles: Sparkles,
   stop: Square,
   "stop-filled": Square,
   trash: Trash2,

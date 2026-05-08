@@ -13,6 +13,8 @@ import type {
 } from "@codex-sidepanel/shared";
 
 import type {
+  ConferenceTranscriptSnapshotEntry,
+  ConversationConferenceModeSnapshot,
   ConversationMessage,
   ConversationMessageAttachment,
   ConversationMessageContext,
@@ -67,6 +69,8 @@ export function normalizePanelConversation(
     profileId: stringOrDefault(conversation.profileId, "default"),
     ...(typeof conversation.model === "string" ? { model: conversation.model } : {}),
     ...(typeof conversation.threadId === "string" ? { threadId: conversation.threadId } : {}),
+    conversationMode: normalizeConversationMode(conversation.conversationMode, conversation.conferenceMode),
+    ...normalizeConferenceModeForConversation(conversation.conferenceMode),
     messages: normalizeMessages(conversation.messages),
     attachments: arrayOrEmpty(conversation.attachments),
     structuredInputs: arrayOrEmpty<CodexStructuredInput>(conversation.structuredInputs),
@@ -75,6 +79,59 @@ export function normalizePanelConversation(
     readStrategyOverride: normalizeReadStrategy(conversation.readStrategyOverride),
     updatedAt: Number.isFinite(conversation.updatedAt) ? Number(conversation.updatedAt) : Date.now(),
   };
+}
+
+function normalizeConversationMode(
+  value: SavedConversation["conversationMode"] | undefined,
+  conferenceMode: SavedConversation["conferenceMode"] | undefined,
+): "chat" | "conference" {
+  return value === "conference" || conferenceMode ? "conference" : "chat";
+}
+
+function normalizeConferenceModeForConversation(
+  value: SavedConversation["conferenceMode"] | undefined,
+): { conferenceMode: ConversationConferenceModeSnapshot } | Record<string, never> {
+  const snapshot = normalizeConferenceModeSnapshot(value);
+  return snapshot ? { conferenceMode: snapshot } : {};
+}
+
+function normalizeConferenceModeSnapshot(
+  value: SavedConversation["conferenceMode"] | undefined,
+): ConversationConferenceModeSnapshot | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const entries = normalizeConferenceTranscriptEntries(value.entries);
+  const sourceLabel = stringOrDefault(value.sourceLabel, "").trim();
+  const partialSourceText = stringOrDefault(value.partialSourceText, "").trim();
+  const partialTranslationText = stringOrDefault(value.partialTranslationText, "").trim();
+  const targetLanguage = stringOrDefault(value.targetLanguage, "").trim();
+  const updatedAt = Number(value.updatedAt);
+  const snapshot: ConversationConferenceModeSnapshot = {
+    entries,
+    ...(sourceLabel ? { sourceLabel } : {}),
+    ...(partialSourceText ? { partialSourceText } : {}),
+    ...(partialTranslationText ? { partialTranslationText } : {}),
+    ...(targetLanguage ? { targetLanguage } : {}),
+    ...(typeof value.livePlaybackEnabled === "boolean" ? { livePlaybackEnabled: value.livePlaybackEnabled } : {}),
+    ...(Number.isFinite(updatedAt) ? { updatedAt } : {}),
+  };
+  return snapshot;
+}
+
+function normalizeConferenceTranscriptEntries(
+  entries: SavedConversation["conferenceMode"] extends ConversationConferenceModeSnapshot
+    ? ConversationConferenceModeSnapshot["entries"]
+    : ConferenceTranscriptSnapshotEntry[] | undefined,
+): ConferenceTranscriptSnapshotEntry[] {
+  return arrayOrEmpty(entries)
+    .map((entry, index) => ({
+      id: stringOrDefault(entry.id, `conference-transcript-${index + 1}`).slice(0, 160),
+      sourceText: stringOrDefault(entry.sourceText, "").trim(),
+      translationText: stringOrDefault(entry.translationText, "").trim(),
+      createdAt: Number.isFinite(entry.createdAt) ? Number(entry.createdAt) : Date.now(),
+    }))
+    .filter((entry) => entry.sourceText || entry.translationText);
 }
 
 function normalizeMessages(messages: SavedConversation["messages"] | undefined): ConversationMessage[] {

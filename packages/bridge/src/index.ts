@@ -25,6 +25,7 @@ export {
   resolveRevealPathCommand,
 } from "./platform.js";
 export { createCodexTurnInput, createCodexTurnInputItems } from "./prompt.js";
+export { RealtimeTranslationPlane } from "./realtime-translation.js";
 export { BridgeRpcRouter } from "./router.js";
 export { InMemoryBridgeSecrets } from "./secrets.js";
 export { ExternalSkillArchiveStore } from "./skill-archives.js";

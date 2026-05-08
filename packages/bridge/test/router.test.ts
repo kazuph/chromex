@@ -163,6 +163,63 @@ describe("BridgeRpcRouter", () => {
     ]);
   });
 
+  test("stores realtime translation API keys without using Codex account login", async () => {
+    const saveApiKey = vi.fn(async () => ({ stored: true }));
+    const login = vi.fn();
+    const router = new BridgeRpcRouter(
+      createDependencies({
+        codex: {
+          login,
+        },
+        translation: {
+          saveApiKey,
+          createClientSecret: async () => ({
+            value: "ek_test",
+            expiresAt: 1_700_000_600,
+            sessionId: "sess_test",
+            model: "gpt-realtime-translate",
+            targetLanguage: "ko",
+          }),
+        },
+      }),
+    );
+
+    const result = await router.handle({
+      id: "translation-key",
+      method: "translation.api_key.save",
+      params: { apiKey: "sk-test" },
+    });
+
+    expect(result.result).toEqual({ stored: true });
+    expect(saveApiKey).toHaveBeenCalledWith({ apiKey: "sk-test" });
+    expect(login).not.toHaveBeenCalled();
+  });
+
+  test("clears realtime translation API keys without logging out Codex", async () => {
+    const clearApiKey = vi.fn(async () => ({ cleared: true }));
+    const logout = vi.fn();
+    const router = new BridgeRpcRouter(
+      createDependencies({
+        codex: {
+          logout,
+        },
+        translation: {
+          clearApiKey,
+        },
+      }),
+    );
+
+    const result = await router.handle({
+      id: "translation-key-clear",
+      method: "translation.api_key.clear",
+      params: {},
+    });
+
+    expect(result.result).toEqual({ cleared: true });
+    expect(clearApiKey).toHaveBeenCalledWith();
+    expect(logout).not.toHaveBeenCalled();
+  });
+
   test("starts thread compaction through the Codex plane", async () => {
     const compactThread = vi.fn(async () => ({
       threadId: "thread-1",
@@ -954,6 +1011,17 @@ function createDependencies(overrides: Partial<BridgeDependencies> = {}): Bridge
       appendAudio: async () => undefined,
       stop: async () => undefined,
     },
+    translation: {
+      saveApiKey: async () => ({ stored: true }),
+      clearApiKey: async () => ({ cleared: true }),
+      createClientSecret: async () => ({
+        value: "ek_test",
+        expiresAt: 1_700_000_600,
+        sessionId: "sess_test",
+        model: "gpt-realtime-translate",
+        targetLanguage: "ko",
+      }),
+    },
     image: {
       startEdit: async () => ({ jobId: "image-1", previewRef: "preview://1" }),
       startGenerate: async () => ({ jobId: "image-generate-1", previewRef: "preview://generated" }),
@@ -1093,6 +1161,10 @@ function createDependencies(overrides: Partial<BridgeDependencies> = {}): Bridge
     voice: {
       ...base.voice,
       ...overrides.voice,
+    },
+    translation: {
+      ...base.translation,
+      ...overrides.translation,
     },
     image: {
       ...base.image,

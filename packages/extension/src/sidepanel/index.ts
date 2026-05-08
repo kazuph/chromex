@@ -29,8 +29,6 @@ import { getDroppedFiles, hasComposerDropPayload } from "./composer-drop.js";
 import { isTextFirstActionCard } from "./action-card-routing.js";
 import { mergePromptResultActionCards } from "./action-card-state.js";
 import {
-  buildConferenceModeContextHint,
-  buildConferenceModeTranslatedContextHint,
   createConferenceModeTranslationRequestEvent,
   mergeConferenceModeTranscriptEntry,
   parseConferenceModeAssistantText,
@@ -245,9 +243,11 @@ import {
 } from "./image-annotation.js";
 import { isYouTubeCurrentMomentAction, type YouTubeCurrentMomentPromptResult } from "../youtube-current-moment.js";
 import type {
+  ConversationConferenceModeSnapshot,
   ConversationMessageAttachment,
   ConversationMessageImage,
   ConversationMessageProfile,
+  ConferenceTranscriptSnapshotEntry,
   ConversationMessageStructuredInput,
   ConversationMessageTraceItem,
   ConversationMessage,
@@ -317,7 +317,7 @@ import {
 import { createStreamingDeltaBuffer } from "./streaming-delta-buffer.js";
 import { renderUiIcon, type UiIconName } from "./ui-icons.js";
 
-type MainView = "chat" | "conference" | "context" | "skills" | "plugins" | "workspace";
+type MainView = "chat" | "conference" | "interpreter" | "context" | "skills" | "plugins" | "workspace";
 const MAX_TRACE_ITEMS = 12;
 const COMPLETED_IMAGE_WORKFLOW_MESSAGE_RETENTION_MS = 60_000;
 const PARTIAL_IMAGE_WORKFLOW_MESSAGE_RETENTION_MS = 30 * 60_000;
@@ -364,10 +364,72 @@ type NativeTextDialogState = {
         profileId?: string;
       }
     | { kind: "retry-live-voice" }
-    | { kind: "retry-composer-dictation"; target: ComposerVoiceInputTarget };
+    | { kind: "retry-composer-dictation"; target: ComposerVoiceInputTarget }
+    | { kind: "retry-realtime-interpreter" }
+    | { kind: "retry-conference-mode" };
   error?: string;
   submitting?: boolean;
 };
+
+type RealtimeInterpreterTranscriptEntry = {
+  id: string;
+  sourceText: string;
+  translationText: string;
+  createdAt: number;
+};
+
+type RealtimeInterpreterInputSource = "display" | "microphone";
+
+type RealtimeInterpreterMicrophoneDevice = {
+  deviceId: string;
+  label: string;
+};
+
+type RealtimeInterpreterAudioStreamResult = {
+  stream: MediaStream;
+  sourceLabel: string;
+};
+
+type RealtimeTranslationOwner = "interpreter" | "conference";
+
+type RealtimeInterpreterState = {
+  viewActive: boolean;
+  active: boolean;
+  starting: boolean;
+  stopping: boolean;
+  settingsOpen: boolean;
+  livePlaybackEnabled: boolean;
+  error: string;
+  sourceLabel: string;
+  inputSource: RealtimeInterpreterInputSource;
+  microphoneDeviceId: string;
+  microphoneDevices: RealtimeInterpreterMicrophoneDevice[];
+  microphoneDevicesLoading: boolean;
+  targetLanguage: string;
+  entries: RealtimeInterpreterTranscriptEntry[];
+  partialSourceText: string;
+  partialTranslationText: string;
+};
+
+type ComputerAudioCaptureOptions = {
+  suppressLocalAudioPlayback?: boolean;
+};
+
+const REALTIME_INTERPRETER_TARGET_LANGUAGES = [
+  { value: "ko", ko: "한국어", en: "Korean" },
+  { value: "en", ko: "영어", en: "English" },
+  { value: "ja", ko: "일본어", en: "Japanese" },
+  { value: "zh", ko: "중국어", en: "Chinese" },
+  { value: "es", ko: "스페인어", en: "Spanish" },
+  { value: "fr", ko: "프랑스어", en: "French" },
+  { value: "de", ko: "독일어", en: "German" },
+  { value: "it", ko: "이탈리아어", en: "Italian" },
+  { value: "pt", ko: "포르투갈어", en: "Portuguese" },
+  { value: "nl", ko: "네덜란드어", en: "Dutch" },
+  { value: "hi", ko: "힌디어", en: "Hindi" },
+  { value: "ar", ko: "아랍어", en: "Arabic" },
+  { value: "tr", ko: "터키어", en: "Turkish" },
+] as const;
 
 type NativeConfirmationDialogState = {
   title: string;
@@ -679,6 +741,7 @@ const conversationMessagesById = new Map<string, ConversationMessage[]>();
 const conversationThreadIdsById = new Map<string, string>();
 const conversationProfilesById = new Map<string, string>();
 const conversationModelsById = new Map<string, string | undefined>();
+const conferenceModesByConversationId = new Map<string, ConversationConferenceModeSnapshot>();
 const promptActivitiesByConversationId = new Map<string, PromptActivityState>();
 const activePromptUserMessageIdsByConversationId = new Map<string, string>();
 const activeTurnsByConversationId = new Map<string, CodexActiveTurn>();
@@ -742,6 +805,27 @@ function createConferenceModeState(): ConferenceModeState {
     sourceLabel: "",
     sessionId: "",
     threadId: "",
+    entries: [],
+    partialSourceText: "",
+    partialTranslationText: "",
+  };
+}
+
+function createRealtimeInterpreterState(): RealtimeInterpreterState {
+  return {
+    viewActive: false,
+    active: false,
+    starting: false,
+    stopping: false,
+    settingsOpen: false,
+    livePlaybackEnabled: false,
+    error: "",
+    sourceLabel: "",
+    inputSource: "display",
+    microphoneDeviceId: "",
+    microphoneDevices: [],
+    microphoneDevicesLoading: false,
+    targetLanguage: "ko",
     entries: [],
     partialSourceText: "",
     partialTranslationText: "",
@@ -878,6 +962,7 @@ const state = {
   planInputActiveIndex: 0,
   planInputAnswers: {} as Record<string, PlanInputAnswerDraft>,
   conferenceMode: createConferenceModeState(),
+  realtimeInterpreter: createRealtimeInterpreterState(),
   uiLocale: initialLocale as UiLocale,
   activeView: "chat" as MainView,
 };
@@ -963,6 +1048,13 @@ let conferenceModeActiveTranslationSource = "";
 let conferenceModeTranslationRetryTimer: number | null = null;
 let conferenceModeDataChannelTranscriptsActive = false;
 let conferenceModeTranscriptCounter = 0;
+let realtimeInterpreterStream: MediaStream | null = null;
+let realtimeInterpreterPeer: RTCPeerConnection | null = null;
+let realtimeInterpreterDataChannel: RTCDataChannel | null = null;
+let realtimeInterpreterAudio: HTMLAudioElement | null = null;
+let realtimeInterpreterEntryCounter = 0;
+let realtimeInterpreterStartGeneration = 0;
+let realtimeTranslationOwner: RealtimeTranslationOwner = "interpreter";
 let lastHandledDictationShortcutId = "";
 let microphonePermissionWindowPromise: Promise<{
   result: MicrophonePermissionWindowResult;
@@ -994,6 +1086,10 @@ let chatScrollUserOverrideUntil = 0;
 let pendingChatScrollToBottom = false;
 let pendingChatScrollAnchor: { previousScrollTop: number; previousScrollHeight: number } | null = null;
 let lastRenderedActiveView: MainView | null = null;
+let conferenceTranscriptStickToBottom = true;
+let realtimeInterpreterTranscriptStickToBottom = true;
+let conferencePaneSplitRatio = 0.46;
+let realtimeInterpreterPaneSplitRatio = 0.52;
 const completedTurnIds = new Set<string>();
 const cancelledPromptRequestIds = new Set<string>();
 const REALTIME_AUDIO_CHUNK_MS = 120;
@@ -1009,6 +1105,11 @@ const COMPOSER_REALTIME_DICTATION_FINALIZATION_TIMEOUT_MS = 700;
 const COMPOSER_REALTIME_DICTATION_LATE_TRANSCRIPT_TIMEOUT_MS = 2600;
 const COMPOSER_REALTIME_TRANSCRIPT_POLL_INTERVAL_MS = 160;
 const COMPUTER_AUDIO_CAPTURE_BOOST_GAIN = 3.6;
+const CHROME_WEB_STORE_EXTENSION_ID = "odlalmnpmmakfigepbaabimjcmcppgfo";
+const AUTH_ONBOARDING_AUTO_RECONNECT_INTERVAL_MS = 5_000;
+const TRANSCRIPT_AUTOSCROLL_BOTTOM_THRESHOLD_PX = 36;
+const TRANSCRIPT_PANE_SPLIT_MIN = 0.28;
+const TRANSCRIPT_PANE_SPLIT_MAX = 0.72;
 type DisplayAudioCaptureHint = "include" | "exclude";
 type WindowAudioCaptureHint = "exclude" | "window" | "system";
 type ExtendedDisplayMediaOptions = DisplayMediaStreamOptions & {
@@ -1032,6 +1133,8 @@ const composerTextareaAutosizeMetricsByElement = new WeakMap<
   HTMLTextAreaElement,
   ComposerTextareaAutosizeMetrics
 >();
+let authOnboardingAutoReconnectTimer: number | null = null;
+let authOnboardingAutoReconnectInFlight = false;
 const renderBatcher = createRenderBatcher(
   () => renderNow(),
   (callback) =>
@@ -1083,10 +1186,12 @@ void scheduleInitialize();
 
 window.addEventListener("pagehide", () => {
   flushStreamingAssistantDeltas();
+  syncAuthOnboardingAutoReconnect(false);
   void persistConversationBatch.flush();
   voiceStopRequested = true;
   cancelVoiceReconnect();
   void stopConferenceMode({ notifyBridge: true, preserveEntries: true, keepViewActive: true });
+  void stopRealtimeInterpreterMode({ preserveEntries: true, keepViewActive: true });
   void stopRealtimeVoiceSession({ notifyBridge: true });
 });
 
@@ -2259,10 +2364,6 @@ async function initialize(options: { forceCatalog?: boolean } = {}): Promise<voi
     ) {
       clearKnownChatgptRealtimeEndpointFailure();
     }
-    if (!shouldShowRealtimeVoiceControls() && state.activeView === "conference") {
-      state.activeView = "chat";
-      state.conferenceMode.viewActive = false;
-    }
     state.currentPageSupport = payload.currentPageSupport;
     state.currentTabReference = payload.currentTab;
     const collections = normalizeSidepanelCollections(payload);
@@ -2405,6 +2506,7 @@ function hydrateConversation(conversation: SavedConversation | null): void {
     state.currentReadStrategy = "auto";
     state.fileAttachments = [];
     state.structuredInputs = [];
+    state.conferenceMode = createConferenceModeState();
     state.chatMessageWindowSize = DEFAULT_CHAT_MESSAGE_WINDOW_SIZE;
     pendingChatScrollToBottom = false;
     pendingChatScrollAnchor = null;
@@ -2430,6 +2532,12 @@ function hydrateConversation(conversation: SavedConversation | null): void {
   state.promptActivity = promptActivitiesByConversationId.get(normalized.id) ?? null;
   state.activeTurn = activeTurnsByConversationId.get(normalized.id) ?? null;
   state.streamingAssistantMessageIds = new Set(streamingAssistantMessageIdsByConversationId.get(normalized.id) ?? []);
+  restoreConferenceModeFromConversation(normalized);
+  if (resolveMainViewForConversation(normalized) === "conference") {
+    state.activeView = "conference";
+  } else if (state.activeView === "conference") {
+    state.activeView = "chat";
+  }
   void restoreConversationImagePreviews();
 }
 
@@ -2442,6 +2550,12 @@ function rememberCurrentConversationSnapshot(): void {
   conversationMessagesById.set(state.currentConversationId, cloneConversationMessages(state.messages));
   conversationProfilesById.set(state.currentConversationId, profileId);
   conversationModelsById.set(state.currentConversationId, state.selectedModel || undefined);
+  const conferenceSnapshot = serializeConferenceModeForStorage();
+  if (conferenceSnapshot) {
+    conferenceModesByConversationId.set(state.currentConversationId, conferenceSnapshot);
+  } else {
+    conferenceModesByConversationId.delete(state.currentConversationId);
+  }
   if (state.threadId) {
     rememberConversationThreadId(state.currentConversationId, state.threadId);
   }
@@ -2477,6 +2591,11 @@ function rememberConversationMetadata(conversation: SavedConversation): void {
     rememberConversationThreadId(conversation.id, conversation.threadId);
   }
   conversationMessagesById.set(conversation.id, cloneConversationMessages(conversation.messages));
+  if (conversation.conferenceMode) {
+    conferenceModesByConversationId.set(conversation.id, cloneConferenceModeSnapshot(conversation.conferenceMode));
+  } else {
+    conferenceModesByConversationId.delete(conversation.id);
+  }
 }
 
 function rememberConversationThreadId(conversationId: string, threadId: string | undefined): void {
@@ -2627,6 +2746,75 @@ function cloneConversationMessages(messages: ConversationMessage[]): Conversatio
     ...(message.profile ? { profile: { ...message.profile } } : {}),
     ...(message.trace ? { trace: message.trace.map((item) => ({ ...item })) } : {}),
     ...(message.plan ? { plan: { ...message.plan, steps: message.plan.steps.map((step) => ({ ...step })) } } : {}),
+  }));
+}
+
+function serializeConferenceModeForStorage(): ConversationConferenceModeSnapshot | undefined {
+  const entries = cloneConferenceTranscriptEntries(state.conferenceMode.entries);
+  const partialSourceText = state.conferenceMode.partialSourceText.trim();
+  const partialTranslationText = state.conferenceMode.partialTranslationText.trim();
+  if (!entries.length && !partialSourceText && !partialTranslationText) {
+    return undefined;
+  }
+  return {
+    entries,
+    ...(state.conferenceMode.sourceLabel.trim() ? { sourceLabel: state.conferenceMode.sourceLabel.trim() } : {}),
+    ...(partialSourceText ? { partialSourceText } : {}),
+    ...(partialTranslationText ? { partialTranslationText } : {}),
+    ...(state.realtimeInterpreter.targetLanguage ? { targetLanguage: state.realtimeInterpreter.targetLanguage } : {}),
+    livePlaybackEnabled: state.realtimeInterpreter.livePlaybackEnabled,
+    updatedAt: Date.now(),
+  };
+}
+
+function restoreConferenceModeFromConversation(conversation: SavedConversation): void {
+  const snapshot = conversation.conferenceMode ?? conferenceModesByConversationId.get(conversation.id);
+  if (conversation.conversationMode !== "conference" || !snapshot) {
+    state.conferenceMode = createConferenceModeState();
+    return;
+  }
+  state.conferenceMode = {
+    ...createConferenceModeState(),
+    viewActive: true,
+    sourceLabel: snapshot.sourceLabel ?? "",
+    entries: cloneConferenceTranscriptEntries(snapshot.entries),
+    partialSourceText: snapshot.partialSourceText ?? "",
+    partialTranslationText: snapshot.partialTranslationText ?? "",
+  };
+  if (snapshot.targetLanguage) {
+    state.realtimeInterpreter.targetLanguage = snapshot.targetLanguage;
+  }
+  if (typeof snapshot.livePlaybackEnabled === "boolean") {
+    state.realtimeInterpreter.livePlaybackEnabled = snapshot.livePlaybackEnabled;
+  }
+}
+
+function resolveMainViewForConversation(conversation: SavedConversation | null | undefined): MainView {
+  return conversation?.conversationMode === "conference" || conversation?.conferenceMode ? "conference" : "chat";
+}
+
+function cloneConferenceModeSnapshot(
+  snapshot: ConversationConferenceModeSnapshot,
+): ConversationConferenceModeSnapshot {
+  return {
+    entries: cloneConferenceTranscriptEntries(snapshot.entries),
+    ...(snapshot.sourceLabel ? { sourceLabel: snapshot.sourceLabel } : {}),
+    ...(snapshot.partialSourceText ? { partialSourceText: snapshot.partialSourceText } : {}),
+    ...(snapshot.partialTranslationText ? { partialTranslationText: snapshot.partialTranslationText } : {}),
+    ...(snapshot.targetLanguage ? { targetLanguage: snapshot.targetLanguage } : {}),
+    ...(typeof snapshot.livePlaybackEnabled === "boolean" ? { livePlaybackEnabled: snapshot.livePlaybackEnabled } : {}),
+    ...(Number.isFinite(snapshot.updatedAt) ? { updatedAt: Number(snapshot.updatedAt) } : {}),
+  };
+}
+
+function cloneConferenceTranscriptEntries(
+  entries: readonly ConferenceTranscriptSnapshotEntry[],
+): ConferenceTranscriptEntry[] {
+  return entries.map((entry) => ({
+    id: entry.id,
+    sourceText: entry.sourceText,
+    translationText: entry.translationText,
+    createdAt: entry.createdAt,
   }));
 }
 
@@ -2910,7 +3098,8 @@ async function persistDetachedConversation(conversationId: string): Promise<void
     return;
   }
   const messages = conversationMessagesById.get(conversationId);
-  if (!messages) {
+  const conferenceSnapshot = conferenceModesByConversationId.get(conversationId);
+  if (!messages && !conferenceSnapshot) {
     return;
   }
   const result = await sendRuntimeMessage<{ conversation: SavedConversation }>({
@@ -2921,7 +3110,9 @@ async function persistDetachedConversation(conversationId: string): Promise<void
       profileId: conversationProfilesById.get(conversationId) ?? DEFAULT_PROFILE_ID,
       model: conversationModelsById.get(conversationId),
       threadId: conversationThreadIdsById.get(conversationId) || undefined,
-      messages: serializeConversationMessagesForStorage(messages),
+      conversationMode: conferenceSnapshot ? "conference" : "chat",
+      ...(conferenceSnapshot ? { conferenceMode: conferenceSnapshot } : {}),
+      messages: serializeConversationMessagesForStorage(messages ?? []),
       attachments: [],
       structuredInputs: [],
       selectedTabIds: [],
@@ -2934,6 +3125,7 @@ async function persistDetachedConversation(conversationId: string): Promise<void
     id: result.conversation.id,
     title: result.conversation.title,
     profileId: result.conversation.profileId,
+    conversationMode: result.conversation.conversationMode === "conference" ? "conference" : "chat",
     updatedAt: result.conversation.updatedAt,
   });
   renderConversationListIfVisible();
@@ -3037,6 +3229,7 @@ function renderNow(): void {
   });
   const showOnboarding =
     !smokeTestMode && state.activeView === "chat" && (showAuthOnboarding || showUsageNoticeOnboarding);
+  syncAuthOnboardingAutoReconnect(showAuthOnboarding && nativeHostHealth.status !== "connected");
   const scrollState = captureScrollPositions();
   const composerState = captureComposerRenderState();
   const returningToChatView =
@@ -3090,6 +3283,8 @@ function renderNow(): void {
             ? renderChatView(strings)
             : state.activeView === "conference"
               ? renderConferenceModeView(strings)
+            : state.activeView === "interpreter"
+              ? renderRealtimeInterpreterView(strings)
             : state.activeView === "context"
               ? renderContextView(strings)
               : state.activeView === "skills"
@@ -3171,7 +3366,8 @@ function renderNow(): void {
   bindEvents();
   scheduleFloatingNotificationDismiss();
   restoreScrollPositions(scrollState);
-  scrollConferenceTranscriptToBottom();
+  scrollConferenceTranscriptToBottom({ onlyIfPinned: true });
+  scrollRealtimeInterpreterTranscriptToBottom({ onlyIfPinned: true });
   updateScrollToBottomButtonVisibility();
   restoreComposerRenderState(composerState);
   scheduleFloatingSurfaceLayoutSync();
@@ -3564,11 +3760,26 @@ function hasOpenFloatingSurface(): boolean {
       state.browserActionPermissionMenuOpen ||
       state.composerModelMenuOpen ||
       state.appMenuOpen ||
-      state.settingsDropdownOpen,
+      state.settingsDropdownOpen ||
+      state.realtimeInterpreter.settingsOpen,
   );
 }
 
 function isInsideFloatingSurfaceInteraction(target: Element): boolean {
+  if (
+    state.realtimeInterpreter.settingsOpen &&
+    target.closest(
+      [
+        ".conference-mode-settings-toggle",
+        ".conference-mode-settings-popover",
+        "#realtime-interpreter-settings-toggle",
+        ".realtime-interpreter-settings-popover",
+      ].join(","),
+    )
+  ) {
+    return true;
+  }
+
   if (state.settingsDropdownOpen && target.closest(".settings-select-shell, .settings-select-menu")) {
     return true;
   }
@@ -3615,6 +3826,7 @@ function closeFloatingSurfaces(): boolean {
   state.appMenuOpen = false;
   state.settingsDropdownOpen = "";
   state.settingsDropdownSearch = "";
+  state.realtimeInterpreter.settingsOpen = false;
   return wasOpen;
 }
 
@@ -3695,15 +3907,11 @@ function renderAppMenu(isPopup: boolean, disabled = false): string {
         <span class="app-menu-icon list" aria-hidden="true">${renderAppMenuListIcon()}</span>
         <span class="app-menu-label">${escapeHtml(labels.compactConversation)}</span>
       </button>
-      ${
-        shouldShowRealtimeVoiceControls()
-          ? `<button class="app-menu-row" data-menu-action="conference-toggle" role="menuitem" ${disabledAttribute}>
-              <span class="app-menu-icon" aria-hidden="true">${renderUiIcon("audio-lines")}</span>
-              <span class="app-menu-label">${escapeHtml(getConferenceModeMenuLabel())}</span>
-              <span class="app-menu-meta">${escapeHtml(getConferenceModeMenuMeta())}</span>
-            </button>`
-          : ""
-      }
+      <button class="app-menu-row" data-menu-action="conference-toggle" role="menuitem" ${disabledAttribute}>
+        <span class="app-menu-icon" aria-hidden="true">${renderUiIcon("audio-lines")}</span>
+        <span class="app-menu-label">${escapeHtml(getConferenceModeMenuLabel())}</span>
+        <span class="app-menu-meta">${escapeHtml(getConferenceModeMenuMeta())}</span>
+      </button>
       <button class="app-menu-row" data-menu-view="skills" role="menuitem" ${disabledAttribute}>
         <span class="app-menu-icon" aria-hidden="true">${renderAppMenuSkillsIcon()}</span>
         <span class="app-menu-label">${escapeHtml(labels.skills)}</span>
@@ -3724,7 +3932,7 @@ function renderAppMenu(isPopup: boolean, disabled = false): string {
 }
 
 function getConferenceModeMenuLabel(): string {
-  return isKoreanUiLocale() ? "컨퍼런스 모드" : "Conference mode";
+  return stringsForState().realtimeInterpreter.unifiedTitle;
 }
 
 function getConferenceModeMenuMeta(): string {
@@ -3732,18 +3940,31 @@ function getConferenceModeMenuMeta(): string {
     return isKoreanUiLocale() ? "기록 보기" : "Transcript";
   }
   if (state.conferenceMode.active) {
-    return isKoreanUiLocale() ? "실시간 중" : "Live";
+    return state.realtimeInterpreter.livePlaybackEnabled
+      ? isKoreanUiLocale()
+        ? "통역 재생 중"
+        : "Playing translation"
+      : isKoreanUiLocale()
+        ? "전사/번역 중"
+        : "Captions live";
   }
   if (state.conferenceMode.starting) {
     return isKoreanUiLocale() ? "연결 중" : "Connecting";
   }
-  return isKoreanUiLocale() ? "전사/번역" : "Transcript";
+  return state.realtimeInterpreter.livePlaybackEnabled
+    ? isKoreanUiLocale()
+      ? "실시간 통역 켜짐"
+      : "Live audio on"
+    : isKoreanUiLocale()
+      ? "컨퍼런스 기본"
+      : "Conference default";
 }
 
 async function switchMainViewFromMenu(view: MainView): Promise<void> {
   state.appMenuOpen = false;
   if (view === "chat") {
     await exitConferenceModeView();
+    await exitRealtimeInterpreterView();
   }
   state.activeView = view;
   renderSync();
@@ -3753,7 +3974,12 @@ async function switchMainViewFromMenu(view: MainView): Promise<void> {
 }
 
 async function exitConferenceModeView(): Promise<void> {
-  if (state.conferenceMode.active || state.conferenceMode.starting || conferenceModePeer) {
+  if (
+    state.conferenceMode.active ||
+    state.conferenceMode.starting ||
+    conferenceModePeer ||
+    (realtimeTranslationOwner === "conference" && realtimeInterpreterPeer)
+  ) {
     await stopConferenceMode({ notifyBridge: true, preserveEntries: true, keepViewActive: false });
     return;
   }
@@ -3761,6 +3987,22 @@ async function exitConferenceModeView(): Promise<void> {
     ...state.conferenceMode,
     viewActive: false,
     stopping: false,
+    error: "",
+    partialSourceText: "",
+    partialTranslationText: "",
+  };
+}
+
+async function exitRealtimeInterpreterView(): Promise<void> {
+  if (state.realtimeInterpreter.active || state.realtimeInterpreter.starting || realtimeInterpreterPeer) {
+    await stopRealtimeInterpreterMode({ preserveEntries: true, keepViewActive: false });
+    return;
+  }
+  state.realtimeInterpreter = {
+    ...state.realtimeInterpreter,
+    viewActive: false,
+    stopping: false,
+    settingsOpen: false,
     error: "",
     partialSourceText: "",
     partialTranslationText: "",
@@ -3780,13 +4022,45 @@ function getConferenceModeStatusLabel(): string {
   }
   if (state.conferenceMode.active) {
     const source = state.conferenceMode.sourceLabel ? ` · ${state.conferenceMode.sourceLabel}` : "";
+    if (state.realtimeInterpreter.livePlaybackEnabled) {
+      return isKoreanUiLocale()
+        ? `실시간 전사, 번역, 통역 오디오 재생 중${source}`
+        : `Transcribing, translating, and playing interpretation${source}`;
+    }
     return isKoreanUiLocale()
-      ? `실시간 전사와 한국어 번역 중${source}`
-      : `Transcribing and translating in real time${source}`;
+      ? `실시간 전사와 번역 자막 표시 중${source}`
+      : `Showing live transcript and translation captions${source}`;
   }
   return isKoreanUiLocale()
     ? "채팅창은 그대로 사용하면서 지금까지의 전사 내용에 질문할 수 있습니다."
     : "Ask questions below using the transcript captured so far.";
+}
+
+function getRealtimeInterpreterStatusLabel(): string {
+  const targetLanguage = getRealtimeInterpreterTargetLanguageLabel(state.realtimeInterpreter.targetLanguage);
+  if (state.realtimeInterpreter.starting) {
+    if (state.realtimeInterpreter.inputSource === "microphone") {
+      return isKoreanUiLocale()
+        ? `${targetLanguage} 통역에 사용할 마이크를 연결하고 있습니다.`
+        : `Connecting microphone audio for ${targetLanguage} interpretation.`;
+    }
+    return isKoreanUiLocale()
+      ? `${targetLanguage} 통역에 사용할 탭이나 화면 오디오를 선택하고 있습니다.`
+      : `Choose tab or screen audio for ${targetLanguage} interpretation.`;
+  }
+  if (state.realtimeInterpreter.stopping) {
+    return isKoreanUiLocale() ? "통역 세션을 정리하는 중입니다." : "Closing the interpreter session.";
+  }
+  if (state.realtimeInterpreter.active) {
+    const source = state.realtimeInterpreter.sourceLabel ? ` · ${state.realtimeInterpreter.sourceLabel}` : "";
+    return isKoreanUiLocale()
+      ? `${targetLanguage}로 실시간 통역 중${source}`
+      : `Interpreting to ${targetLanguage} in real time${source}`;
+  }
+  if (state.realtimeInterpreter.error) {
+    return isKoreanUiLocale() ? "오류를 확인한 뒤 다시 연결할 수 있습니다." : "Check the error and reconnect.";
+  }
+  return isKoreanUiLocale() ? "오디오 대기 중" : "Ready for audio";
 }
 
 function getRecentChatDisplayItems(limit?: number) {
@@ -4023,6 +4297,7 @@ function renderAuthOnboarding(
     codexBinaryStatus: codexBinaryHealth.status,
   });
   const disabledAttribute = readiness.canStartAuth ? "" : " disabled aria-disabled=\"true\"";
+  const installCopy = getNativeHostInstallCopy(strings);
 
   return `
     <section class="auth-onboarding" aria-labelledby="auth-onboarding-title">
@@ -4044,10 +4319,10 @@ function renderAuthOnboarding(
             : `<p class="auth-onboarding-warning">${escapeHtml(strings.onboarding.authDisabled)}</p>`
         }
         <div class="auth-onboarding-install">
-          <div class="auth-onboarding-install-title">${escapeHtml(strings.onboarding.installTitle)}</div>
-          <p>${escapeHtml(strings.onboarding.installBody)}</p>
-          <code>${escapeHtml(getNativeHostInstallCommand(strings))}</code>
-          <p>${escapeHtml(strings.onboarding.webOnlyUnavailable)}</p>
+          <div class="auth-onboarding-install-title">${escapeHtml(installCopy.title)}</div>
+          <p>${escapeHtml(installCopy.body)}</p>
+          <code>${escapeHtml(installCopy.command)}</code>
+          <p>${escapeHtml(installCopy.footer)}</p>
         </div>
         <div class="auth-onboarding-actions">
           <button id="onboarding-chatgpt-login" class="auth-onboarding-primary" type="button"${disabledAttribute}>
@@ -4074,6 +4349,53 @@ function renderAuthOnboarding(
   `;
 }
 
+type NativeHostInstallCopy = {
+  title: string;
+  body: string;
+  command: string;
+  footer: string;
+};
+
+function getNativeHostInstallCopy(strings: ReturnType<typeof getUiStrings>): NativeHostInstallCopy {
+  if (isChromeWebStoreInstall()) {
+    return getChromeWebStoreNativeHostInstallCopy();
+  }
+
+  return {
+    title: strings.onboarding.installTitle,
+    body: strings.onboarding.installBody,
+    command: getNativeHostInstallCommand(strings),
+    footer: strings.onboarding.webOnlyUnavailable,
+  };
+}
+
+function getChromeWebStoreNativeHostInstallCopy(): NativeHostInstallCopy {
+  const extensionId = getCurrentExtensionId();
+  const isKorean = getTranslatedUiLocale(state.uiLocale) === "ko";
+  const command = formatNativeHostInstallCommand(
+    "npm install && npm run build && node scripts/install-native-host.mjs --browser=chrome",
+    extensionId,
+  );
+
+  if (isKorean) {
+    return {
+      title: "스토어 설치판 로컬 브리지 필요",
+      body:
+        "Chrome Web Store에서 설치한 Chromex도 이 컴퓨터의 로컬 브리지가 한 번 필요합니다. GitHub Release에서 Chromex 로컬 브리지 패키지를 내려받아 압축을 푼 뒤 package.json이 있는 폴더에서 아래 명령을 실행하세요. 현재 스토어 확장 ID는 자동으로 포함됩니다.",
+      command,
+      footer: "설치가 끝나면 모든 Chrome 창을 완전히 닫고 다시 여세요. Chromex가 로컬 브리지를 자동으로 다시 확인합니다.",
+    };
+  }
+
+  return {
+    title: "Local bridge required for the Store install",
+    body:
+      "The Chrome Web Store extension still needs a local bridge on this computer. Download and unzip the Chromex local bridge package from GitHub Releases, then run these commands once from the folder that contains package.json. The current Store extension ID is included automatically.",
+    command,
+    footer: "After the installer finishes, quit every Chrome window and reopen Chrome. Chromex will retry the local bridge automatically.",
+  };
+}
+
 function getNativeHostInstallCommand(strings: ReturnType<typeof getUiStrings>): string {
   const extensionId = getCurrentExtensionId();
   return formatNativeHostInstallCommand(strings.onboarding.sourceInstallCommand, extensionId);
@@ -4098,6 +4420,37 @@ function getCurrentExtensionId(): string {
   } catch {
     return "";
   }
+}
+
+function isChromeWebStoreInstall(): boolean {
+  return getCurrentExtensionId() === CHROME_WEB_STORE_EXTENSION_ID;
+}
+
+function syncAuthOnboardingAutoReconnect(enabled: boolean): void {
+  if (!enabled) {
+    if (authOnboardingAutoReconnectTimer !== null) {
+      window.clearInterval(authOnboardingAutoReconnectTimer);
+      authOnboardingAutoReconnectTimer = null;
+    }
+    authOnboardingAutoReconnectInFlight = false;
+    return;
+  }
+
+  if (authOnboardingAutoReconnectTimer !== null) {
+    return;
+  }
+
+  authOnboardingAutoReconnectTimer = window.setInterval(() => {
+    if (authOnboardingAutoReconnectInFlight || document.visibilityState !== "visible") {
+      return;
+    }
+    authOnboardingAutoReconnectInFlight = true;
+    scheduleInitialize()
+      .catch(() => undefined)
+      .finally(() => {
+        authOnboardingAutoReconnectInFlight = false;
+      });
+  }, AUTH_ONBOARDING_AUTO_RECONNECT_INTERVAL_MS);
 }
 
 function renderAuthOnboardingRuntimeStep(
@@ -4335,7 +4688,7 @@ function renderNativeTextDialog(strings: ReturnType<typeof getUiStrings>): strin
         <header class="native-dialog-header">
           <div>
             <h2 id="native-text-dialog-title">${escapeHtml(dialog.title)}</h2>
-            <p>${escapeHtml(dialog.description)}</p>
+            <p class="native-dialog-description">${renderNativeTextDialogDescription(dialog.description)}</p>
           </div>
           <button class="icon-button native-dialog-close" type="button" data-native-text-cancel aria-label="${escapeAttribute(dialog.cancelLabel)}">
             ${renderUiIcon("x")}
@@ -4365,6 +4718,21 @@ function renderNativeTextDialog(strings: ReturnType<typeof getUiStrings>): strin
       </form>
     </div>
   `;
+}
+
+function renderNativeTextDialogDescription(description: string): string {
+  const urlPattern = /https:\/\/[^\s]+/gu;
+  let rendered = "";
+  let cursor = 0;
+  for (const match of description.matchAll(urlPattern)) {
+    const url = match[0];
+    const index = match.index ?? 0;
+    rendered += escapeHtml(description.slice(cursor, index));
+    rendered += `<a href="${escapeAttribute(url)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a>`;
+    cursor = index + url.length;
+  }
+  rendered += escapeHtml(description.slice(cursor));
+  return rendered;
 }
 
 function renderNativeConfirmationDialog(): string {
@@ -5686,15 +6054,7 @@ function renderActionCardTitle(strings: ReturnType<typeof getUiStrings>, card: A
 }
 
 function shouldRenderConferenceModePanel(): boolean {
-  return (
-    state.conferenceMode.viewActive &&
-    (state.conferenceMode.active ||
-      state.conferenceMode.starting ||
-      state.conferenceMode.stopping ||
-      Boolean(state.conferenceMode.error) ||
-      state.conferenceMode.entries.length > 0 ||
-      Boolean(state.conferenceMode.partialSourceText || state.conferenceMode.partialTranslationText))
-  );
+  return state.conferenceMode.viewActive;
 }
 
 function renderConferenceModePanel(): string {
@@ -5702,11 +6062,11 @@ function renderConferenceModePanel(): string {
     return "";
   }
 
-  const title = isKoreanUiLocale() ? "컨퍼런스 모드" : "Conference mode";
-  const emptyText = isKoreanUiLocale()
-    ? "오디오가 들어오면 실시간 전사와 번역이 여기에 표시됩니다."
-    : "Live transcript and translation will appear here once audio is detected.";
-  const pendingTranslationText = isKoreanUiLocale() ? "번역 중" : "Translating";
+  const labels = stringsForState().realtimeInterpreter;
+  const title = getConferenceModeMenuLabel();
+  const emptyText = labels.conferenceEmpty;
+  const pendingTranslationText = labels.pendingTranslation;
+  const settingsLabel = labels.settings;
   const status = getConferenceModeStatusLabel();
   const entries = state.conferenceMode.entries;
   const partialSource = state.conferenceMode.partialSourceText.trim();
@@ -5742,19 +6102,50 @@ function renderConferenceModePanel(): string {
       </article>
     `
     : "";
+  const sessionRunning = isConferenceModeAudioSessionRunning();
   const actionButton =
-    state.conferenceMode.active || state.conferenceMode.starting
+    sessionRunning
       ? `<button id="conference-mode-stop" class="conference-mode-button danger" type="button" ${
           state.conferenceMode.stopping ? "disabled" : ""
-        }>${escapeHtml(isKoreanUiLocale() ? "중지" : "Stop")}</button>`
+        }>${escapeHtml(labels.stop)}</button>`
       : `<button id="conference-mode-start" class="conference-mode-button primary" type="button" ${
           state.conferenceMode.stopping ? "disabled" : ""
-        }>${escapeHtml(isKoreanUiLocale() ? "오디오 선택" : "Choose audio")}</button>`;
+        }>${escapeHtml(labels.start)}</button>`;
   const clearButton = entries.length
-    ? `<button id="conference-mode-clear" class="conference-mode-button" type="button">${escapeHtml(
-        isKoreanUiLocale() ? "기록 지우기" : "Clear",
-      )}</button>`
+    ? `<button id="conference-mode-clear" class="conference-mode-button" type="button">${escapeHtml(labels.clear)}</button>`
     : "";
+  const livePlaybackEnabled = state.realtimeInterpreter.livePlaybackEnabled;
+  const livePlaybackLabel = labels.livePlayback;
+  const livePlaybackHint = livePlaybackEnabled ? labels.livePlaybackOnHint : labels.livePlaybackOffHint;
+  const livePlaybackStateLabel = livePlaybackEnabled ? labels.on : labels.off;
+  const livePlaybackToggle = `<button
+    id="conference-live-playback-toggle"
+    class="conference-mode-switch ${livePlaybackEnabled ? "enabled" : ""}"
+    type="button"
+    role="switch"
+    aria-checked="${livePlaybackEnabled ? "true" : "false"}"
+    title="${escapeAttribute(livePlaybackHint)}"
+    ${sessionRunning ? "disabled" : ""}
+  >
+    <span class="conference-mode-switch-copy">
+      <span>${escapeHtml(livePlaybackLabel)}</span>
+      <small>${escapeHtml(livePlaybackStateLabel)}</small>
+    </span>
+    <span class="conference-mode-switch-track" aria-hidden="true">
+      <span class="conference-mode-switch-thumb"></span>
+    </span>
+  </button>`;
+  const settingsButton = `<button
+    id="conference-mode-settings-toggle"
+    class="realtime-interpreter-icon-button realtime-interpreter-settings-toggle conference-mode-settings-toggle"
+    type="button"
+    aria-label="${escapeAttribute(settingsLabel)}"
+    aria-haspopup="dialog"
+    aria-controls="conference-mode-settings-popover"
+    aria-expanded="${state.realtimeInterpreter.settingsOpen ? "true" : "false"}"
+  >
+    ${renderUiIcon("settings")}
+  </button>`;
 
   return `
     <section class="conference-mode-panel" aria-label="${escapeAttribute(title)}">
@@ -5767,9 +6158,20 @@ function renderConferenceModePanel(): string {
           </div>
         </div>
         <div class="conference-mode-actions">
+          ${settingsButton}
+          ${livePlaybackToggle}
           ${clearButton}
           ${actionButton}
         </div>
+      </div>
+      <div
+        id="conference-mode-settings-popover"
+        class="realtime-interpreter-settings-popover conference-mode-settings-popover"
+        role="dialog"
+        aria-label="${escapeAttribute(settingsLabel)}"
+        ${state.realtimeInterpreter.settingsOpen ? "" : "hidden"}
+      >
+        ${state.realtimeInterpreter.settingsOpen ? renderRealtimeInterpreterControls() : ""}
       </div>
       ${
         state.conferenceMode.error
@@ -5788,6 +6190,19 @@ function renderConferenceModePanel(): string {
       </div>
     </section>
   `;
+}
+
+function isConferenceModeAudioSessionRunning(): boolean {
+  return Boolean(
+    state.conferenceMode.active ||
+      state.conferenceMode.starting ||
+      state.conferenceMode.stopping ||
+      conferenceModePeer ||
+      conferenceModeStream ||
+      conferenceModeDataChannel ||
+      (realtimeTranslationOwner === "conference" &&
+        (realtimeInterpreterPeer || realtimeInterpreterStream || realtimeInterpreterDataChannel)),
+  );
 }
 
 function renderChatView(strings: ReturnType<typeof getUiStrings>): string {
@@ -5841,12 +6256,21 @@ function renderChatView(strings: ReturnType<typeof getUiStrings>): string {
   `;
 }
 
-function renderConferenceModeView(_strings: ReturnType<typeof getUiStrings>): string {
-  const title = isKoreanUiLocale() ? "컨퍼런스 모드" : "Conference mode";
+function renderConferenceModeView(strings: ReturnType<typeof getUiStrings>): string {
+  const title = strings.realtimeInterpreter.unifiedTitle;
   return `
     <div class="conference-view" aria-label="${escapeAttribute(title)}">
-      <div class="conference-view-shell">
+      <div class="conference-view-shell" style="--conference-transcript-ratio: ${escapeAttribute(
+        conferencePaneSplitRatio.toFixed(3),
+      )};">
         ${renderConferenceModePanel()}
+        <div
+          class="conference-pane-resizer"
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label="${escapeAttribute(strings.realtimeInterpreter.resizeConferencePanes)}"
+          tabindex="0"
+        ></div>
         ${renderConferenceQuestionStream()}
       </div>
     </div>
@@ -5854,16 +6278,15 @@ function renderConferenceModeView(_strings: ReturnType<typeof getUiStrings>): st
 }
 
 function renderConferenceQuestionStream(): string {
+  const labels = stringsForState().realtimeInterpreter;
   const renderableMessages = state.messages.filter(shouldRenderConversationMessage);
   const { visibleMessages, hiddenCount } = getChatMessageWindow(renderableMessages, state.chatMessageWindowSize);
   const promptActivityHtml = renderPromptActivity();
   const { beforePromptActivityMessages, afterPromptActivityMessages } = partitionPromptActivityMessages(visibleMessages);
-  const emptyText = isKoreanUiLocale()
-    ? "아래 입력창에서 지금까지 번역된 내용에 대해 질문할 수 있습니다."
-    : "Ask questions about the translated conference transcript below.";
+  const emptyText = labels.conferenceQuestionEmpty;
 
   return `
-    <section class="conference-chat-section" aria-label="${escapeAttribute(isKoreanUiLocale() ? "컨퍼런스 질문" : "Conference questions")}">
+    <section class="conference-chat-section" aria-label="${escapeAttribute(labels.conferenceQuestionPanel)}">
       <div class="conference-chat-stream" data-scroll-key="conference-chat-scroll">
         ${
           visibleMessages.length || promptActivityHtml
@@ -5884,6 +6307,253 @@ function renderConferenceQuestionStream(): string {
       </div>
     </section>
   `;
+}
+
+function renderRealtimeInterpreterView(strings: ReturnType<typeof getUiStrings>): string {
+  const labels = strings.realtimeInterpreter;
+  const title = labels.title;
+  const emptyText = labels.empty;
+  const entries = state.realtimeInterpreter.entries;
+  const partialSource = state.realtimeInterpreter.partialSourceText.trim();
+  const partialTranslation = state.realtimeInterpreter.partialTranslationText.trim();
+  const hasPartial = Boolean(partialSource || partialTranslation);
+  const settingsLabel = labels.settings;
+  const rows = entries
+    .map(
+      (entry) => `
+        <article class="realtime-interpreter-entry">
+          ${entry.sourceText ? `<p class="realtime-interpreter-entry-source">${escapeHtml(entry.sourceText)}</p>` : ""}
+          ${
+            entry.translationText
+              ? `<p class="realtime-interpreter-entry-translation">${escapeHtml(entry.translationText)}</p>`
+              : ""
+          }
+        </article>
+      `,
+    )
+    .join("");
+  const liveCaptionHtml = hasPartial ? renderRealtimeInterpreterLiveCaptions() : "";
+  const actionButton =
+    state.realtimeInterpreter.active || state.realtimeInterpreter.starting
+      ? `<button id="realtime-interpreter-stop" class="realtime-interpreter-button danger" type="button" ${
+          state.realtimeInterpreter.stopping ? "disabled" : ""
+        }>${escapeHtml(labels.stop)}</button>`
+      : `<button id="realtime-interpreter-start" class="realtime-interpreter-button primary" type="button" ${
+          state.realtimeInterpreter.stopping ? "disabled" : ""
+        }>${escapeHtml(labels.start)}</button>`;
+  const clearButton = entries.length
+    ? `<button id="realtime-interpreter-clear" class="realtime-interpreter-button" type="button">${escapeHtml(labels.clear)}</button>`
+    : "";
+
+  return `
+    <div class="realtime-interpreter-view" aria-label="${escapeAttribute(title)}">
+      <section class="realtime-interpreter-session">
+        <div class="realtime-interpreter-header">
+          <div class="realtime-interpreter-title-row">
+            <span class="realtime-interpreter-icon" aria-hidden="true">${renderUiIcon("audio-lines")}</span>
+            <div>
+              <h2>${escapeHtml(title)}</h2>
+              <p class="realtime-interpreter-status">${escapeHtml(getRealtimeInterpreterStatusLabel())}</p>
+            </div>
+          </div>
+          <div class="realtime-interpreter-session-controls">
+            <button
+              id="realtime-interpreter-settings-toggle"
+              class="realtime-interpreter-icon-button realtime-interpreter-settings-toggle"
+              type="button"
+              aria-label="${escapeAttribute(settingsLabel)}"
+              aria-haspopup="dialog"
+              aria-controls="realtime-interpreter-settings-popover"
+              aria-expanded="${state.realtimeInterpreter.settingsOpen ? "true" : "false"}"
+            >
+              ${renderUiIcon("settings")}
+            </button>
+            ${clearButton}
+            ${actionButton}
+          </div>
+        </div>
+        <div
+          id="realtime-interpreter-settings-popover"
+          class="realtime-interpreter-settings-popover"
+          role="dialog"
+          aria-label="${escapeAttribute(settingsLabel)}"
+          ${state.realtimeInterpreter.settingsOpen ? "" : "hidden"}
+        >
+          ${state.realtimeInterpreter.settingsOpen ? renderRealtimeInterpreterControls() : ""}
+        </div>
+        ${
+          state.realtimeInterpreter.error
+            ? `<p class="realtime-interpreter-error">${escapeHtml(state.realtimeInterpreter.error)}</p>`
+            : ""
+        }
+        ${
+          state.realtimeInterpreter.active
+            ? `<div class="realtime-interpreter-waveform" aria-hidden="true">${renderComposerVoiceWaveform()}</div>`
+            : ""
+        }
+      </section>
+      <div class="realtime-interpreter-workspace" style="--realtime-interpreter-transcript-ratio: ${escapeAttribute(
+        realtimeInterpreterPaneSplitRatio.toFixed(3),
+      )};">
+        <div class="realtime-interpreter-transcript-scroll" id="realtime-interpreter-scroll" data-scroll-key="realtime-interpreter-scroll">
+          ${liveCaptionHtml}
+          <section class="realtime-interpreter-list">
+            ${rows}
+            ${!rows && !hasPartial ? `<p class="realtime-interpreter-empty">${escapeHtml(emptyText)}</p>` : ""}
+          </section>
+        </div>
+        <div
+          class="realtime-interpreter-pane-resizer"
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label="${escapeAttribute(labels.resizePanes)}"
+          tabindex="0"
+        ></div>
+        ${renderRealtimeInterpreterQuestionStream()}
+      </div>
+    </div>
+  `;
+}
+
+function renderRealtimeInterpreterQuestionStream(): string {
+  const labels = stringsForState().realtimeInterpreter;
+  const renderableMessages = state.messages.filter(shouldRenderConversationMessage);
+  const { visibleMessages, hiddenCount } = getChatMessageWindow(renderableMessages, state.chatMessageWindowSize);
+  const promptActivityHtml = renderPromptActivity();
+  const { beforePromptActivityMessages, afterPromptActivityMessages } = partitionPromptActivityMessages(visibleMessages);
+  const emptyText = labels.questionEmpty;
+
+  return `
+    <section class="realtime-interpreter-chat-section" aria-label="${escapeAttribute(labels.questionPanel)}">
+      <div class="realtime-interpreter-chat-stream" data-scroll-key="realtime-interpreter-chat-scroll">
+        ${
+          visibleMessages.length || promptActivityHtml
+            ? `
+              <div class="message-stream realtime-interpreter-message-stream">
+                ${
+                  hiddenCount > 0
+                    ? `<div class="older-messages-sentinel" data-older-messages-hidden="${hiddenCount}" aria-hidden="true"></div>`
+                    : ""
+                }
+                ${beforePromptActivityMessages.map((message) => renderConversationMessage(message)).join("")}
+                ${promptActivityHtml}
+                ${afterPromptActivityMessages.map((message) => renderConversationMessage(message)).join("")}
+              </div>
+            `
+            : `<p class="realtime-interpreter-chat-empty">${escapeHtml(emptyText)}</p>`
+        }
+      </div>
+    </section>
+  `;
+}
+
+function renderRealtimeInterpreterLiveCaptions(): string {
+  const sourceText = state.realtimeInterpreter.partialSourceText.trim();
+  const translationText = state.realtimeInterpreter.partialTranslationText.trim();
+  if (!sourceText && !translationText) {
+    return "";
+  }
+  const labels = stringsForState().realtimeInterpreter;
+  const sourceLabel = labels.originalCaptions;
+  const translationLabel = labels.translatedCaptions;
+  const sourcePlaceholder = labels.sourceSpeechPlaceholder;
+  const translationPlaceholder = labels.translationPlaceholder;
+
+  return `
+    <section class="realtime-interpreter-caption-card" aria-label="${escapeAttribute(labels.captionRegion)}">
+      <div class="realtime-interpreter-caption-source">
+        <span>${escapeHtml(sourceLabel)}</span>
+        <p>${escapeHtml(sourceText || sourcePlaceholder)}</p>
+      </div>
+      <div class="realtime-interpreter-caption-translation">
+        <span>${escapeHtml(translationLabel)}</span>
+        <p>${escapeHtml(translationText || translationPlaceholder)}</p>
+      </div>
+    </section>
+  `;
+}
+
+function renderRealtimeInterpreterControls(): string {
+  const controlsDisabled = state.realtimeInterpreter.active || state.realtimeInterpreter.starting;
+  const disabledAttribute = controlsDisabled ? "disabled" : "";
+  const labels = stringsForState().realtimeInterpreter;
+  const isKorean = isKoreanUiLocale();
+  const languageOptions = REALTIME_INTERPRETER_TARGET_LANGUAGES.map((language) => {
+    const label = isKorean ? language.ko : language.en;
+    return `<option value="${escapeAttribute(language.value)}" ${
+      state.realtimeInterpreter.targetLanguage === language.value ? "selected" : ""
+    }>${escapeHtml(label)}</option>`;
+  }).join("");
+  const microphoneOptions = getRealtimeInterpreterMicrophoneOptions()
+    .map(
+      (device) => `<option value="${escapeAttribute(device.deviceId)}" ${
+        state.realtimeInterpreter.microphoneDeviceId === device.deviceId ? "selected" : ""
+      }>${escapeHtml(device.label)}</option>`,
+    )
+    .join("");
+  const microphoneDisabled = controlsDisabled || state.realtimeInterpreter.inputSource !== "microphone";
+  const displaySelected = state.realtimeInterpreter.inputSource === "display";
+  const microphoneSelected = state.realtimeInterpreter.inputSource === "microphone";
+
+  return `
+    <section class="realtime-interpreter-controls" aria-label="${escapeAttribute(labels.controls)}">
+      <label class="realtime-interpreter-control">
+        <span>${escapeHtml(labels.translateTo)}</span>
+        <select id="realtime-interpreter-language" ${disabledAttribute}>
+          ${languageOptions}
+        </select>
+      </label>
+      <div class="realtime-interpreter-control">
+        <span>${escapeHtml(labels.inputAudio)}</span>
+        <div class="realtime-interpreter-source-switch" role="group" aria-label="${escapeAttribute(labels.inputAudioChoice)}">
+          <button id="realtime-interpreter-source-display" type="button" class="${displaySelected ? "selected" : ""}" data-interpreter-source="display" ${disabledAttribute}>
+            ${escapeHtml(labels.tabScreen)}
+          </button>
+          <button id="realtime-interpreter-source-microphone" type="button" class="${microphoneSelected ? "selected" : ""}" data-interpreter-source="microphone" ${disabledAttribute}>
+            ${escapeHtml(labels.microphone)}
+          </button>
+        </div>
+      </div>
+      <label class="realtime-interpreter-control">
+        <span>${escapeHtml(labels.captureMicrophone)}</span>
+        <div class="realtime-interpreter-inline-control">
+          <select id="realtime-interpreter-microphone" ${microphoneDisabled ? "disabled" : ""}>
+            ${microphoneOptions}
+          </select>
+          <button id="realtime-interpreter-refresh-devices" class="realtime-interpreter-icon-button realtime-interpreter-refresh-button" type="button" ${controlsDisabled ? "disabled" : ""} title="${escapeAttribute(labels.refreshMicrophones)}">
+            ${renderUiIcon("refresh")}
+          </button>
+        </div>
+      </label>
+      <div class="realtime-interpreter-control realtime-interpreter-cost-note" aria-label="${escapeAttribute(labels.costGuideTitle)}">
+        <span>${escapeHtml(labels.costGuideTitle)}</span>
+        <strong>${escapeHtml(labels.costGuideRate)}</strong>
+        <small>${escapeHtml(labels.costGuideBody)}</small>
+      </div>
+    </section>
+  `;
+}
+
+function getRealtimeInterpreterMicrophoneOptions(): RealtimeInterpreterMicrophoneDevice[] {
+  const fallbackLabel = stringsForState().realtimeInterpreter.defaultMicrophone;
+  const options: RealtimeInterpreterMicrophoneDevice[] = [{ deviceId: "", label: fallbackLabel }];
+  const seen = new Set([""]);
+  for (const device of state.realtimeInterpreter.microphoneDevices) {
+    if (seen.has(device.deviceId)) {
+      continue;
+    }
+    seen.add(device.deviceId);
+    options.push(device);
+  }
+  return options;
+}
+
+function getRealtimeInterpreterTargetLanguageLabel(value: string): string {
+  const option = REALTIME_INTERPRETER_TARGET_LANGUAGES.find((language) => language.value === value);
+  if (!option) {
+    return value.toUpperCase();
+  }
+  return isKoreanUiLocale() ? option.ko : option.en;
 }
 
 function partitionPromptActivityMessages(messages: ConversationMessage[]): {
@@ -7550,6 +8220,12 @@ function renderWorkspaceView(strings: ReturnType<typeof getUiStrings>): string {
                 <span class="settings-status-pill accent">${escapeHtml(renderAccountBadge())}</span>
                 ${renderAccountEmailPill()}
                 ${state.rateLimits ? `<span class="settings-status-pill">${escapeHtml(renderRateLimitBadge(state.rateLimits))}</span>` : ""}
+                ${
+                  state.accountStatus?.openAiApiKeyConfigured
+                    ? `<span class="settings-status-pill neutral">${escapeHtml(strings.status.apiKeyConnected)}</span>
+                      <button id="disconnect-api-key" class="danger">${escapeHtml(strings.actions.disconnectApiKey)}</button>`
+                    : ""
+                }
                 ${!isLoggedIn ? `<button id="chatgpt-login">${escapeHtml(strings.actions.chatgptLogin)}</button>` : ""}
                 <button id="apikey-login">${escapeHtml(strings.actions.apiKeyFallback)}</button>
                 ${isLoggedIn ? `<button id="logout">${escapeHtml(strings.actions.logout)}</button>` : ""}
@@ -8120,6 +8796,28 @@ async function startCodexOauthLogin(): Promise<void> {
   }
 }
 
+async function ensureChatgptAuthForCodexPrompt(): Promise<boolean> {
+  if (state.accountStatus?.authMode !== "apikey") {
+    return true;
+  }
+
+  const message = isKoreanUiLocale()
+    ? "통역 API 키는 실시간 통역에만 사용됩니다. 채팅은 ChatGPT OAuth로 실행해야 하므로 ChatGPT 계정 연결을 먼저 열었습니다. 연결을 완료한 뒤 다시 보내주세요."
+    : "The translation API key is used only for realtime translation. Chat still runs through ChatGPT OAuth, so Chromex opened ChatGPT account connection first. Finish that connection, then send again.";
+  state.initError = message;
+  state.actionStatus = message;
+  render();
+  try {
+    await sendRuntimeMessage({ type: "account.login.start", loginType: "chatgpt" });
+    await scheduleInitialize();
+  } catch (error) {
+    state.initError = toUserFacingRuntimeError(error);
+    state.actionStatus = "";
+    render();
+  }
+  return false;
+}
+
 function closeNativeTextDialog(): void {
   state.nativeTextDialog = null;
   render();
@@ -8144,7 +8842,10 @@ async function submitNativeTextDialog(): Promise<void> {
   render();
 
   try {
-    await sendRuntimeMessage({ type: "account.login.start", loginType: "apiKey", apiKey: value, confirmed: true });
+    const saveForRealtimeTranslation = isRealtimeTranslationApiKeyDialog(dialog) || dialog.kind === "api-key";
+    if (saveForRealtimeTranslation) {
+      await saveRealtimeTranslationApiKey(value);
+    }
     await scheduleInitialize();
     const afterSubmit = dialog.afterSubmit;
     state.initError = "";
@@ -8160,6 +8861,10 @@ async function submitNativeTextDialog(): Promise<void> {
       await startRealtimeVoiceSession();
     } else if (afterSubmit?.kind === "retry-composer-dictation") {
       await startComposerVoiceInput({ target: afterSubmit.target });
+    } else if (afterSubmit?.kind === "retry-realtime-interpreter") {
+      await startRealtimeInterpreterMode();
+    } else if (afterSubmit?.kind === "retry-conference-mode") {
+      await startConferenceMode();
     }
   } catch (error) {
     state.nativeTextDialog = {
@@ -8169,6 +8874,61 @@ async function submitNativeTextDialog(): Promise<void> {
     };
     render();
   }
+}
+
+function isRealtimeTranslationApiKeyDialog(dialog: NativeTextDialogState): boolean {
+  return dialog.afterSubmit?.kind === "retry-realtime-interpreter" || dialog.afterSubmit?.kind === "retry-conference-mode";
+}
+
+async function saveRealtimeTranslationApiKey(apiKey: string): Promise<void> {
+  await sendRuntimeMessage({
+    type: "translation.api_key.save",
+    apiKey,
+    confirmed: true,
+  });
+}
+
+async function disconnectRealtimeTranslationApiKey(): Promise<void> {
+  await sendRuntimeMessage({
+    type: "translation.api_key.clear",
+  });
+  if (state.accountStatus) {
+    state.accountStatus = {
+      ...state.accountStatus,
+      openAiApiKeyConfigured: false,
+    };
+  }
+  state.realtimeInterpreter.livePlaybackEnabled = false;
+  if (
+    state.conferenceMode.active ||
+    state.conferenceMode.starting ||
+    state.conferenceMode.stopping ||
+    conferenceModePeer ||
+    realtimeTranslationOwner === "conference"
+  ) {
+    await stopConferenceMode({
+      notifyBridge: true,
+      preserveEntries: true,
+      keepViewActive: true,
+    });
+  }
+  if (
+    state.realtimeInterpreter.active ||
+    state.realtimeInterpreter.starting ||
+    state.realtimeInterpreter.stopping ||
+    realtimeInterpreterPeer ||
+    realtimeInterpreterStream ||
+    realtimeInterpreterDataChannel
+  ) {
+    await stopRealtimeInterpreterMode({
+      preserveEntries: true,
+      keepViewActive: true,
+    });
+  }
+  await scheduleInitialize();
+  state.actionStatus = stringsForState().status.apiKeyDisconnected;
+  state.initError = "";
+  render();
 }
 
 type OAuthUsageFallbackResult = "not-applicable" | "declined" | "awaiting-api-key" | "switched";
@@ -8926,15 +9686,15 @@ function hasComposerContextReferences(): boolean {
 }
 
 function renderAttachedContextSummary(strings: ReturnType<typeof getUiStrings>): string {
-  const conferenceQuestionContextActive = isConferenceModeQuestionContextActive();
-  const currentTab = conferenceQuestionContextActive ? null : getCurrentTabReference();
-  const selectionCard = !conferenceQuestionContextActive && state.selectedPageTextContext
+  const transcriptQuestionContextActive = isTranscriptQuestionContextActive();
+  const currentTab = transcriptQuestionContextActive ? null : getCurrentTabReference();
+  const selectionCard = state.selectedPageTextContext && state.attachments.has("selection")
     ? [renderSelectedPageTextComposerCard(state.selectedPageTextContext, strings)]
     : [];
   const currentTabChip = currentTab && !state.selectedPageTextContext
     ? [renderPassiveTabReferenceChip(currentTab, strings.labels.currentTab, formatCurrentTabReferenceLabel(currentTab))]
     : [];
-  const chips = (conferenceQuestionContextActive ? [] : Array.from(state.attachments)).flatMap((attachment) => {
+  const chips = Array.from(state.attachments).flatMap((attachment) => {
     if (attachment === "open-tabs") {
       return renderOpenTabReferenceChips(strings);
     }
@@ -9324,19 +10084,22 @@ function defaultPromptForContext(strings: ReturnType<typeof getUiStrings>): stri
 function buildConversationContextHint(): string {
   if (isConferenceModeQuestionContextActive()) {
     const conferenceEntriesForPrompt =
-      state.conferenceMode.partialTranslationText.trim()
+      state.conferenceMode.partialSourceText.trim() || state.conferenceMode.partialTranslationText.trim()
         ? [
             ...state.conferenceMode.entries,
             {
               id: "conference-transcript-partial",
-              sourceText: "",
+              sourceText: state.conferenceMode.partialSourceText,
               translationText: state.conferenceMode.partialTranslationText,
               createdAt: Date.now(),
             },
           ]
         : state.conferenceMode.entries;
-    return buildConferenceModeTranslatedContextHint(conferenceEntriesForPrompt);
+    return buildTranscriptSourceOnlyContextHint("Live conference transcript context:", conferenceEntriesForPrompt);
   }
+  const realtimeInterpreterHint = isRealtimeInterpreterQuestionContextActive()
+    ? buildRealtimeInterpreterContextHint(getRealtimeInterpreterEntriesForPrompt())
+    : "";
 
   const conversationHint = state.messages
     .filter((message) => !message.notice && message.text.trim())
@@ -9356,7 +10119,7 @@ function buildConversationContextHint(): string {
           },
         ]
       : state.conferenceMode.entries;
-  const conferenceHint = buildConferenceModeContextHint(conferenceEntriesForPrompt);
+  const conferenceHint = buildTranscriptSourceOnlyContextHint("Live conference transcript context:", conferenceEntriesForPrompt);
   const hints: string[] = [];
   if (state.selectedPageTextContext) {
     hints.push(
@@ -9374,10 +10137,50 @@ function buildConversationContextHint(): string {
   if (conferenceHint) {
     hints.push(conferenceHint);
   }
+  if (realtimeInterpreterHint) {
+    hints.push(realtimeInterpreterHint);
+  }
   if (conversationHint) {
     hints.push(conversationHint);
   }
   return hints.join("\n\n").trim().slice(-6000);
+}
+
+function getRealtimeInterpreterEntriesForPrompt(): RealtimeInterpreterTranscriptEntry[] {
+  const partialSourceText = state.realtimeInterpreter.partialSourceText.trim();
+  const partialTranslationText = state.realtimeInterpreter.partialTranslationText.trim();
+  if (!partialSourceText && !partialTranslationText) {
+    return state.realtimeInterpreter.entries;
+  }
+  return [
+    ...state.realtimeInterpreter.entries,
+    {
+      id: "realtime-interpreter-partial",
+      sourceText: partialSourceText,
+      translationText: partialTranslationText,
+      createdAt: Date.now(),
+    },
+  ];
+}
+
+function buildRealtimeInterpreterContextHint(entries: RealtimeInterpreterTranscriptEntry[]): string {
+  return buildTranscriptSourceOnlyContextHint("Realtime interpreter original transcript context:", entries);
+}
+
+function buildTranscriptSourceOnlyContextHint(
+  label: string,
+  entries: Array<{ sourceText: string; translationText?: string }>,
+): string {
+  const lines = entries
+    .filter((entry) => entry.sourceText.trim())
+    .slice(-24)
+    .map((entry, index) => `${index + 1}. Original: ${entry.sourceText.trim()}`);
+
+  if (!lines.length) {
+    return "";
+  }
+
+  return `${label}\n${lines.join("\n")}`.slice(-6000);
 }
 
 function isConferenceModeQuestionContextActive(): boolean {
@@ -9386,9 +10189,34 @@ function isConferenceModeQuestionContextActive(): boolean {
     (state.conferenceMode.active ||
       state.conferenceMode.starting ||
       state.conferenceMode.stopping ||
-      state.conferenceMode.entries.some((entry) => entry.translationText.trim()) ||
-      Boolean(state.conferenceMode.partialTranslationText.trim()))
+      state.conferenceMode.entries.some((entry) => entry.sourceText.trim()) ||
+      Boolean(state.conferenceMode.partialSourceText.trim()))
   );
+}
+
+function isRealtimeInterpreterQuestionContextActive(): boolean {
+  return (
+    state.realtimeInterpreter.viewActive &&
+    (state.realtimeInterpreter.active ||
+      state.realtimeInterpreter.starting ||
+      state.realtimeInterpreter.stopping ||
+      state.realtimeInterpreter.entries.some((entry) => entry.sourceText.trim()) ||
+      Boolean(state.realtimeInterpreter.partialSourceText.trim()))
+  );
+}
+
+function isTranscriptQuestionContextActive(): boolean {
+  return isConferenceModeQuestionContextActive() || isRealtimeInterpreterQuestionContextActive();
+}
+
+function resolveActiveTranscriptViewForPrompt(): MainView {
+  if (isConferenceModeQuestionContextActive()) {
+    return "conference";
+  }
+  if (isRealtimeInterpreterQuestionContextActive()) {
+    return "interpreter";
+  }
+  return "chat";
 }
 
 function createPromptSelectedTextContextPayload(): SelectedPageTextContext | undefined {
@@ -11245,9 +12073,6 @@ function getMentionOptionsForState(): MentionOption[] {
   if (state.mentionQuery === null) {
     return [];
   }
-  if (isConferenceModeQuestionContextActive()) {
-    return [];
-  }
 
   return listMentionOptions(state.mentionQuery, state.uiLocale, {
     apps: state.connectedApps,
@@ -11258,9 +12083,6 @@ function getMentionOptionsForState(): MentionOption[] {
 
 function getTabMentionOptionsForState(): OpenTabContext[] {
   if (state.mentionQuery === null || state.openTabOptionsState !== "ready") {
-    return [];
-  }
-  if (isConferenceModeQuestionContextActive()) {
     return [];
   }
 
@@ -11516,6 +12338,8 @@ function syncDocumentLanguage(): void {
         ? `${strings.panelDocumentTitle} · ${strings.tabs.skills}`
         : state.activeView === "plugins"
           ? `${strings.panelDocumentTitle} · ${strings.tabs.pluginMcp}`
+          : state.activeView === "interpreter"
+            ? `${strings.panelDocumentTitle} · ${getConferenceModeMenuLabel()}`
       : `${strings.panelDocumentTitle} · ${strings.tabs.chat}`;
   syncDocumentTheme();
 }
@@ -11597,8 +12421,11 @@ function restoreScrollPositions(positions: Record<string, { scrollTop: number; s
   });
 }
 
-function scrollConferenceTranscriptToBottom(): void {
+function scrollConferenceTranscriptToBottom(options: { onlyIfPinned?: boolean } = {}): void {
   if (state.activeView !== "conference") {
+    return;
+  }
+  if (options.onlyIfPinned && !conferenceTranscriptStickToBottom) {
     return;
   }
   const node = root.querySelector<HTMLElement>("#conference-transcript-scroll");
@@ -11606,6 +12433,117 @@ function scrollConferenceTranscriptToBottom(): void {
     return;
   }
   node.scrollTop = Math.max(0, node.scrollHeight - node.clientHeight);
+}
+
+function scrollRealtimeInterpreterTranscriptToBottom(options: { onlyIfPinned?: boolean } = {}): void {
+  if (state.activeView !== "interpreter") {
+    return;
+  }
+  if (options.onlyIfPinned && !realtimeInterpreterTranscriptStickToBottom) {
+    return;
+  }
+  const node = root.querySelector<HTMLElement>("#realtime-interpreter-scroll");
+  if (!node) {
+    return;
+  }
+  node.scrollTop = Math.max(0, node.scrollHeight - node.clientHeight);
+}
+
+function handleConferenceTranscriptScroll(event: Event): void {
+  conferenceTranscriptStickToBottom = isScrollNearBottom(event.currentTarget as HTMLElement);
+}
+
+function handleRealtimeInterpreterTranscriptScroll(event: Event): void {
+  realtimeInterpreterTranscriptStickToBottom = isScrollNearBottom(event.currentTarget as HTMLElement);
+}
+
+function isScrollNearBottom(node: HTMLElement): boolean {
+  return node.scrollHeight - node.scrollTop - node.clientHeight <= TRANSCRIPT_AUTOSCROLL_BOTTOM_THRESHOLD_PX;
+}
+
+function bindConferencePaneResizer(): void {
+  bindVerticalPaneResizer({
+    resizerSelector: ".conference-pane-resizer",
+    shellSelector: ".conference-view-shell",
+    cssVariable: "--conference-transcript-ratio",
+    getRatio: () => conferencePaneSplitRatio,
+    setRatio: (ratio) => {
+      conferencePaneSplitRatio = ratio;
+    },
+  });
+}
+
+function bindRealtimeInterpreterPaneResizer(): void {
+  bindVerticalPaneResizer({
+    resizerSelector: ".realtime-interpreter-pane-resizer",
+    shellSelector: ".realtime-interpreter-workspace",
+    cssVariable: "--realtime-interpreter-transcript-ratio",
+    getRatio: () => realtimeInterpreterPaneSplitRatio,
+    setRatio: (ratio) => {
+      realtimeInterpreterPaneSplitRatio = ratio;
+    },
+  });
+}
+
+function bindVerticalPaneResizer(options: {
+  resizerSelector: string;
+  shellSelector: string;
+  cssVariable: string;
+  getRatio: () => number;
+  setRatio: (ratio: number) => void;
+}): void {
+  const resizer = root.querySelector<HTMLElement>(options.resizerSelector);
+  const shell = root.querySelector<HTMLElement>(options.shellSelector);
+  if (!resizer || !shell) {
+    return;
+  }
+
+  const applyRatio = (ratio: number) => {
+    const nextRatio = clampTranscriptPaneSplitRatio(ratio);
+    options.setRatio(nextRatio);
+    shell.style.setProperty(options.cssVariable, nextRatio.toFixed(3));
+  };
+
+  resizer.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") {
+      return;
+    }
+    event.preventDefault();
+    applyRatio(options.getRatio() + (event.key === "ArrowUp" ? -0.04 : 0.04));
+  });
+
+  resizer.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) {
+      return;
+    }
+    event.preventDefault();
+    resizer.setPointerCapture?.(event.pointerId);
+    const shellRect = shell.getBoundingClientRect();
+    const updateFromClientY = (clientY: number) => {
+      if (shellRect.height <= 0) {
+        return;
+      }
+      applyRatio((clientY - shellRect.top) / shellRect.height);
+    };
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      updateFromClientY(moveEvent.clientY);
+    };
+    const handlePointerUp = (upEvent: PointerEvent) => {
+      resizer.releasePointerCapture?.(upEvent.pointerId);
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    };
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+    updateFromClientY(event.clientY);
+  });
+}
+
+function clampTranscriptPaneSplitRatio(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0.5;
+  }
+  return Math.min(TRANSCRIPT_PANE_SPLIT_MAX, Math.max(TRANSCRIPT_PANE_SPLIT_MIN, value));
 }
 
 function forceChatScrollToBottom(container = root.querySelector<HTMLElement>("#chat-scroll")): void {
@@ -12462,6 +13400,10 @@ function bindEvents(): void {
       void startNewConferencePage();
       return;
     }
+    if (state.activeView === "interpreter" || state.realtimeInterpreter.viewActive) {
+      void stopRealtimeInterpreterMode({ preserveEntries: false, keepViewActive: false }).then(() => startNewChat());
+      return;
+    }
     void startNewChat();
   });
 
@@ -12596,6 +13538,15 @@ function bindEvents(): void {
       await sendRuntimeMessage({ type: "account.logout" });
       await scheduleInitialize();
       state.initError = "";
+    } catch (error) {
+      state.initError = toUserFacingRuntimeError(error);
+      render();
+    }
+  });
+
+  root.querySelector<HTMLButtonElement>("#disconnect-api-key")?.addEventListener("click", async () => {
+    try {
+      await disconnectRealtimeTranslationApiKey();
     } catch (error) {
       state.initError = toUserFacingRuntimeError(error);
       render();
@@ -13081,6 +14032,15 @@ function bindEvents(): void {
   });
 
   bindConferenceModeControls();
+  bindRealtimeInterpreterControls();
+  root
+    .querySelector<HTMLElement>("#conference-transcript-scroll")
+    ?.addEventListener("scroll", handleConferenceTranscriptScroll, { passive: true });
+  root
+    .querySelector<HTMLElement>("#realtime-interpreter-scroll")
+    ?.addEventListener("scroll", handleRealtimeInterpreterTranscriptScroll, { passive: true });
+  bindConferencePaneResizer();
+  bindRealtimeInterpreterPaneResizer();
 
   root.querySelectorAll<HTMLButtonElement>(".action-card").forEach((button) => {
     button.addEventListener("click", () => {
@@ -13128,7 +14088,7 @@ function bindEvents(): void {
       const result = await chrome.runtime.sendMessage({ type: "conversation.resume", conversationId });
       hydrateConversation(result.conversation);
       state.appMenuOpen = false;
-      state.activeView = "chat";
+      state.activeView = resolveMainViewForConversation(result.conversation);
       render();
       if (state.attachments.has("open-tabs") || state.selectedTabIds.length) {
         await loadTabs();
@@ -13298,14 +14258,6 @@ async function handleAttachmentMenuAction(action: AttachmentMenuAction): Promise
       return;
     }
     case "attach-tabs":
-      if (isConferenceModeQuestionContextActive()) {
-        state.attachmentMenuOpen = false;
-        state.browserActionPermissionMenuOpen = false;
-        state.actionStatus = getConferenceModeContextOnlyMessage();
-        render();
-        focusComposerAtEnd();
-        return;
-      }
       state.attachmentMenuOpen = false;
       state.browserActionPermissionMenuOpen = false;
       state.slashQuery = null;
@@ -13342,12 +14294,6 @@ async function handleAttachmentMenuAction(action: AttachmentMenuAction): Promise
       state.browserActionPermissionMenuOpen = false;
       render();
   }
-}
-
-function getConferenceModeContextOnlyMessage(): string {
-  return isKoreanUiLocale()
-    ? "컨퍼런스 모드에서는 번역된 전사 내용만 질문 컨텍스트로 사용합니다. 프로필은 / 명령어로 선택할 수 있습니다."
-    : "Conference mode only uses the translated transcript as chat context. Use / commands to choose a profile.";
 }
 
 function ensureTrailingComposerToken(value: string, token: "@" | "/"): string {
@@ -13564,11 +14510,15 @@ async function sendPrompt(
     }
   }
 
+  if (!(await ensureChatgptAuthForCodexPrompt())) {
+    return;
+  }
+
   let conversationIdAtStart = state.currentConversationId;
   let userMessageId = "";
   let clientRequestId = "";
   let submittedComposerFileAttachments: UserFileAttachment[] = [];
-  const conferenceQuestionContextActiveAtSubmit = isConferenceModeQuestionContextActive();
+  const transcriptQuestionContextActiveAtSubmit = isTranscriptQuestionContextActive();
   promptSubmissionBootstrapInFlight = true;
 
   try {
@@ -13576,7 +14526,7 @@ async function sendPrompt(
     if (options.preserveComposerDraft) {
       restoreComposerDraftAfterProgrammaticSend(preservedComposerDraft, composer);
     }
-    state.activeView = conferenceQuestionContextActiveAtSubmit ? "conference" : "chat";
+    state.activeView = transcriptQuestionContextActiveAtSubmit ? resolveActiveTranscriptViewForPrompt() : "chat";
     const activeProfileId = resolvePromptProfileId(options.profileId);
     if (!state.currentConversationId) {
       const created = await sendRuntimeMessage<{ conversation: SavedConversation }>({
@@ -13603,8 +14553,8 @@ async function sendPrompt(
       source: isDirectComposerTextSend ? "composer" : "programmatic",
     });
     sanitizeUnavailableCurrentPageState();
-    const conferenceQuestionContextActive = conferenceQuestionContextActiveAtSubmit;
-    const nextAttachments = conferenceQuestionContextActive ? [] : Array.from(state.attachments);
+    const transcriptQuestionContextActive = transcriptQuestionContextActiveAtSubmit;
+    const nextAttachments = Array.from(state.attachments);
     const contextHint = buildConversationContextHint();
     const submittedFileAttachmentState = createSubmittedComposerFileAttachmentState(
       state.fileAttachments,
@@ -13667,6 +14617,7 @@ async function sendPrompt(
         message: runtimeMessage,
         conversationId: conversationIdAtStart,
         contextHint,
+        conversationContext: contextHint,
         clientRequestId,
         profileId: activeProfileId,
         model: state.selectedModel,
@@ -13674,13 +14625,13 @@ async function sendPrompt(
         serviceTier: state.selectedServiceTier || undefined,
         readStrategyOverride: state.currentReadStrategy,
         attachments: nextAttachments,
-        selectedTextContext: conferenceQuestionContextActive ? undefined : createPromptSelectedTextContextPayload(),
-        fileAttachments: conferenceQuestionContextActive ? [] : nextFileAttachments,
+        selectedTextContext: createPromptSelectedTextContextPayload(),
+        fileAttachments: nextFileAttachments,
         structuredInputs: submittedPromptStructuredInputs,
-        selectedTabIds: conferenceQuestionContextActive ? [] : state.selectedTabIds,
-        historyQuery: conferenceQuestionContextActive ? "" : state.historyQuery,
+        selectedTabIds: state.selectedTabIds,
+        historyQuery: state.historyQuery,
         resetThread: options.resetThread,
-        suppressPageContext: conferenceQuestionContextActive || isCurrentTabContextDismissed(),
+        suppressPageContext: transcriptQuestionContextActive || isCurrentTabContextDismissed(),
         conversationMessageCount: state.messages.length,
         ...(state.settings.planModeEnabled && !sendAsTurnSteer ? { planMode: true } : {}),
         ...(goalCommand && !sendAsTurnSteer ? { useGoal: true, goalObjective: goalCommand.objective } : {}),
@@ -15317,11 +16268,25 @@ function upsertAssistantResponseTextSegment(
   const previousText = texts.get(itemId) ?? "";
   const nextFragment = append ? `${previousText}${fragment}` : fragment;
   const normalizedNextFragment = normalizeAssistantResponseTextSegment(nextFragment);
-  const duplicateItemId = Array.from(texts.entries()).find(
-    ([existingItemId, text]) => existingItemId !== itemId && normalizeAssistantResponseTextSegment(text) === normalizedNextFragment,
-  )?.[0];
+  const duplicateItemId = Array.from(texts.entries()).find(([existingItemId, text]) => {
+    if (existingItemId === itemId) {
+      return false;
+    }
+    const normalizedExisting = normalizeAssistantResponseTextSegment(text);
+    return isAssistantResponseTextDuplicateOrOverlap(normalizedExisting, normalizedNextFragment);
+  })?.[0];
   if (normalizedNextFragment && duplicateItemId) {
-    order.splice(order.indexOf(itemId), 1);
+    const duplicateText = texts.get(duplicateItemId) ?? "";
+    const normalizedExisting = normalizeAssistantResponseTextSegment(duplicateText);
+    const shouldKeepExisting =
+      normalizedExisting === normalizedNextFragment || normalizedExisting.includes(normalizedNextFragment);
+    if (shouldKeepExisting) {
+      order.splice(order.indexOf(itemId), 1);
+    } else {
+      order.splice(order.indexOf(duplicateItemId), 1);
+      texts.delete(duplicateItemId);
+      texts.set(itemId, nextFragment);
+    }
     assistantResponseItemOrderByMessageId.set(messageId, order);
   } else {
     texts.set(itemId, nextFragment);
@@ -15336,6 +16301,19 @@ function upsertAssistantResponseTextSegment(
 
 function normalizeAssistantResponseTextSegment(value: string): string {
   return value.trim().replace(/\s+/g, " ");
+}
+
+function isAssistantResponseTextDuplicateOrOverlap(normalizedExisting: string, normalizedNextFragment: string): boolean {
+  if (!normalizedExisting || !normalizedNextFragment) {
+    return false;
+  }
+  if (normalizedExisting === normalizedNextFragment) {
+    return true;
+  }
+  if (Math.min(normalizedExisting.length, normalizedNextFragment.length) < 120) {
+    return false;
+  }
+  return normalizedExisting.includes(normalizedNextFragment) || normalizedNextFragment.includes(normalizedExisting);
 }
 
 function stableMessageIdPart(value: string): string {
@@ -17450,37 +18428,14 @@ function shouldUseComposerRealtimeWebRtcDictation(): boolean {
 }
 
 async function toggleConferenceMode(): Promise<void> {
-  if (!shouldShowRealtimeVoiceControls()) {
-    if (state.conferenceMode.viewActive || state.activeView === "conference") {
-      await exitConferenceModeView();
-    }
-    state.appMenuOpen = false;
-    renderSync();
-    return;
-  }
-  if (state.conferenceMode.active || state.conferenceMode.starting) {
-    await stopConferenceMode({ notifyBridge: true, preserveEntries: true, keepViewActive: true });
-    return;
-  }
-  if (!state.conferenceMode.viewActive && state.conferenceMode.entries.length) {
-    state.activeView = "conference";
-    state.appMenuOpen = false;
-    state.conferenceMode.viewActive = true;
-    render();
-    return;
-  }
-  await startConferenceMode();
+  state.activeView = "conference";
+  state.appMenuOpen = false;
+  state.conferenceMode.viewActive = true;
+  render();
 }
 
 async function startConferenceMode(): Promise<void> {
   if (state.conferenceMode.active || state.conferenceMode.starting) {
-    return;
-  }
-  if (!shouldShowRealtimeVoiceControls()) {
-    state.activeView = "chat";
-    state.conferenceMode.viewActive = false;
-    state.initError = "";
-    render();
     return;
   }
   if (state.voiceEnabled || state.voiceInputActive || composerVoiceInputRealtimeThreadId || composerVoiceInputRealtimePeer) {
@@ -17488,13 +18443,21 @@ async function startConferenceMode(): Promise<void> {
     render();
     return;
   }
-  if (!state.accountStatus?.codexAuthenticated) {
-    state.initError = getRealtimeVoiceSignInRequiredMessage();
+  if (!state.accountStatus?.openAiApiKeyConfigured) {
+    state.activeView = "conference";
+    state.appMenuOpen = false;
+    state.conferenceMode.viewActive = true;
     render();
+    openNativeTextDialog("api-key", {
+      description: getRealtimeInterpreterApiKeyDescription(),
+      afterSubmit: { kind: "retry-conference-mode" },
+    });
     return;
   }
   if (!window.RTCPeerConnection || !navigator.mediaDevices?.getDisplayMedia) {
-    state.initError = getComputerAudioCaptureUnsupportedMessage();
+    state.activeView = "conference";
+    state.conferenceMode.viewActive = true;
+    state.conferenceMode.error = getComputerAudioCaptureUnsupportedMessage();
     render();
     return;
   }
@@ -17514,92 +18477,102 @@ async function startConferenceMode(): Promise<void> {
     partialSourceText: "",
     partialTranslationText: "",
   };
+  conferenceTranscriptStickToBottom = true;
   const startSessionId = state.conferenceMode.sessionId;
+  realtimeTranslationOwner = "conference";
+  const startGeneration = ++realtimeInterpreterStartGeneration;
   state.actionStatus = getConferenceModeCaptureRequestStatus();
   render();
 
   let pendingStream: MediaStream | null = null;
   try {
-    const stream = await requestComputerAudioStreamForDictation();
+    const livePlaybackEnabled = state.realtimeInterpreter.livePlaybackEnabled;
+    const { stream, sourceLabel } = await requestRealtimeInterpreterDisplayAudioStream({
+      suppressLocalAudioPlayback: livePlaybackEnabled,
+    });
     pendingStream = stream;
     if (!isCurrentConferenceModeStart(startSessionId)) {
       pendingStream.getTracks().forEach((track) => track.stop());
+      realtimeTranslationOwner = "interpreter";
       return;
     }
-    conferenceModeStream = stream;
-    state.conferenceMode.sourceLabel = getDisplaySurfaceLabel(getDisplaySurfaceFromStream(stream));
-    const { peer, sdp } = await createConferenceModeWebRtcOffer(stream);
-    if (!isCurrentConferenceModeStart(startSessionId)) {
-      peer.close();
-      pendingStream.getTracks().forEach((track) => track.stop());
-      return;
-    }
-    conferenceModePeer = peer;
-    const answerPromise = waitForRealtimeVoiceAnswer();
-    void answerPromise.catch(() => undefined);
-
-    const result = await sendRuntimeMessageWithConfirmation<{
-      status?: string;
-      threadId?: string;
-      sessionId?: string;
-      error?: string;
-      errorCode?: string;
-      cancelled?: boolean;
-    }>({
-      type: "dictation.transcription.start",
-      confirmed: true,
-      sdp,
-      outputModality: "text",
-      sessionId: startSessionId,
-      prompt: getConferenceModePrompt(),
+    realtimeInterpreterStream = stream;
+    state.conferenceMode.sourceLabel = sourceLabel;
+    const { peer, sdp } = await createRealtimeInterpreterWebRtcOffer(stream, {
+      playTranslatedAudio: livePlaybackEnabled,
     });
     if (!isCurrentConferenceModeStart(startSessionId)) {
-      if (conferenceModePeer === peer) {
-        conferenceModePeer = null;
-      }
-      peer.close();
-      pendingStream.getTracks().forEach((track) => track.stop());
+      closeStaleRealtimeInterpreterStart(peer, pendingStream);
+      pendingStream = null;
+      realtimeTranslationOwner = "interpreter";
       return;
     }
-    if (isCancelledResult(result)) {
-      throw new Error(getComputerAudioCaptureCancelledMessage());
-    }
-    if (result.status === "error" || result.error) {
-      throw new Error(result.error || stringsForState().errors.voiceUpdate);
-    }
-    if (result.threadId) {
-      state.conferenceMode.threadId = result.threadId;
-    }
-
-    const answerSdp = await answerPromise;
+    realtimeInterpreterPeer = peer;
+    const secret = await sendRuntimeMessage<{
+      value?: string;
+      expiresAt?: number | null;
+      sessionId?: string | null;
+      model?: string;
+      targetLanguage?: string;
+      error?: string;
+    }>({
+      type: "translation.client_secret.create",
+      targetLanguage: state.realtimeInterpreter.targetLanguage,
+      ttlSeconds: 600,
+    });
     if (!isCurrentConferenceModeStart(startSessionId)) {
-      if (conferenceModePeer === peer) {
-        conferenceModePeer = null;
-      }
-      peer.close();
-      pendingStream.getTracks().forEach((track) => track.stop());
+      closeStaleRealtimeInterpreterStart(peer, pendingStream);
+      pendingStream = null;
+      realtimeTranslationOwner = "interpreter";
       return;
     }
-    if (conferenceModePeer === peer) {
-      await peer.setRemoteDescription({ type: "answer", sdp: answerSdp });
+    if (secret.error || !secret.value) {
+      throw new Error(secret.error || "Realtime translation client secret was not created.");
     }
-
-    const threadId = state.conferenceMode.threadId || result.threadId;
-    if (!threadId) {
-      throw new Error(stringsForState().errors.voiceUpdate);
+    const answer = await fetch("https://api.openai.com/v1/realtime/translations", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${secret.value}`,
+        "Content-Type": "application/sdp",
+      },
+      body: sdp,
+    });
+    if (!answer.ok) {
+      const detail = await answer.text().catch(() => "");
+      throw new Error(
+        [`Realtime translation call failed with ${answer.status} ${answer.statusText}`.trim(), detail.trim()]
+          .filter(Boolean)
+          .join(": "),
+      );
     }
-    state.conferenceMode.threadId = threadId;
+    if (!isCurrentConferenceModeStart(startSessionId)) {
+      closeStaleRealtimeInterpreterStart(peer, pendingStream);
+      pendingStream = null;
+      realtimeTranslationOwner = "interpreter";
+      return;
+    }
+    const answerSdp = await answer.text();
+    await peer.setRemoteDescription({ type: "answer", sdp: answerSdp });
+    if (!isCurrentConferenceModeStart(startSessionId) || startGeneration !== realtimeInterpreterStartGeneration) {
+      closeStaleRealtimeInterpreterStart(peer, pendingStream);
+      pendingStream = null;
+      realtimeTranslationOwner = "interpreter";
+      return;
+    }
     state.conferenceMode.active = true;
     state.conferenceMode.starting = false;
+    state.conferenceMode.error = "";
     state.actionStatus = "";
     startComposerVoiceWaveform(stream);
-    await startConferenceModeAudioInput(stream, threadId);
     pendingStream = null;
     render();
   } catch (error) {
     const message = toErrorMessage(error);
-    cancelPendingVoiceAnswer(message);
     pendingStream?.getTracks().forEach((track) => track.stop());
+    if (realtimeTranslationOwner === "conference") {
+      cleanupRealtimeInterpreterResources();
+      realtimeTranslationOwner = "interpreter";
+    }
     cleanupConferenceModeResources(message);
     state.conferenceMode = {
       ...state.conferenceMode,
@@ -17618,6 +18591,33 @@ async function startConferenceMode(): Promise<void> {
   }
 }
 
+function shouldRouteConferenceModeToRealtimeInterpreter(): boolean {
+  return Boolean(window.RTCPeerConnection && navigator.mediaDevices?.getDisplayMedia);
+}
+
+async function routeConferenceModeToRealtimeInterpreter(): Promise<void> {
+  if (state.conferenceMode.active || state.conferenceMode.starting || conferenceModePeer) {
+    await stopConferenceMode({ notifyBridge: true, preserveEntries: true, keepViewActive: false });
+  } else {
+    state.conferenceMode = {
+      ...state.conferenceMode,
+      viewActive: false,
+      active: false,
+      starting: false,
+      stopping: false,
+      error: "",
+      sourceLabel: "",
+      threadId: "",
+      sessionId: "",
+      partialSourceText: "",
+      partialTranslationText: "",
+    };
+    cleanupConferenceModeResources();
+  }
+  await openRealtimeInterpreterView();
+  await startRealtimeInterpreterMode();
+}
+
 function isCurrentConferenceModeStart(sessionId: string): boolean {
   return Boolean(sessionId && state.conferenceMode.sessionId === sessionId && state.conferenceMode.starting);
 }
@@ -17628,11 +18628,28 @@ async function stopConferenceMode(options: {
   keepViewActive: boolean;
 }): Promise<void> {
   const threadId = state.conferenceMode.threadId;
-  const wasActive = Boolean(state.conferenceMode.active || state.conferenceMode.starting || conferenceModePeer);
+  const wasRealtimeTranslationConference = Boolean(
+    realtimeTranslationOwner === "conference" &&
+      (realtimeInterpreterPeer || realtimeInterpreterStream || realtimeInterpreterDataChannel),
+  );
+  const wasActive = Boolean(
+    state.conferenceMode.active ||
+      state.conferenceMode.starting ||
+      conferenceModePeer ||
+      wasRealtimeTranslationConference,
+  );
+  if (options.preserveEntries) {
+    commitConferenceModePartialIfReady({ force: true, allowSourceOnly: true });
+  }
   state.conferenceMode.stopping = wasActive;
   state.conferenceMode.active = false;
   state.conferenceMode.starting = false;
   render();
+  if (wasRealtimeTranslationConference) {
+    realtimeInterpreterStartGeneration += 1;
+    cleanupRealtimeInterpreterResources();
+    realtimeTranslationOwner = "interpreter";
+  }
   cleanupConferenceModeResources();
   if (options.notifyBridge && threadId) {
     await chrome.runtime
@@ -17782,6 +18799,49 @@ async function handleConferenceModeDataChannelMessage(data: unknown): Promise<vo
     applyConferenceModeTranscriptDone(transcript.role, transcript.text);
   }
   render();
+}
+
+function handleConferenceModeTranslationPayload(payload: Record<string, unknown>): void {
+  if (payload.type === "error") {
+    handleConferenceModeError(extractConferenceModeDataChannelErrorMessage(payload) || stringsForState().errors.voiceUpdate);
+    render();
+    return;
+  }
+
+  if (payload.type === "session.input_transcript.delta") {
+    state.conferenceMode.partialSourceText = `${state.conferenceMode.partialSourceText}${extractRealtimeInterpreterText(payload)}`;
+    conferenceModeDataChannelTranscriptsActive = true;
+    render();
+    return;
+  }
+
+  if (payload.type === "session.output_transcript.delta") {
+    state.conferenceMode.partialTranslationText = `${state.conferenceMode.partialTranslationText}${extractRealtimeInterpreterText(payload)}`;
+    conferenceModeDataChannelTranscriptsActive = true;
+    render();
+    return;
+  }
+
+  if (payload.type === "session.input_transcript.done") {
+    const text = extractRealtimeInterpreterText(payload).trim();
+    if (text) {
+      state.conferenceMode.partialSourceText = text;
+      conferenceModeDataChannelTranscriptsActive = true;
+    }
+    commitConferenceModePartialIfReady();
+    render();
+    return;
+  }
+
+  if (payload.type === "session.output_transcript.done") {
+    const text = extractRealtimeInterpreterText(payload).trim();
+    if (text) {
+      state.conferenceMode.partialTranslationText = text;
+      conferenceModeDataChannelTranscriptsActive = true;
+    }
+    commitConferenceModePartialIfReady({ force: true });
+    render();
+  }
 }
 
 async function startConferenceModeAudioInput(stream: MediaStream, threadId: string): Promise<void> {
@@ -17945,6 +19005,20 @@ function appendConferenceModeTranscript(sourceText: string, translationText: str
   return state.conferenceMode.entries.at(-1)?.sourceText ?? sourceText;
 }
 
+function commitConferenceModePartialIfReady(options: { force?: boolean; allowSourceOnly?: boolean } = {}): void {
+  const sourceText = state.conferenceMode.partialSourceText.trim();
+  const translationText = state.conferenceMode.partialTranslationText.trim();
+  if (!translationText && !(options.allowSourceOnly && sourceText)) {
+    return;
+  }
+  if (!sourceText && !options.force) {
+    return;
+  }
+  appendConferenceModeTranscript(sourceText, translationText);
+  state.conferenceMode.partialSourceText = "";
+  state.conferenceMode.partialTranslationText = "";
+}
+
 function requestConferenceModeTranslation(sourceText: string): void {
   const trimmedSourceText = sourceText.trim();
   if (!trimmedSourceText) {
@@ -18025,6 +19099,10 @@ function cancelConferenceModeTranslationRetry(): void {
 
 function handleConferenceModeError(message: string): void {
   rememberChatgptRealtimeEndpointFailure(message);
+  if (realtimeTranslationOwner === "conference") {
+    cleanupRealtimeInterpreterResources();
+    realtimeTranslationOwner = "interpreter";
+  }
   cleanupConferenceModeResources(message);
   state.conferenceMode.active = false;
   state.conferenceMode.starting = false;
@@ -18035,6 +19113,18 @@ function handleConferenceModeError(message: string): void {
 }
 
 function bindConferenceModeControls(): void {
+  root.querySelector<HTMLButtonElement>("#conference-mode-settings-toggle")?.addEventListener("click", () => {
+    state.realtimeInterpreter.settingsOpen = !state.realtimeInterpreter.settingsOpen;
+    render();
+  });
+  root.querySelector<HTMLButtonElement>("#conference-live-playback-toggle")?.addEventListener("click", () => {
+    if (state.conferenceMode.active || state.conferenceMode.starting) {
+      return;
+    }
+    state.realtimeInterpreter.livePlaybackEnabled = !state.realtimeInterpreter.livePlaybackEnabled;
+    state.conferenceMode.error = "";
+    render();
+  });
   root.querySelector<HTMLButtonElement>("#conference-mode-start")?.addEventListener("click", () => {
     void startConferenceMode();
   });
@@ -18045,8 +19135,617 @@ function bindConferenceModeControls(): void {
     state.conferenceMode.entries = [];
     state.conferenceMode.partialSourceText = "";
     state.conferenceMode.partialTranslationText = "";
+    conferenceTranscriptStickToBottom = true;
     render();
   });
+}
+
+function bindRealtimeInterpreterControls(): void {
+  root.querySelector<HTMLButtonElement>("#realtime-interpreter-settings-toggle")?.addEventListener("click", () => {
+    state.realtimeInterpreter.settingsOpen = !state.realtimeInterpreter.settingsOpen;
+    render();
+  });
+  root.querySelector<HTMLSelectElement>("#realtime-interpreter-language")?.addEventListener("change", (event) => {
+    const select = event.currentTarget as HTMLSelectElement | null;
+    const value = select?.value.trim() ?? "";
+    if (!state.realtimeInterpreter.active && value) {
+      state.realtimeInterpreter.targetLanguage = value;
+      render();
+    }
+  });
+  root.querySelectorAll<HTMLButtonElement>("[data-interpreter-source]").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (state.realtimeInterpreter.active || state.realtimeInterpreter.starting) {
+        return;
+      }
+      const source = button.dataset.interpreterSource === "microphone" ? "microphone" : "display";
+      state.realtimeInterpreter.inputSource = source;
+      state.realtimeInterpreter.error = "";
+      render();
+      if (source === "microphone") {
+        void refreshRealtimeInterpreterMicrophones();
+      }
+    });
+  });
+  root.querySelector<HTMLSelectElement>("#realtime-interpreter-microphone")?.addEventListener("change", (event) => {
+    const select = event.currentTarget as HTMLSelectElement | null;
+    state.realtimeInterpreter.microphoneDeviceId = select?.value ?? "";
+    state.realtimeInterpreter.error = "";
+    render();
+  });
+  root.querySelector<HTMLButtonElement>("#realtime-interpreter-refresh-devices")?.addEventListener("click", () => {
+    void refreshRealtimeInterpreterMicrophones();
+  });
+  root.querySelector<HTMLButtonElement>("#realtime-interpreter-start")?.addEventListener("click", () => {
+    void startRealtimeInterpreterMode();
+  });
+  root.querySelector<HTMLButtonElement>("#realtime-interpreter-stop")?.addEventListener("click", () => {
+    void stopRealtimeInterpreterMode({ preserveEntries: true, keepViewActive: true });
+  });
+  root.querySelector<HTMLButtonElement>("#realtime-interpreter-clear")?.addEventListener("click", () => {
+    state.realtimeInterpreter.entries = [];
+    state.realtimeInterpreter.partialSourceText = "";
+    state.realtimeInterpreter.partialTranslationText = "";
+    realtimeInterpreterTranscriptStickToBottom = true;
+    render();
+  });
+}
+
+async function openRealtimeInterpreterView(): Promise<void> {
+  state.appMenuOpen = false;
+  state.activeView = "interpreter";
+  state.realtimeInterpreter.viewActive = true;
+  state.realtimeInterpreter.settingsOpen = false;
+  render();
+  void refreshRealtimeInterpreterMicrophones({ quiet: true });
+}
+
+async function refreshRealtimeInterpreterMicrophones(options: { quiet?: boolean } = {}): Promise<void> {
+  if (!navigator.mediaDevices?.enumerateDevices) {
+    return;
+  }
+  if (!options.quiet) {
+    state.realtimeInterpreter.microphoneDevicesLoading = true;
+    render();
+  }
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const microphones = devices
+      .filter((device) => device.kind === "audioinput")
+      .map((device, index) => ({
+        deviceId: device.deviceId,
+        label: device.label || (isKoreanUiLocale() ? `마이크 ${index + 1}` : `Microphone ${index + 1}`),
+      }));
+    state.realtimeInterpreter.microphoneDevices = microphones;
+    if (
+      state.realtimeInterpreter.microphoneDeviceId &&
+      !microphones.some((device) => device.deviceId === state.realtimeInterpreter.microphoneDeviceId)
+    ) {
+      state.realtimeInterpreter.microphoneDeviceId = "";
+    }
+  } catch (error) {
+    if (!options.quiet) {
+      state.realtimeInterpreter.error = toUserFacingRuntimeError(error);
+    }
+  } finally {
+    state.realtimeInterpreter.microphoneDevicesLoading = false;
+    render();
+  }
+}
+
+function getRealtimeInterpreterApiKeyDescription(): string {
+  const apiKeysUrl = "https://platform.openai.com/api-keys";
+  const billingUrl = "https://platform.openai.com/settings/organization/billing/overview";
+  const pricingUrl = "https://openai.com/api/pricing/";
+  if (isKoreanUiLocale()) {
+    return [
+      "실시간 통역을 시작하려면 OpenAI API 키가 필요합니다. 사용 모델은 gpt-realtime-translate이며, 키는 로컬 브리지에 저장됩니다.",
+      "현재 공식 가격표 기준 gpt-realtime-translate는 오디오 길이로 과금되며 약 $0.034/min 입니다. 10분 약 $0.34, 1시간 약 $2.04 정도로 보되 실제 청구액은 OpenAI 가격표와 사용량을 기준으로 확인해 주세요.",
+      `API 키 발급: ${apiKeysUrl}`,
+      `결제/크레딧 설정: ${billingUrl}`,
+      `최신 가격표: ${pricingUrl}`,
+    ].join("\n");
+  }
+  return [
+    "Realtime interpreter requires an OpenAI API key. It uses gpt-realtime-translate, and the key stays in the local bridge.",
+    "Based on the current official pricing, gpt-realtime-translate is billed by audio duration at about $0.034/min. Treat 10 minutes as about $0.34 and 1 hour as about $2.04, then confirm actual billing on OpenAI pricing and usage pages.",
+    `Create an API key: ${apiKeysUrl}`,
+    `Billing and credits: ${billingUrl}`,
+    `Latest pricing: ${pricingUrl}`,
+  ].join("\n");
+}
+
+async function startRealtimeInterpreterMode(): Promise<void> {
+  if (state.realtimeInterpreter.active || state.realtimeInterpreter.starting) {
+    return;
+  }
+  realtimeTranslationOwner = "interpreter";
+  state.appMenuOpen = false;
+  state.activeView = "interpreter";
+  state.realtimeInterpreter.viewActive = true;
+  state.realtimeInterpreter.settingsOpen = false;
+
+  if (!state.accountStatus?.openAiApiKeyConfigured) {
+    render();
+    openNativeTextDialog("api-key", {
+      description: getRealtimeInterpreterApiKeyDescription(),
+      afterSubmit: { kind: "retry-realtime-interpreter" },
+    });
+    return;
+  }
+
+  if (!window.RTCPeerConnection) {
+    state.realtimeInterpreter.error = isKoreanUiLocale()
+      ? "이 브라우저에서는 실시간 통역 WebRTC 연결을 사용할 수 없습니다."
+      : "This browser does not support realtime interpreter WebRTC.";
+    render();
+    return;
+  }
+  if (state.voiceEnabled || state.voiceInputActive || state.conferenceMode.active || state.conferenceMode.starting) {
+    state.realtimeInterpreter.error = isKoreanUiLocale()
+      ? "다른 음성 세션이 실행 중입니다. 먼저 중지한 뒤 통역을 시작해 주세요."
+      : "Another voice session is active. Stop it before starting realtime interpreter.";
+    render();
+    return;
+  }
+
+  state.realtimeInterpreter = {
+    ...state.realtimeInterpreter,
+    viewActive: true,
+    active: false,
+    starting: true,
+    stopping: false,
+    settingsOpen: false,
+    error: "",
+    sourceLabel: "",
+    partialSourceText: "",
+    partialTranslationText: "",
+  };
+  realtimeInterpreterTranscriptStickToBottom = true;
+  render();
+
+  let pendingStream: MediaStream | null = null;
+  const startGeneration = ++realtimeInterpreterStartGeneration;
+  try {
+    const { stream, sourceLabel } = await requestRealtimeInterpreterAudioStream();
+    pendingStream = stream;
+    if (!isCurrentRealtimeInterpreterStart(startGeneration)) {
+      closeStaleRealtimeInterpreterStart(null, pendingStream);
+      pendingStream = null;
+      return;
+    }
+    realtimeInterpreterStream = stream;
+    state.realtimeInterpreter.sourceLabel = sourceLabel;
+
+    const { peer, sdp } = await createRealtimeInterpreterWebRtcOffer(stream);
+    realtimeInterpreterPeer = peer;
+    if (!isCurrentRealtimeInterpreterStart(startGeneration)) {
+      closeStaleRealtimeInterpreterStart(peer, pendingStream);
+      pendingStream = null;
+      return;
+    }
+
+    const secret = await sendRuntimeMessage<{
+      value?: string;
+      expiresAt?: number | null;
+      sessionId?: string | null;
+      model?: string;
+      targetLanguage?: string;
+      error?: string;
+    }>({
+      type: "translation.client_secret.create",
+      targetLanguage: state.realtimeInterpreter.targetLanguage,
+      ttlSeconds: 600,
+    });
+    if (!isCurrentRealtimeInterpreterStart(startGeneration)) {
+      closeStaleRealtimeInterpreterStart(peer, pendingStream);
+      pendingStream = null;
+      return;
+    }
+    if (secret.error || !secret.value) {
+      throw new Error(secret.error || "Realtime translation client secret was not created.");
+    }
+
+    const answer = await fetch("https://api.openai.com/v1/realtime/translations", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${secret.value}`,
+        "Content-Type": "application/sdp",
+      },
+      body: sdp,
+    });
+    if (!answer.ok) {
+      const detail = await answer.text().catch(() => "");
+      throw new Error(
+        [`Realtime translation call failed with ${answer.status} ${answer.statusText}`.trim(), detail.trim()]
+          .filter(Boolean)
+        .join(": "),
+      );
+    }
+    if (!isCurrentRealtimeInterpreterStart(startGeneration)) {
+      closeStaleRealtimeInterpreterStart(peer, pendingStream);
+      pendingStream = null;
+      return;
+    }
+    const answerSdp = await answer.text();
+    if (!isCurrentRealtimeInterpreterStart(startGeneration)) {
+      closeStaleRealtimeInterpreterStart(peer, pendingStream);
+      pendingStream = null;
+      return;
+    }
+    await peer.setRemoteDescription({ type: "answer", sdp: answerSdp });
+    if (!isCurrentRealtimeInterpreterStart(startGeneration)) {
+      closeStaleRealtimeInterpreterStart(peer, pendingStream);
+      pendingStream = null;
+      return;
+    }
+
+    state.realtimeInterpreter.active = true;
+    state.realtimeInterpreter.starting = false;
+    state.realtimeInterpreter.error = "";
+    startComposerVoiceWaveform(stream);
+    pendingStream = null;
+    render();
+  } catch (error) {
+    if (!isCurrentRealtimeInterpreterStart(startGeneration)) {
+      closeStaleRealtimeInterpreterStart(null, pendingStream);
+      pendingStream = null;
+      return;
+    }
+    pendingStream?.getTracks().forEach((track) => track.stop());
+    cleanupRealtimeInterpreterResources();
+    state.realtimeInterpreter = {
+      ...state.realtimeInterpreter,
+      viewActive: true,
+      active: false,
+      starting: false,
+      stopping: false,
+      settingsOpen: false,
+      error: toUserFacingRuntimeError(error),
+      sourceLabel: "",
+      partialSourceText: "",
+      partialTranslationText: "",
+    };
+    render();
+  }
+}
+
+function isCurrentRealtimeInterpreterStart(generation: number): boolean {
+  return generation === realtimeInterpreterStartGeneration && state.realtimeInterpreter.starting;
+}
+
+function closeStaleRealtimeInterpreterStart(peer: RTCPeerConnection | null, stream: MediaStream | null): void {
+  if (realtimeInterpreterPeer === peer) {
+    realtimeInterpreterPeer = null;
+  }
+  if (realtimeInterpreterStream === stream) {
+    realtimeInterpreterStream = null;
+  }
+  if (peer) {
+    peer.ontrack = null;
+    peer.onconnectionstatechange = null;
+    peer.oniceconnectionstatechange = null;
+    peer.close();
+  }
+  stream?.getTracks().forEach((track) => track.stop());
+  cleanupComposerVoiceWaveform();
+}
+
+async function stopRealtimeInterpreterMode(options: {
+  preserveEntries: boolean;
+  keepViewActive: boolean;
+}): Promise<void> {
+  const wasActive = Boolean(
+    state.realtimeInterpreter.active ||
+      state.realtimeInterpreter.starting ||
+      state.realtimeInterpreter.stopping ||
+      realtimeInterpreterPeer,
+  );
+  realtimeInterpreterStartGeneration += 1;
+  if (options.preserveEntries) {
+    commitRealtimeInterpreterPartialIfReady({ force: true, allowSourceOnly: true });
+  }
+  state.realtimeInterpreter.stopping = wasActive;
+  state.realtimeInterpreter.active = false;
+  state.realtimeInterpreter.starting = false;
+  render();
+  cleanupRealtimeInterpreterResources();
+  realtimeTranslationOwner = "interpreter";
+  state.realtimeInterpreter = {
+    ...state.realtimeInterpreter,
+    viewActive: options.keepViewActive,
+    active: false,
+    starting: false,
+    stopping: false,
+    settingsOpen: false,
+    error: "",
+    sourceLabel: "",
+    entries: options.preserveEntries ? state.realtimeInterpreter.entries : [],
+    partialSourceText: "",
+    partialTranslationText: "",
+  };
+  render();
+}
+
+function cleanupRealtimeInterpreterResources(): void {
+  realtimeInterpreterStream?.getTracks().forEach((track) => track.stop());
+  realtimeInterpreterStream = null;
+  if (realtimeInterpreterDataChannel) {
+    realtimeInterpreterDataChannel.onmessage = null;
+    realtimeInterpreterDataChannel.onopen = null;
+    realtimeInterpreterDataChannel.onclose = null;
+    realtimeInterpreterDataChannel.onerror = null;
+    if (
+      realtimeInterpreterDataChannel.readyState === "open" ||
+      realtimeInterpreterDataChannel.readyState === "connecting"
+    ) {
+      realtimeInterpreterDataChannel.close();
+    }
+  }
+  realtimeInterpreterDataChannel = null;
+  if (realtimeInterpreterPeer) {
+    realtimeInterpreterPeer.ontrack = null;
+    realtimeInterpreterPeer.onconnectionstatechange = null;
+    realtimeInterpreterPeer.oniceconnectionstatechange = null;
+    realtimeInterpreterPeer.close();
+  }
+  realtimeInterpreterPeer = null;
+  if (realtimeInterpreterAudio) {
+    realtimeInterpreterAudio.pause();
+    realtimeInterpreterAudio.srcObject = null;
+    realtimeInterpreterAudio = null;
+  }
+  cleanupComposerVoiceWaveform();
+}
+
+async function requestRealtimeInterpreterAudioStream(): Promise<RealtimeInterpreterAudioStreamResult> {
+  if (state.realtimeInterpreter.inputSource === "microphone") {
+    const stream = await requestRealtimeInterpreterMicrophoneStream();
+    await refreshRealtimeInterpreterMicrophones({ quiet: true });
+    return {
+      stream,
+      sourceLabel: getRealtimeInterpreterMicrophoneLabel(stream),
+    };
+  }
+  return requestRealtimeInterpreterDisplayAudioStream({
+    suppressLocalAudioPlayback: true,
+  });
+}
+
+async function requestRealtimeInterpreterDisplayAudioStream(
+  options: ComputerAudioCaptureOptions = {},
+): Promise<RealtimeInterpreterAudioStreamResult> {
+  const stream = await requestComputerAudioStreamForDictation({
+    suppressLocalAudioPlayback: false,
+  });
+  const displaySurface = getDisplaySurfaceFromStream(stream);
+  if (options.suppressLocalAudioPlayback && shouldSuppressLocalAudioPlaybackForDisplaySurface(displaySurface)) {
+    await suppressBrowserTabLocalAudioPlayback(stream);
+  }
+  return {
+    stream,
+    sourceLabel: getDisplaySurfaceLabel(displaySurface),
+  };
+}
+
+function shouldSuppressLocalAudioPlaybackForDisplaySurface(displaySurface: string): boolean {
+  return displaySurface === "browser";
+}
+
+async function suppressBrowserTabLocalAudioPlayback(stream: MediaStream): Promise<void> {
+  const audioTracks = stream.getAudioTracks().filter((track) => track.readyState === "live");
+  await Promise.all(
+    audioTracks.map((track) =>
+      track
+        .applyConstraints({
+          suppressLocalAudioPlayback: true,
+        } as ExtendedDisplayAudioConstraints)
+        .catch((error) => {
+          void chrome.runtime
+            .sendMessage({
+              type: "diagnostics.log.write",
+              event: "realtime_interpreter.tab_audio_suppression_failed",
+              details: {
+                label: track.label,
+                settings: track.getSettings(),
+                error: toErrorMessage(error),
+              },
+            })
+            .catch(() => undefined);
+        }),
+    ),
+  );
+}
+
+async function requestRealtimeInterpreterMicrophoneStream(): Promise<MediaStream> {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    throw new Error(stringsForState().errors.voiceMicrophoneUnavailable);
+  }
+  const constraints: MediaStreamConstraints = {
+    audio: createRealtimeInterpreterMicrophoneAudioConstraints(),
+  };
+  return navigator.mediaDevices.getUserMedia(constraints);
+}
+
+function createRealtimeInterpreterMicrophoneAudioConstraints(): MediaTrackConstraints {
+  const deviceId = state.realtimeInterpreter.microphoneDeviceId.trim();
+  return {
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true,
+    ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
+  };
+}
+
+function getRealtimeInterpreterMicrophoneLabel(stream: MediaStream): string {
+  const trackLabel = stream.getAudioTracks()[0]?.label.trim();
+  if (trackLabel) {
+    return trackLabel;
+  }
+  const selectedDevice = state.realtimeInterpreter.microphoneDevices.find(
+    (device) => device.deviceId === state.realtimeInterpreter.microphoneDeviceId,
+  );
+  return selectedDevice?.label || (isKoreanUiLocale() ? "마이크" : "Microphone");
+}
+
+async function createRealtimeInterpreterWebRtcOffer(
+  stream: MediaStream,
+  options: { playTranslatedAudio?: boolean } = {},
+): Promise<{ peer: RTCPeerConnection; sdp: string }> {
+  const peer = new RTCPeerConnection();
+  attachRealtimeInterpreterPeerHandlers(peer, { playTranslatedAudio: options.playTranslatedAudio ?? true });
+  const audioTrack = stream.getAudioTracks()[0];
+  if (!audioTrack) {
+    peer.close();
+    throw new Error(getComputerAudioCaptureNoAudioMessage());
+  }
+  peer.addTrack(audioTrack, stream);
+  attachRealtimeInterpreterDataChannelHandlers(peer.createDataChannel("oai-events"));
+  const offer = await peer.createOffer();
+  await peer.setLocalDescription(offer);
+  await waitForIceGatheringComplete(peer, 3_000);
+  const sdp = peer.localDescription?.sdp ?? offer.sdp ?? "";
+  if (!sdp.trim()) {
+    peer.close();
+    throw new Error(stringsForState().errors.voiceUpdate);
+  }
+  return { peer, sdp };
+}
+
+function attachRealtimeInterpreterPeerHandlers(
+  peer: RTCPeerConnection,
+  options: { playTranslatedAudio: boolean },
+): void {
+  const handleConnectionState = () => {
+    if (realtimeInterpreterPeer !== peer) {
+      return;
+    }
+    const ownerActive =
+      realtimeTranslationOwner === "conference" ? state.conferenceMode.active : state.realtimeInterpreter.active;
+    if (!ownerActive) {
+      return;
+    }
+    if (peer.connectionState === "failed" || peer.iceConnectionState === "failed") {
+      if (realtimeTranslationOwner === "conference") {
+        handleConferenceModeError(stringsForState().errors.voiceUpdate);
+      } else {
+        state.realtimeInterpreter.error = stringsForState().errors.voiceUpdate;
+        state.realtimeInterpreter.active = false;
+        cleanupRealtimeInterpreterResources();
+      }
+      render();
+    }
+  };
+  peer.onconnectionstatechange = handleConnectionState;
+  peer.oniceconnectionstatechange = handleConnectionState;
+  peer.ondatachannel = (event) => {
+    attachRealtimeInterpreterDataChannelHandlers(event.channel);
+  };
+  peer.ontrack = (event) => {
+    if (!options.playTranslatedAudio) {
+      return;
+    }
+    const stream = event.streams[0] ?? new MediaStream([event.track]);
+    if (!stream) {
+      return;
+    }
+    realtimeInterpreterAudio?.pause();
+    realtimeInterpreterAudio = new Audio();
+    realtimeInterpreterAudio.autoplay = true;
+    realtimeInterpreterAudio.muted = false;
+    realtimeInterpreterAudio.volume = 1;
+    realtimeInterpreterAudio.setAttribute("playsinline", "true");
+    realtimeInterpreterAudio.srcObject = stream;
+    void realtimeInterpreterAudio.play().catch(() => undefined);
+  };
+}
+
+function attachRealtimeInterpreterDataChannelHandlers(channel: RTCDataChannel): void {
+  realtimeInterpreterDataChannel = channel;
+  channel.onclose = () => {
+    if (realtimeInterpreterDataChannel === channel) {
+      realtimeInterpreterDataChannel = null;
+    }
+  };
+  channel.onmessage = (event) => {
+    void handleRealtimeInterpreterDataChannelMessage(event.data);
+  };
+}
+
+async function handleRealtimeInterpreterDataChannelMessage(data: unknown): Promise<void> {
+  const payload = await parseComposerRealtimeVoiceDataChannelPayload(data);
+  if (!payload) {
+    return;
+  }
+  if (realtimeTranslationOwner === "conference") {
+    handleConferenceModeTranslationPayload(payload);
+    return;
+  }
+  if (payload.type === "error") {
+    state.realtimeInterpreter.error = extractConferenceModeDataChannelErrorMessage(payload) || stringsForState().errors.voiceUpdate;
+    render();
+    return;
+  }
+  if (payload.type === "session.input_transcript.delta") {
+    state.realtimeInterpreter.partialSourceText = `${state.realtimeInterpreter.partialSourceText}${extractRealtimeInterpreterText(payload)}`;
+    render();
+    return;
+  }
+  if (payload.type === "session.output_transcript.delta") {
+    state.realtimeInterpreter.partialTranslationText = `${state.realtimeInterpreter.partialTranslationText}${extractRealtimeInterpreterText(payload)}`;
+    render();
+    return;
+  }
+  if (payload.type === "session.input_transcript.done") {
+    const text = extractRealtimeInterpreterText(payload).trim();
+    if (text) {
+      state.realtimeInterpreter.partialSourceText = text;
+    }
+    commitRealtimeInterpreterPartialIfReady();
+    render();
+    return;
+  }
+  if (payload.type === "session.output_transcript.done") {
+    const text = extractRealtimeInterpreterText(payload).trim();
+    if (text) {
+      state.realtimeInterpreter.partialTranslationText = text;
+    }
+    commitRealtimeInterpreterPartialIfReady({ force: true });
+    render();
+  }
+}
+
+function extractRealtimeInterpreterText(payload: Record<string, unknown>): string {
+  for (const key of ["delta", "transcript", "text"]) {
+    const value = payload[key];
+    if (typeof value === "string") {
+      return value;
+    }
+  }
+  return "";
+}
+
+function commitRealtimeInterpreterPartialIfReady(options: { force?: boolean; allowSourceOnly?: boolean } = {}): void {
+  const sourceText = state.realtimeInterpreter.partialSourceText.trim();
+  const translationText = state.realtimeInterpreter.partialTranslationText.trim();
+  if (!translationText && !(options.allowSourceOnly && sourceText)) {
+    return;
+  }
+  if (!sourceText && !options.force) {
+    return;
+  }
+  realtimeInterpreterEntryCounter += 1;
+  state.realtimeInterpreter.entries = [
+    ...state.realtimeInterpreter.entries,
+    {
+      id: `realtime-interpreter-entry-${realtimeInterpreterEntryCounter}`,
+      sourceText,
+      translationText,
+      createdAt: Date.now(),
+    },
+  ].slice(-120);
+  state.realtimeInterpreter.partialSourceText = "";
+  state.realtimeInterpreter.partialTranslationText = "";
 }
 
 async function startComposerRealtimeVoiceInput(options: { target?: ComposerVoiceInputTarget } = {}): Promise<void> {
@@ -18260,12 +19959,15 @@ async function startComposerRealtimeVoiceInputWithWebRtc(stream: MediaStream): P
   return true;
 }
 
-async function requestComputerAudioStreamForDictation(): Promise<MediaStream> {
+async function requestComputerAudioStreamForDictation(options: ComputerAudioCaptureOptions = {}): Promise<MediaStream> {
   if (!navigator.mediaDevices?.getDisplayMedia) {
     throw new Error(getComputerAudioCaptureUnsupportedMessage());
   }
 
-  const stream = await navigator.mediaDevices.getDisplayMedia(createComputerAudioDisplayMediaOptions());
+  const displayMediaOptions = options.suppressLocalAudioPlayback
+    ? createComputerAudioDisplayMediaOptions(options)
+    : createComputerAudioDisplayMediaOptions();
+  const stream = await navigator.mediaDevices.getDisplayMedia(displayMediaOptions);
   logComputerAudioCaptureDiagnostics(stream, "selected");
 
   if (!stream.getAudioTracks().some((track) => track.readyState === "live")) {
@@ -18461,13 +20163,18 @@ function createBoostedComputerAudioStream(stream: MediaStream, gain: number): Me
   return new MediaStream([...stream.getVideoTracks(), boostedAudioTrack]);
 }
 
-function createComputerAudioDisplayMediaOptions(): ExtendedDisplayMediaOptions {
+function createComputerAudioDisplayMediaOptions({
+  suppressLocalAudioPlayback = false,
+}: ComputerAudioCaptureOptions = {}): ExtendedDisplayMediaOptions {
   const audio: ExtendedDisplayAudioConstraints = {
     echoCancellation: false,
     noiseSuppression: false,
     autoGainControl: false,
     suppressLocalAudioPlayback: false,
   };
+  if (suppressLocalAudioPlayback) {
+    audio.suppressLocalAudioPlayback = true;
+  }
 
   return {
     audio,
@@ -19374,10 +21081,6 @@ function startComposerVoiceInputSilenceMonitor(stream: MediaStream): void {
 
 function paintComposerVoiceWaveform(): void {
   const bars = root.querySelectorAll<HTMLSpanElement>(".composer-waveform-bar");
-  if (!bars.length) {
-    return;
-  }
-
   bars.forEach((bar, index) => {
     const normalized = Math.max(0.06, Math.min(1, composerVoiceInputWaveformLevels[index] ?? 0.08));
     bar.style.setProperty("--bar-level", normalized.toFixed(3));
@@ -19981,16 +21684,34 @@ async function startNewChat(): Promise<void> {
   state.latestDiff = null;
   state.latestReroute = null;
   state.pendingProfileQuestion = null;
+  state.realtimeInterpreter = createRealtimeInterpreterState();
   profileQuestionStreamBuffers.clear();
   profileQuestionCardRenderRequested = false;
   completedTurnIds.clear();
   render();
 }
 
+async function persistConferenceConversationBeforeReset(): Promise<void> {
+  if (!state.conferenceMode.viewActive) {
+    await persistConversationBatch.flush();
+    return;
+  }
+  commitConferenceModePartialIfReady({ force: true, allowSourceOnly: true });
+  rememberCurrentConversationSnapshot();
+  await persistConversationBatch.flush();
+  await persistConversation();
+}
+
 async function startNewConferencePage(): Promise<void> {
   flushStreamingAssistantDeltas();
-  if (state.conferenceMode.active || state.conferenceMode.starting || conferenceModePeer) {
-    await stopConferenceMode({ notifyBridge: true, preserveEntries: false, keepViewActive: true });
+  await persistConferenceConversationBeforeReset();
+  if (
+    state.conferenceMode.active ||
+    state.conferenceMode.starting ||
+    conferenceModePeer ||
+    (realtimeTranslationOwner === "conference" && (realtimeInterpreterPeer || realtimeInterpreterStream))
+  ) {
+    await stopConferenceMode({ notifyBridge: true, preserveEntries: true, keepViewActive: true });
   } else {
     cleanupConferenceModeResources();
   }
@@ -20048,7 +21769,8 @@ async function persistConversation(): Promise<void> {
     ? (conversationProfilesById.get(conversationIdForSave) ?? ensureComposerProfileSelection())
     : ensureComposerProfileSelection();
   const messages = serializeConversationMessagesForStorage(state.messages);
-  if (!shouldPersistConversationMessagesForStorage(state.messages)) {
+  const conferenceSnapshot = serializeConferenceModeForStorage();
+  if (!shouldPersistConversationMessagesForStorage(state.messages) && !conferenceSnapshot) {
     if (conversationIdForSave) {
       state.recentChats = state.recentChats.filter((item) => item.id !== conversationIdForSave);
     }
@@ -20074,6 +21796,8 @@ async function persistConversation(): Promise<void> {
       profileId: activeProfileId,
       model: state.selectedModel || undefined,
       threadId: state.threadId || undefined,
+      conversationMode: conferenceSnapshot ? "conference" : "chat",
+      ...(conferenceSnapshot ? { conferenceMode: conferenceSnapshot } : {}),
       messages,
       attachments: [],
       structuredInputs: [],
@@ -20096,6 +21820,7 @@ async function persistConversation(): Promise<void> {
     id: result.conversation.id,
     title: result.conversation.title,
     profileId: result.conversation.profileId,
+    conversationMode: result.conversation.conversationMode === "conference" ? "conference" : "chat",
     updatedAt: result.conversation.updatedAt,
   });
 }

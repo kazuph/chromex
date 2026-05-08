@@ -16,4 +16,10 @@ describe("native host installer", () => {
     expect(installerSource).toContain("/reg:32");
     expect(installerSource).toContain("/reg:64");
   });
+
+  test("allows the Chrome Web Store extension id by default", () => {
+    expect(installerSource).toContain('CHROME_WEB_STORE_EXTENSION_ID = "odlalmnpmmakfigepbaabimjcmcppgfo"');
+    expect(installerSource).toContain("CHROME_WEB_STORE_EXTENSION_ID");
+    expect(installerSource).toContain("Chrome Web Store extension ID included automatically");
+  });
 });

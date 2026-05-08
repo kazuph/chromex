@@ -139,6 +139,21 @@ export class BridgeRpcRouter {
         case "dictation.transcription.stop":
           await this.#dependencies.voice.stop(request.params as never);
           return { id: request.id, result: {} };
+        case "translation.api_key.save":
+          return {
+            id: request.id,
+            result: await this.#dependencies.translation.saveApiKey(request.params as never),
+          };
+        case "translation.api_key.clear":
+          return {
+            id: request.id,
+            result: await this.#dependencies.translation.clearApiKey(),
+          };
+        case "translation.client_secret.create":
+          return {
+            id: request.id,
+            result: await this.#dependencies.translation.createClientSecret(request.params as never),
+          };
         case "profile.list":
           return { id: request.id, result: listProfileTemplates() };
         case "profile.select":

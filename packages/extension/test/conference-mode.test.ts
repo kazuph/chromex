@@ -6,7 +6,6 @@ import { describe, expect, test } from "vitest";
 import {
   buildConferenceModeContextHint,
   buildConferenceModeTranslatedContextHint,
-  createConferenceModeTranslationRequestEvent,
   mergeConferenceModeTranscriptEntry,
   parseConferenceModeAssistantText,
   type ConferenceTranscriptEntry,
@@ -136,7 +135,7 @@ describe("conference mode", () => {
     expect(next).toEqual(entries);
   });
 
-  test("builds hidden chat context from recent conference transcript", () => {
+  test("builds hidden chat context from the original conference transcript only", () => {
     const hint = buildConferenceModeContextHint([
       {
         id: "conference-transcript-1",
@@ -148,7 +147,8 @@ describe("conference mode", () => {
 
     expect(hint).toContain("Live conference transcript context:");
     expect(hint).toContain("Original: We should decide the launch scope.");
-    expect(hint).toContain("Korean: 출시 범위를 결정해야 합니다.");
+    expect(hint).not.toContain("Korean:");
+    expect(hint).not.toContain("출시 범위를 결정해야 합니다.");
   });
 
   test("builds conference question context from translated transcript only", () => {
@@ -167,25 +167,14 @@ describe("conference mode", () => {
     expect(hint).not.toContain("Original:");
   });
 
-  test("creates realtime response requests for Korean translation", () => {
-    const event = createConferenceModeTranslationRequestEvent("We should decide the launch scope.");
-
-    expect(event).toMatchObject({
-      type: "response.create",
-      response: expect.objectContaining({}),
-    });
-    expect(JSON.stringify(event)).toContain("Translate the following transcript segment into Korean");
-    expect(JSON.stringify(event)).toContain("We should decide the launch scope.");
-    expect(JSON.stringify(event)).not.toContain("modalities");
-  });
-
-  test("adds conference mode to the more menu and renders it as a dedicated view", () => {
+  test("adds unified live interpretation mode to the more menu and renders it as a dedicated view", () => {
     const renderMenuBody = extractFunctionBody("renderAppMenu");
     const chatViewBody = extractFunctionBody("renderChatView");
     const renderNowBody = extractFunctionBody("renderNow");
 
-    expect(renderMenuBody).toContain("shouldShowRealtimeVoiceControls()");
+    expect(renderMenuBody).not.toContain("shouldShowRealtimeVoiceControls()");
     expect(renderMenuBody).toContain('data-menu-action="conference-toggle"');
+    expect(renderMenuBody).not.toContain('data-menu-action="interpreter-open"');
     expect(renderMenuBody).toContain("getConferenceModeMenuLabel()");
     expect(renderMenuBody).toContain('renderUiIcon("audio-lines")');
     expect(chatViewBody).not.toContain("renderConferenceModePanel()");
@@ -197,32 +186,53 @@ describe("conference mode", () => {
     expect(sidepanelSource).toContain('id="conference-mode-stop"');
   });
 
-  test("hides conference mode unless realtime voice is enabled for API-key auth", () => {
-    const realtimeAvailabilityBody = extractFunctionBody("isRealtimeVoiceAvailableForAccount");
-    const initializeBody = extractFunctionBody("initialize");
+  test("uses stored translation API key without switching normal Codex chat auth", () => {
     const startBody = extractFunctionBody("startConferenceMode");
+    const toggleBody = extractFunctionBody("toggleConferenceMode");
 
-    expect(realtimeAvailabilityBody).toContain('state.accountStatus.authMode === "apikey"');
-    expect(initializeBody).toContain("!shouldShowRealtimeVoiceControls() && state.activeView === \"conference\"");
-    expect(startBody).toContain("!shouldShowRealtimeVoiceControls()");
+    expect(toggleBody).not.toContain("shouldShowRealtimeVoiceControls()");
+    expect(toggleBody).not.toContain("startConferenceMode()");
+    expect(startBody).not.toContain('state.accountStatus?.authMode !== "apikey"');
+    expect(startBody).not.toContain("!state.accountStatus?.codexAuthenticated");
+    expect(startBody).toContain("!state.accountStatus?.openAiApiKeyConfigured");
+    expect(startBody).toContain("openNativeTextDialog(\"api-key\"");
+    expect(startBody).toContain('afterSubmit: { kind: "retry-conference-mode" }');
   });
 
-  test("starts a dedicated WebRTC text transcription session for captured tab or screen audio", () => {
-    const startBody = extractFunctionBody("startConferenceMode");
-    const offerIndex = sidepanelSource.indexOf("async function createConferenceModeWebRtcOffer");
-    const offerBody = sidepanelSource.slice(offerIndex, offerIndex + 1200);
-    const queueBody = extractFunctionBody("queueConferenceModeAudioFrame");
+  test("opens unified live mode without immediately prompting for audio capture", () => {
+    const toggleBody = extractFunctionBody("toggleConferenceMode");
 
-    expect(offerIndex).toBeGreaterThanOrEqual(0);
-    expect(startBody).toContain("requestComputerAudioStreamForDictation()");
-    expect(startBody).toContain("createConferenceModeWebRtcOffer(stream)");
-    expect(startBody).toContain('type: "dictation.transcription.start"');
-    expect(startBody).toContain('outputModality: "text"');
-    expect(startBody).toContain("getConferenceModePrompt()");
-    expect(sidepanelSource).toContain("Return transcript events only. Do not translate in this session.");
-    expect(offerBody).toContain('createDataChannel("oai-events")');
-    expect(offerBody).toContain("attachConferenceModeDataChannelHandlers");
-    expect(queueBody).toContain('type: "dictation.transcription.append_audio"');
+    expect(toggleBody).toContain('state.activeView = "conference"');
+    expect(toggleBody).toContain("state.appMenuOpen = false");
+    expect(toggleBody).toContain("state.conferenceMode.viewActive = true");
+    expect(toggleBody).toContain("render()");
+    expect(toggleBody).not.toContain("requestComputerAudioStreamForDictation");
+    expect(toggleBody).not.toContain("startConferenceMode()");
+  });
+
+  test("starts unified mode through realtime translation with conference defaults", () => {
+    const startBody = extractFunctionBody("startConferenceMode");
+
+    expect(startBody).toContain("const livePlaybackEnabled = state.realtimeInterpreter.livePlaybackEnabled");
+    expect(startBody).toContain("requestRealtimeInterpreterDisplayAudioStream({");
+    expect(startBody).toContain("suppressLocalAudioPlayback: livePlaybackEnabled");
+    expect(startBody).toContain("playTranslatedAudio: livePlaybackEnabled");
+    expect(startBody).toContain('type: "translation.client_secret.create"');
+    expect(startBody).toContain("https://api.openai.com/v1/realtime/translations");
+    expect(startBody).not.toContain('type: "dictation.transcription.start"');
+    expect(startBody).not.toContain("getConferenceModePrompt()");
+  });
+
+  test("conference translation uses transcript deltas directly instead of creating response translations", () => {
+    const startBody = extractFunctionBody("startConferenceMode");
+    const payloadBody = extractFunctionBody("handleConferenceModeTranslationPayload");
+
+    expect(startBody).not.toContain("routeConferenceModeToRealtimeInterpreter()");
+    expect(startBody).not.toContain("response.create");
+    expect(payloadBody).toContain('payload.type === "session.input_transcript.delta"');
+    expect(payloadBody).toContain('payload.type === "session.output_transcript.delta"');
+    expect(payloadBody).toContain("commitConferenceModePartialIfReady({ force: true })");
+    expect(payloadBody).not.toContain("createConferenceModeTranslationRequestEvent");
   });
 
   test("ignores stale conference start results after a new conference page cancels the previous recording", () => {
@@ -230,32 +240,29 @@ describe("conference mode", () => {
     const guardBody = extractFunctionBody("isCurrentConferenceModeStart");
 
     expect(startBody).toContain("const startSessionId = state.conferenceMode.sessionId");
+    expect(startBody).toContain("const startGeneration = ++realtimeInterpreterStartGeneration");
     expect(startBody).toContain("isCurrentConferenceModeStart(startSessionId)");
-    expect(startBody).toContain("sessionId: startSessionId");
+    expect(startBody).toContain("startGeneration !== realtimeInterpreterStartGeneration");
     expect(startBody).toContain("pendingStream.getTracks().forEach((track) => track.stop())");
     expect(guardBody).toContain("state.conferenceMode.sessionId === sessionId");
     expect(guardBody).toContain("state.conferenceMode.starting");
   });
 
-  test("does not create overlapping translation responses for completed source transcripts", () => {
-    const doneBody = extractFunctionBody("applyConferenceModeTranscriptDone");
-    const requestBody = extractFunctionBody("requestConferenceModeTranslation");
-    const flushBody = extractFunctionBody("flushConferenceModePendingTranslationRequests");
+  test("does not create overlapping translation responses for conference transcripts", () => {
+    const startBody = extractFunctionBody("startConferenceMode");
+    const realtimeDataBody = extractFunctionBody("handleRealtimeInterpreterDataChannelMessage");
+    const payloadBody = extractFunctionBody("handleConferenceModeTranslationPayload");
+    const commitBody = extractFunctionBody("commitConferenceModePartialIfReady");
     const cleanupBody = extractFunctionBody("cleanupConferenceModeResources");
 
-    expect(sidepanelSource).toContain("let conferenceModeDataChannel: RTCDataChannel | null = null");
-    expect(sidepanelSource).toContain("let conferenceModePendingTranslationRequests: string[] = []");
-    expect(doneBody).toContain("requestConferenceModeTranslation(sourceText)");
-    expect(doneBody).toContain('appendConferenceModeTranscript(value, "")');
-    expect(requestBody).toContain("createConferenceModeTranslationRequestEvent");
-    expect(requestBody).toContain("channel.send(JSON.stringify");
-    expect(requestBody).toContain("conferenceModeTranslationInFlight");
-    expect(sidepanelSource).toContain("let conferenceModeTranslationInFlight = false");
-    expect(sidepanelSource).toContain("let conferenceModeActiveTranslationSource = \"\"");
-    expect(sidepanelSource).toContain("function enqueueConferenceModeTranslationRequest");
-    expect(flushBody).toContain("conferenceModePendingTranslationRequests.shift");
-    expect(flushBody).toContain("requestConferenceModeTranslation(sourceText)");
-    expect(sidepanelSource).toContain("channel.onopen = flushConferenceModePendingTranslationRequests");
+    expect(startBody).not.toContain("startConferenceModeAudioInput");
+    expect(startBody).not.toContain("queueConferenceModeAudioFrame");
+    expect(startBody).not.toContain("requestConferenceModeTranslation");
+    expect(realtimeDataBody).toContain('realtimeTranslationOwner === "conference"');
+    expect(realtimeDataBody).toContain("handleConferenceModeTranslationPayload(payload)");
+    expect(payloadBody).not.toContain("response.create");
+    expect(payloadBody).not.toContain("requestConferenceModeTranslation");
+    expect(commitBody).toContain("appendConferenceModeTranscript(sourceText, translationText)");
     expect(cleanupBody).toContain("conferenceModeDataChannel = null");
     expect(cleanupBody).toContain("conferenceModePendingTranslationRequests = []");
     expect(cleanupBody).toContain("conferenceModeTranslationInFlight = false");
@@ -272,57 +279,83 @@ describe("conference mode", () => {
     expect(sidepanelSource).toContain("handleConferenceModeVoiceEvent(event)");
   });
 
-  test("injects conference transcript into the next chat prompt context", () => {
+  test("injects the original conference transcript into the next chat prompt context", () => {
     const contextBody = extractFunctionBody("buildConversationContextHint");
+    const activeBody = extractFunctionBody("isConferenceModeQuestionContextActive");
 
-    expect(contextBody).toContain("buildConferenceModeTranslatedContextHint");
+    expect(contextBody).toContain("buildTranscriptSourceOnlyContextHint");
     expect(contextBody).toContain("isConferenceModeQuestionContextActive()");
     expect(contextBody).toContain("state.conferenceMode.entries");
+    expect(activeBody).toContain("entry.sourceText.trim()");
+    expect(activeBody).toContain("state.conferenceMode.partialSourceText.trim()");
   });
 
-  test("keeps conference mode questions scoped to translated transcript instead of tab context", () => {
+  test("uses transcript context by default while preserving explicit conference attachments", () => {
     const sendPromptBody = extractFunctionBody("sendPrompt");
     const mentionBody = extractFunctionBody("getMentionOptionsForState");
     const attachmentActionBody = extractFunctionBody("handleAttachmentMenuAction");
     const contextActiveBody = extractFunctionBody("isConferenceModeQuestionContextActive");
     const conferenceViewBody = extractFunctionBody("renderConferenceModeView");
 
-    expect(sendPromptBody).toContain("const conferenceQuestionContextActiveAtSubmit = isConferenceModeQuestionContextActive()");
-    expect(sendPromptBody).toContain("const conferenceQuestionContextActive = conferenceQuestionContextActiveAtSubmit");
-    expect(sendPromptBody).toContain('state.activeView = conferenceQuestionContextActiveAtSubmit ? "conference" : "chat"');
-    expect(sendPromptBody).toContain("conferenceQuestionContextActive ? [] : Array.from(state.attachments)");
-    expect(sendPromptBody).toContain("conferenceQuestionContextActive ? [] : state.selectedTabIds");
-    expect(sendPromptBody).toContain("suppressPageContext: conferenceQuestionContextActive || isCurrentTabContextDismissed()");
-    expect(mentionBody).toContain("isConferenceModeQuestionContextActive()");
-    expect(attachmentActionBody).toContain("getConferenceModeContextOnlyMessage()");
+    expect(sendPromptBody).toContain("const transcriptQuestionContextActiveAtSubmit = isTranscriptQuestionContextActive()");
+    expect(sendPromptBody).toContain("const transcriptQuestionContextActive = transcriptQuestionContextActiveAtSubmit");
+    expect(sendPromptBody).toContain("resolveActiveTranscriptViewForPrompt()");
+    expect(sendPromptBody).toContain("const nextAttachments = Array.from(state.attachments)");
+    expect(sendPromptBody).toContain("selectedTextContext: createPromptSelectedTextContextPayload()");
+    expect(sendPromptBody).toContain("fileAttachments: nextFileAttachments");
+    expect(sendPromptBody).toContain("selectedTabIds: state.selectedTabIds");
+    expect(sendPromptBody).toContain("suppressPageContext: transcriptQuestionContextActive || isCurrentTabContextDismissed()");
+    expect(mentionBody).not.toContain("isConferenceModeQuestionContextActive()");
+    expect(attachmentActionBody).not.toContain("getConferenceModeContextOnlyMessage()");
     expect(contextActiveBody).toContain("state.conferenceMode.viewActive");
     expect(contextActiveBody.indexOf("state.conferenceMode.viewActive")).toBeLessThan(
       contextActiveBody.indexOf("state.conferenceMode.entries.some"),
     );
+    expect(contextActiveBody).toContain("entry.sourceText.trim()");
+    expect(contextActiveBody).toContain("state.conferenceMode.partialSourceText.trim()");
     expect(conferenceViewBody).toContain("renderConferenceQuestionStream()");
     expect(sidepanelSource).toContain("function renderConferenceQuestionStream");
     expect(sidepanelSource).toContain("conference-chat-stream");
   });
 
-  test("retries conference translation when realtime response creation collides with an active response", () => {
-    const messageBody = extractFunctionBody("handleConferenceModeDataChannelMessage");
-    const errorBody = extractFunctionBody("isConferenceModeActiveResponseError");
-    const cleanupBody = extractFunctionBody("cleanupConferenceModeResources");
+  test("keeps a stop button visible while any unified live audio resource is running", () => {
+    const panelBody = extractFunctionBody("renderConferenceModePanel");
+    const runningBody = extractFunctionBody("isConferenceModeAudioSessionRunning");
 
-    expect(sidepanelSource).toContain("let conferenceModeTranslationRetryTimer");
-    expect(messageBody).toContain("isConferenceModeActiveResponseError(payload)");
-    expect(messageBody).toContain("enqueueConferenceModeTranslationRequest(retrySource, { front: true })");
-    expect(messageBody).toContain("scheduleConferenceModeTranslationFlush(900)");
-    expect(errorBody).toContain("active response in progress");
-    expect(cleanupBody).toContain("cancelConferenceModeTranslationRetry()");
+    expect(panelBody).toContain("isConferenceModeAudioSessionRunning()");
+    expect(panelBody).toContain('id="conference-mode-stop"');
+    expect(runningBody).toContain("state.conferenceMode.active");
+    expect(runningBody).toContain("state.conferenceMode.starting");
+    expect(runningBody).toContain("state.conferenceMode.stopping");
+    expect(runningBody).toContain('realtimeTranslationOwner === "conference"');
+    expect(runningBody).toContain("realtimeInterpreterPeer");
+    expect(runningBody).toContain("realtimeInterpreterStream");
+    expect(runningBody).toContain("realtimeInterpreterDataChannel");
   });
 
-  test("keeps conference controls fixed while only transcript and chat panes scroll", () => {
+  test("plays translated audio only when unified live playback is enabled", () => {
+    const offerBody = extractFunctionBody("createRealtimeInterpreterWebRtcOffer");
+    const peerBody = extractFunctionBody("attachRealtimeInterpreterPeerHandlers");
+    const startBody = extractFunctionBody("startConferenceMode");
+
+    expect(sidepanelSource).toContain("options: { playTranslatedAudio?: boolean } = {}");
+    expect(sidepanelSource).toContain("playTranslatedAudio: options.playTranslatedAudio ?? true");
+    expect(peerBody).toContain("if (!options.playTranslatedAudio)");
+    expect(peerBody).toContain("return;");
+    expect(startBody).toContain("playTranslatedAudio: livePlaybackEnabled");
+  });
+
+  test("keeps conference controls fixed while only transcript and chat panes scroll when pinned", () => {
     const panelBody = extractFunctionBody("renderConferenceModePanel");
     const renderBody = extractFunctionBody("renderNow");
+    const scrollBody = extractFunctionBody("scrollConferenceTranscriptToBottom");
+    const bindBody = extractFunctionBody("bindEvents");
 
     expect(panelBody).toContain('id="conference-transcript-scroll"');
-    expect(renderBody).toContain("scrollConferenceTranscriptToBottom()");
+    expect(renderBody).toContain("scrollConferenceTranscriptToBottom({ onlyIfPinned: true })");
+    expect(scrollBody).toContain("conferenceTranscriptStickToBottom");
+    expect(bindBody).toContain("#conference-transcript-scroll");
+    expect(bindBody).toContain("handleConferenceTranscriptScroll");
     expect(sidepanelSource).toContain("function scrollConferenceTranscriptToBottom");
     expect(readFinalDeclaration(".conference-view", "overflow")).toBe("hidden");
     expect(readFinalDeclaration(".conference-mode-list", "overflow-y")).toBe("auto");
@@ -350,12 +383,40 @@ describe("conference mode", () => {
     expect(clickIndex).toBeGreaterThanOrEqual(0);
     expect(clickBody).toContain('state.activeView === "conference" || state.conferenceMode.viewActive');
     expect(clickBody).toContain("startNewConferencePage()");
-    expect(newConferenceBody).toContain("stopConferenceMode({ notifyBridge: true, preserveEntries: false, keepViewActive: true })");
+    expect(newConferenceBody).toContain("stopConferenceMode({ notifyBridge: true, preserveEntries: true, keepViewActive: true })");
     expect(newConferenceBody).toContain('type: "conversation.new"');
     expect(newConferenceBody).toContain('state.activeView = "conference"');
     expect(newConferenceBody).toContain("createConferenceModeState()");
     expect(newConferenceBody).toContain("viewActive: true");
     expect(stopBody).toContain("cleanupConferenceModeResources()");
+  });
+
+  test("keeps the unified live panel visible for a fresh conference session and preserves the previous transcript first", () => {
+    const panelGateBody = extractFunctionBody("shouldRenderConferenceModePanel");
+    const newConferenceBody = extractFunctionBody("startNewConferencePage");
+
+    expect(panelGateBody.trim()).toBe("return state.conferenceMode.viewActive;");
+    expect(newConferenceBody).toContain("await persistConferenceConversationBeforeReset()");
+    expect(newConferenceBody).toContain("stopConferenceMode({ notifyBridge: true, preserveEntries: true, keepViewActive: true })");
+    expect(newConferenceBody).toContain("state.conferenceMode = {");
+    expect(newConferenceBody).toContain("viewActive: true");
+  });
+
+  test("persists and restores conference/live mode as its own conversation history", () => {
+    const persistBody = extractFunctionBody("persistConversation");
+    const hydrateBody = extractFunctionBody("hydrateConversation");
+    const recentClickIndex = sidepanelSource.indexOf('root.querySelectorAll<HTMLButtonElement>(".recent-chat")');
+    const recentClickBody = sidepanelSource.slice(recentClickIndex, recentClickIndex + 650);
+
+    expect(sidepanelSource).toContain("conferenceModesByConversationId");
+    expect(sidepanelSource).toContain("function serializeConferenceModeForStorage");
+    expect(sidepanelSource).toContain("function restoreConferenceModeFromConversation");
+    expect(persistBody).toContain("const conferenceSnapshot = serializeConferenceModeForStorage()");
+    expect(persistBody).toContain("conversationMode: conferenceSnapshot ? \"conference\" : \"chat\"");
+    expect(persistBody).toContain("conferenceMode: conferenceSnapshot");
+    expect(hydrateBody).toContain("restoreConferenceModeFromConversation(normalized)");
+    expect(hydrateBody).toContain('state.activeView = "conference"');
+    expect(recentClickBody).toContain("resolveMainViewForConversation(result.conversation)");
   });
 
   test("uses a compact transcript and translation layout without placeholder ellipses", () => {
@@ -377,6 +438,70 @@ describe("conference mode", () => {
     expect(cleanupBody).toContain("cleanupComposerVoiceWaveform()");
   });
 
+  test("lets users opt into translated audio playback before starting unified live mode", () => {
+    const panelBody = extractFunctionBody("renderConferenceModePanel");
+    const bindBody = extractFunctionBody("bindConferenceModeControls");
+    const startBody = extractFunctionBody("startConferenceMode");
+
+    expect(sidepanelSource).toContain("livePlaybackEnabled: false");
+    expect(panelBody).toContain('id="conference-live-playback-toggle"');
+    expect(panelBody).toContain('role="switch"');
+    expect(panelBody).toContain('aria-checked="${livePlaybackEnabled ? "true" : "false"}"');
+    expect(panelBody).toContain("conference-mode-switch-track");
+    expect(panelBody).toContain("isConferenceModeAudioSessionRunning()");
+    expect(panelBody).toContain('${sessionRunning ? "disabled" : ""}');
+    expect(bindBody).toContain("#conference-live-playback-toggle");
+    expect(bindBody).toContain("state.realtimeInterpreter.livePlaybackEnabled = !state.realtimeInterpreter.livePlaybackEnabled");
+    expect(startBody).toContain("requestRealtimeInterpreterDisplayAudioStream({");
+    expect(startBody).toContain("suppressLocalAudioPlayback: livePlaybackEnabled");
+    expect(startBody).toContain("playTranslatedAudio: livePlaybackEnabled");
+    expect(sidepanelCss).toContain(".conference-mode-switch");
+    expect(sidepanelCss).toContain(".conference-mode-switch-track");
+  });
+
+  test("uses start and stop wording for unified live mode audio capture", () => {
+    const panelBody = extractFunctionBody("renderConferenceModePanel");
+
+    expect(panelBody).toContain('id="conference-mode-start"');
+    expect(panelBody).toContain("labels.start");
+    expect(panelBody).toContain('id="conference-mode-stop"');
+    expect(panelBody).not.toContain("labels.chooseAudio");
+  });
+
+  test("keeps interpreter settings available inside the unified live mode panel", () => {
+    const panelBody = extractFunctionBody("renderConferenceModePanel");
+    const bindBody = extractFunctionBody("bindConferenceModeControls");
+    const hasOpenBody = extractFunctionBody("hasOpenFloatingSurface");
+    const insideBody = extractFunctionBody("isInsideFloatingSurfaceInteraction");
+    const closeBody = extractFunctionBody("closeFloatingSurfaces");
+
+    expect(panelBody).toContain('id="conference-mode-settings-toggle"');
+    expect(panelBody).toContain("conference-mode-settings-toggle");
+    expect(panelBody).toContain('id="conference-mode-settings-popover"');
+    expect(panelBody).toContain("conference-mode-settings-popover");
+    expect(panelBody).toContain('aria-expanded="${state.realtimeInterpreter.settingsOpen ? "true" : "false"}"');
+    expect(panelBody).toContain('${state.realtimeInterpreter.settingsOpen ? renderRealtimeInterpreterControls() : ""}');
+    expect(bindBody).toContain("#conference-mode-settings-toggle");
+    expect(bindBody).toContain("state.realtimeInterpreter.settingsOpen = !state.realtimeInterpreter.settingsOpen");
+    expect(hasOpenBody).toContain("state.realtimeInterpreter.settingsOpen");
+    expect(insideBody).toContain(".conference-mode-settings-toggle");
+    expect(insideBody).toContain(".conference-mode-settings-popover");
+    expect(closeBody).toContain("state.realtimeInterpreter.settingsOpen = false");
+    expect(readFinalDeclaration(".conference-mode-panel", "position")).toBe("relative");
+    expect(sidepanelCss).toContain(".conference-mode-settings-popover");
+  });
+
+  test("aligns unified live mode controls with the shared theme tokens", () => {
+    expect(readFinalDeclaration(".conference-mode-actions", "align-items")).toBe("center");
+    expect(readFinalDeclaration(".conference-mode-button", "min-height")).toBe("32px");
+    expect(readFinalDeclaration(".conference-mode-button.primary", "background")).toContain("color-mix");
+    expect(readFinalDeclaration(".conference-mode-settings-toggle", "width")).toBe("32px");
+    expect(readFinalDeclaration(".conference-mode-settings-toggle", "height")).toBe("32px");
+    expect(readFinalDeclaration(".conference-mode-settings-toggle", "padding")).toBe("0");
+    expect(readFinalDeclaration(".realtime-interpreter-icon-button", "padding")).toBe("0");
+    expect(readFinalDeclaration(".realtime-interpreter-icon-button", "line-height")).toBe("1");
+  });
+
   test("preserves realtime failure details instead of replacing them with a generic update error", () => {
     const errorBody = extractFunctionBody("handleConferenceModeError");
     const cleanupBody = extractFunctionBody("cleanupConferenceModeResources");
@@ -395,5 +520,18 @@ describe("conference mode", () => {
     expect(readFinalDeclaration(".conference-chat-section", "min-height")).toBe("170px");
     expect(readFinalDeclaration(".conference-message-stream", "max-width")).toBe("none");
     expect(readFinalDeclaration(".conference-message-stream", "gap")).toBe("14px");
+  });
+
+  test("lets users resize conference transcript and chat panes", () => {
+    const conferenceViewBody = extractFunctionBody("renderConferenceModeView");
+    const bindBody = extractFunctionBody("bindEvents");
+
+    expect(sidepanelSource).toContain("conferencePaneSplitRatio");
+    expect(conferenceViewBody).toContain("--conference-transcript-ratio");
+    expect(conferenceViewBody).toContain("conference-pane-resizer");
+    expect(conferenceViewBody).toContain('role="separator"');
+    expect(bindBody).toContain("bindConferencePaneResizer()");
+    expect(sidepanelCss).toContain(".conference-pane-resizer");
+    expect(readFinalDeclaration(".conference-chat-stream", "padding")).toBe("12px");
   });
 });

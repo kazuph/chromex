@@ -99,7 +99,9 @@ describe("turn activity rendering", () => {
 
   test("deduplicates completed assistant text recovered under a second item id", () => {
     expect(sidepanelSource).toContain("normalizeAssistantResponseTextSegment");
+    expect(sidepanelSource).toContain("isAssistantResponseTextDuplicateOrOverlap");
     expect(sidepanelSource).toContain("duplicateItemId");
+    expect(sidepanelSource).toContain("normalizedExisting.includes(normalizedNextFragment)");
     expect(sidepanelSource).toContain("order.splice(order.indexOf(itemId), 1)");
   });
 

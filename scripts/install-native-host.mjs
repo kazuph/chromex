@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 
 const NATIVE_HOST_NAME = "com.codex.sidepanel.bridge";
 const SUPPORTED_BROWSERS = ["chrome", "chrome-beta", "chrome-dev", "chrome-canary", "chrome-for-testing", "chromium"];
+const CHROME_WEB_STORE_EXTENSION_ID = "odlalmnpmmakfigepbaabimjcmcppgfo";
 const LEGACY_EXTENSION_IDS = [
   "fmeijhhjkfehnmbenppijhplbchnidpf",
   "jmghgkadlfpclhehodncahidegjdegpk",
@@ -62,7 +63,15 @@ const discoveredExtensionIds = await discoverCompatibleExtensionIds({
   candidatePaths: collectExtensionPathCandidates({ repoRoot, homeDir }),
 });
 const allowedExtensionIds = [
-  ...new Set([extensionId, ...(includeLegacyExtensionIds ? LEGACY_EXTENSION_IDS : []), ...discoveredExtensionIds]),
+  ...new Set(
+    [
+      extensionId,
+      derivedExtensionId,
+      CHROME_WEB_STORE_EXTENSION_ID,
+      ...(includeLegacyExtensionIds ? LEGACY_EXTENSION_IDS : []),
+      ...discoveredExtensionIds,
+    ].filter((id) => id && isValidExtensionId(id)),
+  ),
 ];
 const allowedOrigins = allowedExtensionIds.map((id) => `chrome-extension://${id}/`);
 
@@ -111,6 +120,9 @@ for (const target of targets) {
 }
 console.log(`Using extension ID: ${extensionId}`);
 console.log(`Allowed extension IDs: ${allowedExtensionIds.join(", ")}`);
+if (allowedExtensionIds.includes(CHROME_WEB_STORE_EXTENSION_ID)) {
+  console.log(`Chrome Web Store extension ID included automatically: ${CHROME_WEB_STORE_EXTENSION_ID}`);
+}
 if (includeLegacyExtensionIds) {
   console.log("Legacy extension IDs were included because --include-legacy-extension-ids was set.");
 }

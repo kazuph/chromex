@@ -178,17 +178,9 @@ function areConferenceTranslationsEquivalent(left: string, right: string): boole
 
 export function buildConferenceModeContextHint(entries: ConferenceTranscriptEntry[]): string {
   const lines = entries
-    .filter((entry) => entry.sourceText.trim() || entry.translationText.trim())
+    .filter((entry) => entry.sourceText.trim())
     .slice(-MAX_CONFERENCE_CONTEXT_ENTRIES)
-    .map((entry, index) =>
-      [
-        `${index + 1}.`,
-        entry.sourceText.trim() ? `Original: ${entry.sourceText.trim()}` : "",
-        entry.translationText.trim() ? `Korean: ${entry.translationText.trim()}` : "",
-      ]
-        .filter(Boolean)
-        .join(" "),
-    );
+    .map((entry, index) => `${index + 1}. Original: ${entry.sourceText.trim()}`);
 
   if (!lines.length) {
     return "";

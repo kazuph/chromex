@@ -94,4 +94,38 @@ describe("connection diagnostics", () => {
       detailSource: "missing",
     });
   });
+
+  test("trusts a successful model catalog even when Codex path detection is missing", () => {
+    expect(
+      getCodexBinaryHealth({
+        nativeHostStatus: "connected",
+        runtimeConfig: {
+          codexBinSource: "missing",
+          configuredCodexBinPathInvalid: false,
+        },
+        modelCatalogState: "ready",
+      }),
+    ).toEqual({
+      status: "automatic",
+      tone: "ok",
+      detailSource: "detected",
+    });
+  });
+
+  test("keeps Codex binary pending while the model catalog is still loading", () => {
+    expect(
+      getCodexBinaryHealth({
+        nativeHostStatus: "connected",
+        runtimeConfig: {
+          codexBinSource: "missing",
+          configuredCodexBinPathInvalid: false,
+        },
+        modelCatalogState: "loading",
+      }),
+    ).toEqual({
+      status: "pending",
+      tone: "neutral",
+      detailSource: "waiting-for-host",
+    });
+  });
 });

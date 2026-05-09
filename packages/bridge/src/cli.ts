@@ -18,7 +18,7 @@ import type { BridgeRequest } from "./types.js";
 const secrets = new InMemoryBridgeSecrets();
 const client = new CodexAppServerClient({
   experimentalApi: true,
-  enabledFeatures: ["realtime_conversation", "goals", "collaboration_modes"],
+  enabledFeatures: ["realtime_conversation", "collaboration_modes"],
 });
 const harness = new BridgeHarnessRuntime();
 const diagnostics = new BridgeDiagnosticLogStore();

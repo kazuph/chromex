@@ -98,6 +98,8 @@ import { assertApiKeyLoginExplicitlyConfirmed } from "./api-key-login-guard.js";
 import { createUserProfileTemplate, updateUserProfileTemplate } from "../profile-templates.js";
 import { inferActionCardsForOpenTab } from "./site-suggestions.js";
 import {
+  isRecoverableModelCatalogAuthError,
+  recoverModelCatalogAfterAuthError,
   normalizeCatalogWorkspaceRoot,
   resolveCatalogModelState,
   resolveSelectedCatalogModel,
@@ -4250,12 +4252,18 @@ async function refreshAppServerCatalog(
   const cwd = normalizedWorkspaceRoot || undefined;
   let modelRequestFailed = false;
   let modelRequestErrorMessage = "";
+  const previousModels = state.models;
   const [models, serverThreads, appServerSkills, connectedApps, appServerPlugins, mcpServers, rateLimits] = await Promise.all([
     bridge.request<CodexModelOption[]>("model.list").catch((error) => {
       modelRequestFailed = true;
       modelRequestErrorMessage = toErrorMessage(error);
       console.warn("model.list failed", error);
-      return [];
+      return isRecoverableModelCatalogAuthError(modelRequestErrorMessage)
+        ? recoverModelCatalogAfterAuthError({
+            previousModels,
+            selectedModel: state.selectedModel,
+          })
+        : [];
     }),
     bridge.request<CodexThreadSummary[]>("thread.list", {
       ...(cwd ? { cwd } : {}),
@@ -4286,10 +4294,11 @@ async function refreshAppServerCatalog(
   state.mcpServers = mcpServers;
   state.rateLimits = rateLimits;
   state.modelCatalogState = resolveCatalogModelState({
-    modelRequestFailed,
+    modelRequestFailed: modelRequestFailed && !isRecoverableModelCatalogAuthError(modelRequestErrorMessage),
     models,
   });
-  state.modelCatalogErrorMessage = modelRequestFailed ? modelRequestErrorMessage : "";
+  state.modelCatalogErrorMessage =
+    modelRequestFailed && !isRecoverableModelCatalogAuthError(modelRequestErrorMessage) ? modelRequestErrorMessage : "";
   await reconcileSelectedModelWithCatalog(state.selectedModel);
 }
 

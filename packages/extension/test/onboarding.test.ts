@@ -53,6 +53,8 @@ describe("auth onboarding", () => {
     expect(sidepanelSource).toContain('id="onboarding-reconnect"');
     expect(sidepanelSource).toContain('id="onboarding-open-settings"');
     expect(sidepanelSource).toContain('class="auth-onboarding-install"');
+    expect(sidepanelSource).toContain('class="auth-onboarding-install-guide"');
+    expect(sidepanelSource).toContain("https://genexis-ai.github.io/chromex/install/");
     expect(sidepanelSource).toContain("getNativeHostInstallCopy(strings)");
     expect(sidepanelSource).toContain("isChromeWebStoreInstall");
     expect(sidepanelSource).toContain("odlalmnpmmakfigepbaabimjcmcppgfo");
@@ -67,6 +69,7 @@ describe("auth onboarding", () => {
     expect(sidepanelCss).toContain(".auth-onboarding-card");
     expect(sidepanelCss).toContain(".auth-onboarding-readiness");
     expect(sidepanelCss).toContain(".auth-onboarding-install");
+    expect(sidepanelCss).toContain(".auth-onboarding-install-guide");
     expect(sidepanelCss).toContain("white-space: pre-wrap");
   });
 

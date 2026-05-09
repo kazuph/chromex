@@ -24,6 +24,29 @@ Published by **GenexisAI CHOI**.
 - 在翻译/直播模式中使用实时转写、可选实时翻译以及基于转写内容的后续聊天。
 - 通过 Chrome content scripts 执行浏览器控制工作流，并在页面内显示可见的活动状态。
 
+## 从 Chrome Web Store 安装
+
+从 Chrome Web Store 安装的用户不需要从源码构建 Chromex。
+
+带复制按钮的分步说明在公开设置页面中: <https://genexis-ai.github.io/chromex/install/>
+
+1. 安装官方 Codex CLI 并确认可用。官方安装选项见 <https://github.com/openai/codex>:
+
+```bash
+npm install -g @openai/codex
+codex --version
+```
+
+2. 从最新 [GitHub Release](https://github.com/GENEXIS-AI/chromex/releases/latest) 下载并解压 `chromex-local-bridge.zip`，然后运行:
+
+```bash
+node scripts/install-native-host.mjs --browser=chrome
+```
+
+3. 完全关闭所有 Chrome 窗口，重新打开 Chrome，然后在 Chromex 中点击 **Check connection**。
+
+出于安全限制，Chrome 扩展无法自动安装本地 bridge。这个一次性的 bridge 注册会安全连接 Chrome 与本地 Codex app-server。
+
 ## 从源码安装
 
 请使用源码 checkout 或 [`chromex-public-source.zip`](https://github.com/GENEXIS-AI/chromex/releases/latest/download/chromex-public-source.zip):

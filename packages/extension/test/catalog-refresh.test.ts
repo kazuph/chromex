@@ -1,6 +1,9 @@
 import { describe, expect, test } from "vitest";
 
 import {
+  FALLBACK_CODEX_MODELS,
+  isRecoverableModelCatalogAuthError,
+  recoverModelCatalogAfterAuthError,
   resolveCatalogModelState,
   normalizeCatalogSettingsPath,
   normalizeCatalogWorkspaceRoot,
@@ -124,6 +127,38 @@ describe("catalog refresh decisions", () => {
 
   test("reports a ready model catalog when models were loaded", () => {
     expect(resolveCatalogModelState({ modelRequestFailed: false, models: [{ id: "gpt-5.4" }] })).toBe("ready");
+  });
+
+  test("recognizes API-key auth catalog failures as recoverable", () => {
+    expect(
+      isRecoverableModelCatalogAuthError(
+        "Chromex does not run Codex requests through API-key auth. Sign out of the Codex API-key session.",
+      ),
+    ).toBe(true);
+    expect(isRecoverableModelCatalogAuthError("unexpected status 401 Unauthorized: invalid_api_key")).toBe(true);
+    expect(isRecoverableModelCatalogAuthError("The Codex native host disconnected.")).toBe(false);
+  });
+
+  test("recovers the model catalog from previous models or fallback defaults", () => {
+    const previousModels = [
+      {
+        id: "gpt-custom",
+        label: "Custom",
+        description: "",
+        isDefault: true,
+        supportsImages: true,
+        reasoningEfforts: ["medium"],
+      },
+    ];
+
+    expect(recoverModelCatalogAfterAuthError({ previousModels, selectedModel: "gpt-5.5" })).toBe(previousModels);
+    expect(recoverModelCatalogAfterAuthError({ previousModels: [], selectedModel: "" })[0]?.id).toBe(
+      FALLBACK_CODEX_MODELS[0]?.id,
+    );
+    expect(recoverModelCatalogAfterAuthError({ previousModels: [], selectedModel: "gpt-local" })[0]).toMatchObject({
+      id: "gpt-local",
+      isDefault: true,
+    });
   });
 
   test("keeps a stored model when the app-server catalog still supports it", () => {

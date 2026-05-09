@@ -23,6 +23,29 @@ Published by **GenexisAI CHOI**.
 - Run the unified Translation/Live mode for live transcripts, optional realtime translation, and follow-up chat over the captured transcript.
 - Run browser-control workflows through Chrome content scripts with visible in-page activity indicators.
 
+## Chrome Web Store Install
+
+Chrome Web Store users do **not** need to build Chromex from source.
+
+For a step-by-step guide with copy buttons, use the public setup page: <https://genexis-ai.github.io/chromex/install/>
+
+1. Install the official Codex CLI and confirm it works. See the official Codex CLI install options at <https://github.com/openai/codex>.
+
+```bash
+npm install -g @openai/codex
+codex --version
+```
+
+2. Download `chromex-local-bridge.zip` from the latest [GitHub Release](https://github.com/GENEXIS-AI/chromex/releases/latest), unzip it, and run:
+
+```bash
+node scripts/install-native-host.mjs --browser=chrome
+```
+
+3. Fully quit every Chrome window, reopen Chrome, then press **Check connection** in Chromex.
+
+The Store extension can run only after this one-time local bridge registration. The bridge lets Chrome start the local Codex app-server safely through Chrome Native Messaging; the extension itself cannot install that local host automatically.
+
 ## Install From Source
 
 Use the source checkout or [`chromex-public-source.zip`](https://github.com/GENEXIS-AI/chromex/releases/latest/download/chromex-public-source.zip):

@@ -58,6 +58,20 @@ class FakeCodexClient {
     if (method === "account/read") {
       return this.options.accountReadResult ?? { account: { type: "chatgpt" } };
     }
+    if (method === "model/list") {
+      return {
+        data: [
+          {
+            id: "gpt-5.5",
+            model: "gpt-5.5",
+            displayName: "GPT-5.5",
+            isDefault: true,
+            inputModalities: ["text", "image"],
+            supportedReasoningEfforts: ["low", "medium", "high"],
+          },
+        ],
+      };
+    }
     if (method === "skills/list") {
       return { data: [] };
     }
@@ -364,6 +378,22 @@ describe("AppServerCodexPlane", () => {
 
     await expect(plane.login({ type: "apiKey" })).rejects.toThrow(/requires params\.apiKey/u);
     expect(client.calls.find((call) => call.method === "account/login/start")).toBeUndefined();
+  });
+
+  test("does not load the model catalog through a Codex API-key account", async () => {
+    const client = new FakeCodexClient({
+      accountReadResult: {
+        account: { type: "apiKey" },
+      },
+    });
+    const plane = new AppServerCodexPlane({
+      client: client as never,
+      harness: harness as never,
+      secrets: new InMemoryBridgeSecrets({ initialOpenAiApiKey: "sk-test" }),
+    });
+
+    await expect(plane.listModels()).rejects.toThrow(/does not run Codex requests through API-key auth/u);
+    expect(client.calls.map((call) => call.method)).toEqual(["account/read"]);
   });
 
   test("blocks prompt turns when Codex is in API-key auth mode", async () => {

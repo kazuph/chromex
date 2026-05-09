@@ -20,6 +20,13 @@ describe("native host installer", () => {
   test("allows the Chrome Web Store extension id by default", () => {
     expect(installerSource).toContain('CHROME_WEB_STORE_EXTENSION_ID = "odlalmnpmmakfigepbaabimjcmcppgfo"');
     expect(installerSource).toContain("CHROME_WEB_STORE_EXTENSION_ID");
+    expect(installerSource).toContain("extensionIdArg ?? derivedExtensionId ?? CHROME_WEB_STORE_EXTENSION_ID");
     expect(installerSource).toContain("Chrome Web Store extension ID included automatically");
+  });
+
+  test("supports the prebuilt local bridge package without source bridge dependencies", () => {
+    expect(installerSource).toContain('resolve(repoRoot, "bridge/cli.bundle.mjs")');
+    expect(installerSource).toContain("pathExists(bundledBridgeEntryPath)");
+    expect(installerSource).toContain("sourceBridgeEntryPath");
   });
 });

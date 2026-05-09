@@ -614,6 +614,27 @@ textarea {
   line-height: 16px;
 }
 
+.auth-onboarding-install-guide {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.auth-onboarding-install-guide:hover,
+.auth-onboarding-install-guide:focus-visible {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
 .auth-onboarding-install code {
   display: block;
   overflow-wrap: anywhere;
@@ -9943,6 +9964,7 @@ button.primary,
 :root[data-theme="light"] .message-code-copy,
 :root[data-theme="light"] .image-action-button.overlay,
 :root[data-theme="light"] .settings-compact-button,
+:root[data-theme="light"] .auth-onboarding-install-guide,
 :root[data-theme="light"] .auth-onboarding-secondary,
 :root[data-theme="light"] .native-dialog-close {
   border-color: var(--line);
@@ -9962,6 +9984,8 @@ button.primary,
 :root[data-theme="light"] .image-action-button.overlay:focus-visible,
 :root[data-theme="light"] .settings-compact-button:hover,
 :root[data-theme="light"] .settings-compact-button:focus-visible,
+:root[data-theme="light"] .auth-onboarding-install-guide:hover,
+:root[data-theme="light"] .auth-onboarding-install-guide:focus-visible,
 :root[data-theme="light"] .auth-onboarding-secondary:hover,
 :root[data-theme="light"] .native-dialog-close:hover,
 :root[data-theme="light"] .native-dialog-close:focus-visible {

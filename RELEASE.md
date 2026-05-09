@@ -66,5 +66,6 @@ Release changes must preserve these expectations unless the release notes explic
 - Chrome MV3 extension loading remains supported through `packages/extension/dist`.
 - Chrome Web Store packages must not contain `manifest.key`, source maps, local build metadata, signing keys, or local machine paths.
 - Native-host installation must work on Chrome-supported desktop operating systems.
+- Chrome Web Store users should install Codex CLI plus the prebuilt `chromex-local-bridge.zip`; source build commands are for source installs only.
 - OAuth is preferred over API-key fallback, and API-key fallback must require explicit user confirmation.
 - Browser permissions should remain feature-gated and requested only when needed.

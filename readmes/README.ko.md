@@ -24,6 +24,29 @@ Chromex는 Chrome과 Codex를 로컬 네이티브 브리지로 연결하는 Chro
 - 통역/라이브 모드에서 실시간 전사, 선택형 실시간 통역, 전사 내용 기반 후속 질문을 사용할 수 있습니다.
 - Chrome content script 경계를 통해 브라우저 제어 워크플로우를 실행하고 페이지 안에 작업 상태를 표시합니다.
 
+## Chrome Web Store 설치
+
+Chrome Web Store에서 설치한 사용자는 Chromex 소스를 빌드할 필요가 없습니다.
+
+복사 버튼이 있는 쉬운 설치 안내는 공개 설정 페이지에서 확인할 수 있습니다: <https://genexis-ai.github.io/chromex/install/>
+
+1. 공식 Codex CLI를 설치하고 동작을 확인합니다. 공식 설치 옵션은 <https://github.com/openai/codex>에서 확인할 수 있습니다.
+
+```bash
+npm install -g @openai/codex
+codex --version
+```
+
+2. 최신 [GitHub Release](https://github.com/GENEXIS-AI/chromex/releases/latest)에서 `chromex-local-bridge.zip`을 내려받아 압축을 풀고 실행합니다.
+
+```bash
+node scripts/install-native-host.mjs --browser=chrome
+```
+
+3. 모든 Chrome 창을 완전히 닫고 다시 연 뒤 Chromex에서 **연결 확인**을 누릅니다.
+
+Chrome 확장 프로그램은 보안상 로컬 브리지를 자동 설치할 수 없습니다. 이 한 번의 브리지 등록이 Chrome과 로컬 Codex app-server를 안전하게 연결합니다.
+
 ## 소스에서 설치
 
 소스 checkout 또는 [`chromex-public-source.zip`](https://github.com/GENEXIS-AI/chromex/releases/latest/download/chromex-public-source.zip)을 사용하세요.

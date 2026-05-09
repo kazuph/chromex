@@ -1249,6 +1249,11 @@ export class AppServerCodexPlane implements BridgeCodexPlane {
   }
 
   async listModels() {
+    assertChromexChatgptManagedAuth(
+      (await this.#client.request("account/read", {
+        refreshToken: false,
+      })) as AccountReadResult,
+    );
     const result = (await this.#client.request("model/list", {
       limit: 50,
       includeHidden: false,

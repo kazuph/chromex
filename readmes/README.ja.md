@@ -24,6 +24,29 @@ Published by **GenexisAI CHOI**.
 - Translation/Live モードでは、ライブ文字起こし、任意のリアルタイム翻訳、文字起こし内容に基づくフォローアップチャットを使えます。
 - Chrome content script を通じてブラウザ操作ワークフローを実行し、ページ上に作業状態を表示します。
 
+## Chrome Web Store からインストール
+
+Chrome Web Store からインストールしたユーザーは、Chromex をソースからビルドする必要はありません。
+
+コピー用ボタン付きの手順は公開セットアップページにあります: <https://genexis-ai.github.io/chromex/install/>
+
+1. 公式 Codex CLI をインストールし、動作を確認します。公式のインストール方法は <https://github.com/openai/codex> で確認できます。
+
+```bash
+npm install -g @openai/codex
+codex --version
+```
+
+2. 最新の [GitHub Release](https://github.com/GENEXIS-AI/chromex/releases/latest) から `chromex-local-bridge.zip` をダウンロードして展開し、次を実行します。
+
+```bash
+node scripts/install-native-host.mjs --browser=chrome
+```
+
+3. すべての Chrome ウィンドウを完全に終了して開き直し、Chromex で **Check connection** を押します。
+
+Chrome 拡張機能はセキュリティ上、ローカルブリッジを自動インストールできません。この 1 回だけのブリッジ登録で、Chrome とローカル Codex app-server を安全につなぎます。
+
 ## ソースからインストール
 
 ソース checkout または [`chromex-public-source.zip`](https://github.com/GENEXIS-AI/chromex/releases/latest/download/chromex-public-source.zip) を使用してください。

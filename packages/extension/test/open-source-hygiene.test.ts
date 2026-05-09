@@ -51,6 +51,7 @@ describe("open-source repository hygiene", () => {
     for (const publicReadme of publicReadmes) {
       expect(publicReadme).toContain("assets/chromex-hero.png");
       expect(publicReadme).toContain("releases/latest/download/chromex-public-source.zip");
+      expect(publicReadme).toContain("chromex-local-bridge.zip");
       expect(publicReadme).toContain("ENOENT Could not read package.json");
       expect(publicReadme).toContain("README.ja.md");
       expect(publicReadme).toContain("README.zh-CN.md");
@@ -85,11 +86,21 @@ describe("open-source repository hygiene", () => {
   test("publishes only the public privacy policy through GitHub Pages", () => {
     const pagesWorkflow = readRepoFile(".github/workflows/pages.yml");
     const publicIndex = readRepoFile("docs/pages/index.html");
+    const installPage = readRepoFile("docs/pages/install/index.html");
     const privacyPage = readRepoFile("docs/pages/privacy/index.html");
 
     expect(pagesWorkflow).toContain("actions/deploy-pages");
     expect(pagesWorkflow).toContain("path: docs/pages");
+    expect(publicIndex).toContain("./install/");
     expect(publicIndex).toContain("./privacy/");
+    expect(installPage).toContain("Chromex 설치 가이드");
+    expect(installPage).toContain("nodejs.org/en/download");
+    expect(installPage).toContain("github.com/openai/codex");
+    expect(installPage).toContain("chromex-local-bridge.zip");
+    expect(installPage).toContain("node scripts/install-native-host.mjs --browser=chrome");
+    expect(installPage).toContain("%APPDATA%\\npm\\codex.cmd");
+    expect(installPage).not.toContain("npm run build");
+    expect(installPage).not.toContain("npm install\n");
     expect(privacyPage).toContain("Chromex Privacy Policy");
     expect(privacyPage).toContain("Chromex does not sell user data.");
     expect(privacyPage).not.toContain("npm run package:webstore");
@@ -123,6 +134,8 @@ describe("open-source repository hygiene", () => {
     const packageJson = JSON.parse(readRepoFile("package.json")) as { scripts?: Record<string, string> };
 
     expect(packageJson.scripts?.["package:public"]).toContain("scripts/package-public-release.mjs");
+    expect(packageJson.scripts?.["package:public"]).toContain("scripts/package-local-bridge.mjs");
+    expect(packageJson.scripts?.["package:local-bridge"]).toContain("scripts/package-local-bridge.mjs");
     expect(packageJson.scripts?.["release:audit:history"]).toBe("node scripts/audit-git-history.mjs");
     expect(existsSync(resolve(repoRoot, "RELEASE.md"))).toBe(true);
     expect(readRepoFile("RELEASE.md")).toContain("0.1.1");
@@ -130,6 +143,7 @@ describe("open-source repository hygiene", () => {
     expect(readRepoFile("RELEASE.md")).toContain("chromex-public-source.zip");
     expect(readRepoFile("RELEASE.md")).not.toContain("chromex-unpacked-extension.zip");
     expect(existsSync(resolve(repoRoot, "scripts/package-public-release.mjs"))).toBe(true);
+    expect(existsSync(resolve(repoRoot, "scripts/package-local-bridge.mjs"))).toBe(true);
     expect(existsSync(resolve(repoRoot, "scripts/audit-git-history.mjs"))).toBe(true);
   });
 

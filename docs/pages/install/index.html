@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Chromex 설치 가이드</title>
+    <meta name="description" content="Chrome Web Store에서 설치한 Chromex의 로컬 브리지 설정 가이드입니다.">
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f6f7f9;
+        --surface: #ffffff;
+        --surface-soft: #f0f3f8;
+        --text: #171b21;
+        --muted: #5d6675;
+        --line: #dfe4ec;
+        --accent: #2563eb;
+        --accent-soft: #eaf1ff;
+        --ok: #12805c;
+        --warn: #9a5b00;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        color: var(--text);
+        background: var(--bg);
+        font: 16px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+      }
+
+      main {
+        max-width: 980px;
+        margin: 0 auto;
+        padding: 44px 20px 72px;
+      }
+
+      header {
+        margin-bottom: 22px;
+      }
+
+      h1, h2, h3 {
+        line-height: 1.25;
+      }
+
+      h1 {
+        margin: 0 0 10px;
+        font-size: clamp(30px, 5vw, 46px);
+        letter-spacing: 0;
+      }
+
+      h2 {
+        margin: 0 0 14px;
+        font-size: 24px;
+      }
+
+      h3 {
+        margin: 0 0 8px;
+        font-size: 18px;
+      }
+
+      p {
+        margin: 0 0 12px;
+      }
+
+      a {
+        color: var(--accent);
+      }
+
+      .lead {
+        max-width: 720px;
+        color: var(--muted);
+        font-size: 18px;
+      }
+
+      .hero,
+      .card,
+      .step {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 18px;
+      }
+
+      .hero {
+        padding: 26px;
+      }
+
+      .status {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 18px 0 0;
+      }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        min-height: 30px;
+        padding: 0 12px;
+        border-radius: 999px;
+        background: var(--accent-soft);
+        color: #1d4ed8;
+        font-size: 14px;
+        font-weight: 600;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 14px;
+        margin: 18px 0 26px;
+      }
+
+      .card {
+        padding: 18px;
+      }
+
+      .card strong {
+        display: block;
+        margin-bottom: 6px;
+      }
+
+      .card span {
+        color: var(--muted);
+      }
+
+      .steps {
+        display: grid;
+        gap: 16px;
+      }
+
+      .step {
+        display: grid;
+        grid-template-columns: 52px minmax(0, 1fr);
+        gap: 16px;
+        padding: 22px;
+      }
+
+      .num {
+        width: 42px;
+        height: 42px;
+        display: inline-grid;
+        place-items: center;
+        border-radius: 50%;
+        background: var(--text);
+        color: #fff;
+        font-weight: 700;
+      }
+
+      .command {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: center;
+        margin: 12px 0;
+        padding: 12px;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: #111827;
+      }
+
+      code {
+        color: inherit;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      }
+
+      .command code {
+        overflow-x: auto;
+        color: #f8fafc;
+        white-space: nowrap;
+      }
+
+      button.copy {
+        border: 0;
+        border-radius: 999px;
+        background: #ffffff;
+        color: #111827;
+        cursor: pointer;
+        font-weight: 650;
+        padding: 8px 12px;
+      }
+
+      .note,
+      .warning,
+      .success {
+        margin-top: 12px;
+        padding: 12px 14px;
+        border-radius: 14px;
+      }
+
+      .note {
+        background: var(--surface-soft);
+        color: var(--muted);
+      }
+
+      .warning {
+        background: #fff7e8;
+        color: var(--warn);
+      }
+
+      .success {
+        background: #e9f8f2;
+        color: var(--ok);
+      }
+
+      ul {
+        margin: 10px 0 0;
+        padding-left: 22px;
+      }
+
+      li {
+        margin: 7px 0;
+      }
+
+      footer {
+        margin-top: 28px;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      @media (max-width: 760px) {
+        main {
+          padding: 28px 14px 56px;
+        }
+
+        .grid {
+          grid-template-columns: 1fr;
+        }
+
+        .step {
+          grid-template-columns: 1fr;
+          padding: 18px;
+        }
+
+        .command {
+          grid-template-columns: 1fr;
+        }
+
+        button.copy {
+          width: 100%;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header class="hero">
+        <h1>Chromex 설치 가이드</h1>
+        <p class="lead">Chrome Web Store에서 Chromex를 설치했다면, 한 번만 로컬 브리지를 연결해야 합니다. 아래 순서대로 진행하면 소스코드 빌드 없이 사용할 수 있습니다.</p>
+        <div class="status" aria-label="설치 준비물">
+          <span class="pill">10분 내외</span>
+          <span class="pill">Windows / macOS</span>
+          <span class="pill">복사해서 붙여넣기 중심</span>
+        </div>
+      </header>
+
+      <section class="grid" aria-label="설치 전에 알아둘 점">
+        <div class="card">
+          <strong>왜 추가 설치가 필요한가요?</strong>
+          <span>Chrome 확장 프로그램은 보안상 내 컴퓨터 프로그램을 직접 설치할 수 없습니다. 그래서 사용자가 로컬 브리지를 한 번 등록해야 합니다.</span>
+        </div>
+        <div class="card">
+          <strong>소스코드 빌드는 필요 없습니다</strong>
+          <span>스토어 사용자는 개발자용 빌드 과정을 하지 않습니다. 필요한 것은 Node.js, Codex CLI, Chromex Local Bridge ZIP입니다.</span>
+        </div>
+        <div class="card">
+          <strong>ChatGPT 계정으로 사용 가능</strong>
+          <span>로컬 브리지가 연결되면 Chromex에서 ChatGPT 계정 로그인 또는 API 키 로그인을 선택할 수 있습니다.</span>
+        </div>
+      </section>
+
+      <section class="steps" aria-label="설치 순서">
+        <article class="step">
+          <div class="num">1</div>
+          <div>
+            <h2>Node.js LTS 설치</h2>
+            <p>먼저 공식 Node.js 페이지에서 <strong>LTS</strong> 버전을 설치합니다. Windows는 <strong>Windows Installer</strong>, macOS는 <strong>macOS Installer</strong>를 받으면 됩니다.</p>
+            <p><a href="https://nodejs.org/en/download/" target="_blank" rel="noopener noreferrer">Node.js 공식 다운로드 열기</a></p>
+            <div class="note">설치 화면에서는 특별히 바꿀 것 없이 <strong>Next</strong> 또는 <strong>계속</strong>을 눌러 완료하면 됩니다. 설치가 끝나면 열려 있던 터미널을 닫고 새로 여세요.</div>
+          </div>
+        </article>
+
+        <article class="step">
+          <div class="num">2</div>
+          <div>
+            <h2>Codex CLI 설치</h2>
+            <p>Windows는 <strong>PowerShell</strong>, macOS는 <strong>터미널</strong>을 열고 아래 명령어를 복사해서 붙여넣습니다.</p>
+            <div class="command">
+              <code>npm install -g @openai/codex</code>
+              <button class="copy" type="button" data-copy="npm install -g @openai/codex">복사</button>
+            </div>
+            <p>설치가 끝나면 아래 명령어로 확인합니다.</p>
+            <div class="command">
+              <code>codex --version</code>
+              <button class="copy" type="button" data-copy="codex --version">복사</button>
+            </div>
+            <div class="success"><code>codex-cli</code>와 버전 숫자가 보이면 성공입니다.</div>
+            <p><a href="https://github.com/openai/codex" target="_blank" rel="noopener noreferrer">OpenAI Codex CLI 공식 안내 열기</a></p>
+          </div>
+        </article>
+
+        <article class="step">
+          <div class="num">3</div>
+          <div>
+            <h2>Chromex Local Bridge ZIP 다운로드</h2>
+            <p>아래 파일을 내려받고 압축을 풉니다. 보통 <strong>다운로드</strong> 폴더에 저장됩니다.</p>
+            <p><a href="https://github.com/GENEXIS-AI/chromex/releases/latest/download/chromex-local-bridge.zip">chromex-local-bridge.zip 다운로드</a></p>
+            <div class="warning">압축을 푼 폴더 안에 <code>scripts</code>, <code>bridge</code>, <code>native-host</code> 폴더가 보여야 합니다.</div>
+          </div>
+        </article>
+
+        <article class="step">
+          <div class="num">4</div>
+          <div>
+            <h2>로컬 브리지 등록</h2>
+            <h3>Windows</h3>
+            <p>압축을 푼 <strong>chromex-extension</strong> 폴더를 열고, 빈 공간에서 오른쪽 클릭 후 <strong>터미널에서 열기</strong> 또는 <strong>PowerShell에서 열기</strong>를 누릅니다. 그 다음 아래 명령어를 실행합니다.</p>
+            <div class="command">
+              <code>node scripts/install-native-host.mjs --browser=chrome</code>
+              <button class="copy" type="button" data-copy="node scripts/install-native-host.mjs --browser=chrome">복사</button>
+            </div>
+            <h3>macOS</h3>
+            <p>터미널을 열고 <code>cd </code>를 입력한 뒤, 압축을 푼 <strong>chromex-extension</strong> 폴더를 터미널 창에 끌어다 놓고 Enter를 누릅니다. 그 다음 같은 명령어를 실행합니다.</p>
+            <div class="note">스토어 확장 ID는 설치 파일에 자동으로 포함되어 있어서 일반적으로 따로 입력하지 않아도 됩니다.</div>
+          </div>
+        </article>
+
+        <article class="step">
+          <div class="num">5</div>
+          <div>
+            <h2>Chrome 완전히 껐다 켜기</h2>
+            <p>모든 Chrome 창을 완전히 닫고 다시 엽니다. Chromex 사이드패널에서 <strong>연결 확인</strong>을 누르면 됩니다.</p>
+            <div class="success">로컬 브리지가 연결되면 <strong>ChatGPT 계정으로 계속</strong> 또는 <strong>API 키로 사용</strong> 버튼을 사용할 수 있습니다.</div>
+          </div>
+        </article>
+      </section>
+
+      <section class="card" style="margin-top: 18px;">
+        <h2>막히는 경우</h2>
+        <ul>
+          <li><code>node</code> 또는 <code>npm</code>을 찾을 수 없다고 나오면 Node.js 설치 후 터미널을 완전히 닫고 새로 여세요.</li>
+          <li><code>codex --version</code>이 안 되면 Codex CLI 설치가 끝나지 않은 상태입니다. 2단계 명령어를 다시 실행하세요.</li>
+          <li>Windows에서 Codex 실행 파일을 못 찾으면 Chromex 설정에서 Codex 경로를 <code>%APPDATA%\npm\codex.cmd</code>로 지정한 뒤 Chrome을 다시 여세요.</li>
+          <li>계속 로컬 브리지를 기다린다고 나오면 Chrome을 완전히 종료한 뒤 다시 열고, Chromex에서 <strong>연결 확인</strong>을 누르세요.</li>
+          <li>회사 PC, VPN, 보안 프로그램 환경에서는 설치 파일 실행이나 네트워크 연결이 막힐 수 있습니다. 이 경우 사내 보안 정책 확인이 필요합니다.</li>
+        </ul>
+      </section>
+
+      <footer>
+        <p>Chromex는 Chrome 보안 정책을 우회하지 않습니다. 이 가이드는 Chrome Web Store 설치자가 필요한 로컬 브리지를 직접 등록하도록 돕기 위한 공개 안내입니다.</p>
+        <p><a href="../privacy/">Privacy Policy</a> · <a href="https://github.com/GENEXIS-AI/chromex/issues">GitHub Issues</a></p>
+      </footer>
+    </main>
+    <script>
+      for (const button of document.querySelectorAll("[data-copy]")) {
+        button.addEventListener("click", async () => {
+          const text = button.getAttribute("data-copy") || "";
+          try {
+            await navigator.clipboard.writeText(text);
+            button.textContent = "복사됨";
+            window.setTimeout(() => {
+              button.textContent = "복사";
+            }, 1400);
+          } catch {
+            button.textContent = "직접 복사";
+          }
+        });
+      }
+    </script>
+  </body>
+</html>

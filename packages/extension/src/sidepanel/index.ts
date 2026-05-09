@@ -416,6 +416,8 @@ type ComputerAudioCaptureOptions = {
   suppressLocalAudioPlayback?: boolean;
 };
 
+const DEFAULT_REALTIME_INTERPRETER_OUTPUT_VOLUME = 0.5;
+
 const REALTIME_INTERPRETER_TARGET_LANGUAGES = [
   { value: "ko", ko: "한국어", en: "Korean" },
   { value: "en", ko: "영어", en: "English" },
@@ -820,7 +822,7 @@ function createRealtimeInterpreterState(): RealtimeInterpreterState {
     stopping: false,
     settingsOpen: false,
     livePlaybackEnabled: false,
-    outputVolume: 1,
+    outputVolume: DEFAULT_REALTIME_INTERPRETER_OUTPUT_VOLUME,
     error: "",
     sourceLabel: "",
     inputSource: "display",
@@ -4324,6 +4326,11 @@ function renderAuthOnboarding(
         <div class="auth-onboarding-install">
           <div class="auth-onboarding-install-title">${escapeHtml(installCopy.title)}</div>
           <p>${escapeHtml(installCopy.body)}</p>
+          ${
+            installCopy.guideUrl
+              ? `<a class="auth-onboarding-install-guide" href="${escapeAttribute(installCopy.guideUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(installCopy.guideLabel ?? installCopy.guideUrl)}</a>`
+              : ""
+          }
           <code>${escapeHtml(installCopy.command)}</code>
           <p>${escapeHtml(installCopy.footer)}</p>
         </div>
@@ -4357,6 +4364,8 @@ type NativeHostInstallCopy = {
   body: string;
   command: string;
   footer: string;
+  guideLabel?: string;
+  guideUrl?: string;
 };
 
 function getNativeHostInstallCopy(strings: ReturnType<typeof getUiStrings>): NativeHostInstallCopy {
@@ -4376,26 +4385,30 @@ function getChromeWebStoreNativeHostInstallCopy(): NativeHostInstallCopy {
   const extensionId = getCurrentExtensionId();
   const isKorean = getTranslatedUiLocale(state.uiLocale) === "ko";
   const command = formatNativeHostInstallCommand(
-    "npm install && npm run build && node scripts/install-native-host.mjs --browser=chrome",
+    "node scripts/install-native-host.mjs --browser=chrome",
     extensionId,
   );
 
   if (isKorean) {
     return {
-      title: "스토어 설치판 로컬 브리지 필요",
+      title: "Codex CLI와 로컬 브리지 연결",
       body:
-        "Chrome Web Store에서 설치한 Chromex도 이 컴퓨터의 로컬 브리지가 한 번 필요합니다. GitHub Release에서 Chromex 로컬 브리지 패키지를 내려받아 압축을 푼 뒤 package.json이 있는 폴더에서 아래 명령을 실행하세요. 현재 스토어 확장 ID는 자동으로 포함됩니다.",
+        "먼저 공식 Codex CLI를 설치하고 codex --version이 동작하는지 확인하세요. 그 다음 GitHub Release에서 Chromex Local Bridge ZIP을 내려받아 압축을 풀고 아래 명령을 한 번만 실행하면 됩니다. 소스 빌드나 npm run build는 필요 없습니다.",
       command,
-      footer: "설치가 끝나면 모든 Chrome 창을 완전히 닫고 다시 여세요. Chromex가 로컬 브리지를 자동으로 다시 확인합니다.",
+      footer: "설치가 끝나면 모든 Chrome 창을 완전히 닫고 다시 여세요. Codex CLI 설치 명령: npm install -g @openai/codex",
+      guideLabel: "쉬운 설치 가이드 열기",
+      guideUrl: "https://genexis-ai.github.io/chromex/install/",
     };
   }
 
   return {
-    title: "Local bridge required for the Store install",
+    title: "Connect Codex CLI and the local bridge",
     body:
-      "The Chrome Web Store extension still needs a local bridge on this computer. Download and unzip the Chromex local bridge package from GitHub Releases, then run these commands once from the folder that contains package.json. The current Store extension ID is included automatically.",
+      "Install the official Codex CLI first and confirm codex --version works. Then download the Chromex Local Bridge ZIP from GitHub Releases, unzip it, and run the command below once. You do not need to build Chromex from source or run npm run build.",
     command,
-    footer: "After the installer finishes, quit every Chrome window and reopen Chrome. Chromex will retry the local bridge automatically.",
+    footer: "After the installer finishes, quit every Chrome window and reopen Chrome. Codex CLI install command: npm install -g @openai/codex",
+    guideLabel: "Open step-by-step setup guide",
+    guideUrl: "https://genexis-ai.github.io/chromex/install/",
   };
 }
 
@@ -6067,44 +6080,9 @@ function renderConferenceModePanel(): string {
 
   const labels = stringsForState().realtimeInterpreter;
   const title = getConferenceModeMenuLabel();
-  const emptyText = labels.conferenceEmpty;
-  const pendingTranslationText = labels.pendingTranslation;
   const settingsLabel = labels.settings;
   const status = getConferenceModeStatusLabel();
-  const entries = state.conferenceMode.entries;
-  const partialSource = state.conferenceMode.partialSourceText.trim();
-  const partialTranslation = state.conferenceMode.partialTranslationText.trim();
-  const hasPartial = Boolean(partialSource || partialTranslation);
-  const rows = entries
-    .map(
-      (entry) => `
-        <article class="conference-mode-entry">
-          ${
-            entry.sourceText
-              ? `<p class="conference-mode-entry-text source">${escapeHtml(entry.sourceText)}</p>`
-              : ""
-          }
-          ${
-            entry.translationText
-              ? `<p class="conference-mode-entry-text translation">${escapeHtml(entry.translationText)}</p>`
-              : `<span class="conference-mode-translation-pending">${escapeHtml(pendingTranslationText)}</span>`
-          }
-        </article>
-      `,
-    )
-    .join("");
-  const partialRow = hasPartial
-    ? `
-      <article class="conference-mode-entry partial">
-        ${partialSource ? `<p class="conference-mode-entry-text source">${escapeHtml(partialSource)}</p>` : ""}
-        ${
-          partialTranslation
-            ? `<p class="conference-mode-entry-text translation">${escapeHtml(partialTranslation)}</p>`
-            : `<span class="conference-mode-translation-pending">${escapeHtml(pendingTranslationText)}</span>`
-        }
-      </article>
-    `
-    : "";
+  const hasEntries = state.conferenceMode.entries.length > 0;
   const sessionRunning = isConferenceModeAudioSessionRunning();
   const actionButton =
     sessionRunning
@@ -6114,7 +6092,7 @@ function renderConferenceModePanel(): string {
       : `<button id="conference-mode-start" class="conference-mode-button primary" type="button" ${
           state.conferenceMode.stopping ? "disabled" : ""
         }>${escapeHtml(labels.start)}</button>`;
-  const clearButton = entries.length
+  const clearButton = hasEntries
     ? `<button id="conference-mode-clear" class="conference-mode-button" type="button">${escapeHtml(labels.clear)}</button>`
     : "";
   const livePlaybackEnabled = state.realtimeInterpreter.livePlaybackEnabled;
@@ -6187,12 +6165,75 @@ function renderConferenceModePanel(): string {
           : ""
       }
       <div class="conference-mode-list" id="conference-transcript-scroll">
-        ${rows}
-        ${partialRow}
-        ${!rows && !partialRow ? `<p class="conference-mode-empty">${escapeHtml(emptyText)}</p>` : ""}
+        ${renderConferenceModeTranscriptListContents()}
       </div>
     </section>
   `;
+}
+
+function renderConferenceModeTranscriptListContents(): string {
+  const labels = stringsForState().realtimeInterpreter;
+  const emptyText = labels.conferenceEmpty;
+  const pendingTranslationText = labels.pendingTranslation;
+  const entries = state.conferenceMode.entries;
+  const partialSource = state.conferenceMode.partialSourceText.trim();
+  const partialTranslation = state.conferenceMode.partialTranslationText.trim();
+  const hasPartial = Boolean(partialSource || partialTranslation);
+  const rows = entries
+    .map(
+      (entry) => `
+        <article class="conference-mode-entry">
+          ${
+            entry.sourceText
+              ? `<p class="conference-mode-entry-text source">${escapeHtml(entry.sourceText)}</p>`
+              : ""
+          }
+          ${
+            entry.translationText
+              ? `<p class="conference-mode-entry-text translation">${escapeHtml(entry.translationText)}</p>`
+              : `<span class="conference-mode-translation-pending">${escapeHtml(pendingTranslationText)}</span>`
+          }
+        </article>
+      `,
+    )
+    .join("");
+  const partialRow = hasPartial
+    ? `
+      <article class="conference-mode-entry partial">
+        ${partialSource ? `<p class="conference-mode-entry-text source">${escapeHtml(partialSource)}</p>` : ""}
+        ${
+          partialTranslation
+            ? `<p class="conference-mode-entry-text translation">${escapeHtml(partialTranslation)}</p>`
+            : `<span class="conference-mode-translation-pending">${escapeHtml(pendingTranslationText)}</span>`
+        }
+      </article>
+    `
+    : "";
+
+  return `
+    ${rows}
+    ${partialRow}
+    ${!rows && !partialRow ? `<p class="conference-mode-empty">${escapeHtml(emptyText)}</p>` : ""}
+  `;
+}
+
+function updateConferenceModeTranscriptDom(): boolean {
+  if (state.activeView !== "conference") {
+    return false;
+  }
+  const list = root.querySelector<HTMLElement>("#conference-transcript-scroll");
+  if (!list) {
+    return false;
+  }
+  list.innerHTML = renderConferenceModeTranscriptListContents();
+  scrollConferenceTranscriptToBottom({ onlyIfPinned: true });
+  return true;
+}
+
+function renderOrPatchConferenceModeTranscript(): void {
+  if (!updateConferenceModeTranscriptDom()) {
+    render();
+  }
 }
 
 function isConferenceModeAudioSessionRunning(): boolean {
@@ -6315,27 +6356,8 @@ function renderConferenceQuestionStream(): string {
 function renderRealtimeInterpreterView(strings: ReturnType<typeof getUiStrings>): string {
   const labels = strings.realtimeInterpreter;
   const title = labels.title;
-  const emptyText = labels.empty;
-  const entries = state.realtimeInterpreter.entries;
-  const partialSource = state.realtimeInterpreter.partialSourceText.trim();
-  const partialTranslation = state.realtimeInterpreter.partialTranslationText.trim();
-  const hasPartial = Boolean(partialSource || partialTranslation);
   const settingsLabel = labels.settings;
-  const rows = entries
-    .map(
-      (entry) => `
-        <article class="realtime-interpreter-entry">
-          ${entry.sourceText ? `<p class="realtime-interpreter-entry-source">${escapeHtml(entry.sourceText)}</p>` : ""}
-          ${
-            entry.translationText
-              ? `<p class="realtime-interpreter-entry-translation">${escapeHtml(entry.translationText)}</p>`
-              : ""
-          }
-        </article>
-      `,
-    )
-    .join("");
-  const liveCaptionHtml = hasPartial ? renderRealtimeInterpreterLiveCaptions() : "";
+  const hasEntries = state.realtimeInterpreter.entries.length > 0;
   const actionButton =
     state.realtimeInterpreter.active || state.realtimeInterpreter.starting
       ? `<button id="realtime-interpreter-stop" class="realtime-interpreter-button danger" type="button" ${
@@ -6344,7 +6366,7 @@ function renderRealtimeInterpreterView(strings: ReturnType<typeof getUiStrings>)
       : `<button id="realtime-interpreter-start" class="realtime-interpreter-button primary" type="button" ${
           state.realtimeInterpreter.stopping ? "disabled" : ""
         }>${escapeHtml(labels.start)}</button>`;
-  const clearButton = entries.length
+  const clearButton = hasEntries
     ? `<button id="realtime-interpreter-clear" class="realtime-interpreter-button" type="button">${escapeHtml(labels.clear)}</button>`
     : "";
 
@@ -6399,11 +6421,7 @@ function renderRealtimeInterpreterView(strings: ReturnType<typeof getUiStrings>)
         realtimeInterpreterPaneSplitRatio.toFixed(3),
       )};">
         <div class="realtime-interpreter-transcript-scroll" id="realtime-interpreter-scroll" data-scroll-key="realtime-interpreter-scroll">
-          ${liveCaptionHtml}
-          <section class="realtime-interpreter-list">
-            ${rows}
-            ${!rows && !hasPartial ? `<p class="realtime-interpreter-empty">${escapeHtml(emptyText)}</p>` : ""}
-          </section>
+          ${renderRealtimeInterpreterTranscriptScrollContents()}
         </div>
         <div
           class="realtime-interpreter-pane-resizer"
@@ -6416,6 +6434,57 @@ function renderRealtimeInterpreterView(strings: ReturnType<typeof getUiStrings>)
       </div>
     </div>
   `;
+}
+
+function renderRealtimeInterpreterTranscriptScrollContents(): string {
+  const labels = stringsForState().realtimeInterpreter;
+  const emptyText = labels.empty;
+  const entries = state.realtimeInterpreter.entries;
+  const partialSource = state.realtimeInterpreter.partialSourceText.trim();
+  const partialTranslation = state.realtimeInterpreter.partialTranslationText.trim();
+  const hasPartial = Boolean(partialSource || partialTranslation);
+  const rows = entries
+    .map(
+      (entry) => `
+        <article class="realtime-interpreter-entry">
+          ${entry.sourceText ? `<p class="realtime-interpreter-entry-source">${escapeHtml(entry.sourceText)}</p>` : ""}
+          ${
+            entry.translationText
+              ? `<p class="realtime-interpreter-entry-translation">${escapeHtml(entry.translationText)}</p>`
+              : ""
+          }
+        </article>
+      `,
+    )
+    .join("");
+  const liveCaptionHtml = hasPartial ? renderRealtimeInterpreterLiveCaptions() : "";
+
+  return `
+    ${liveCaptionHtml}
+    <section class="realtime-interpreter-list">
+      ${rows}
+      ${!rows && !hasPartial ? `<p class="realtime-interpreter-empty">${escapeHtml(emptyText)}</p>` : ""}
+    </section>
+  `;
+}
+
+function updateRealtimeInterpreterTranscriptDom(): boolean {
+  if (state.activeView !== "interpreter") {
+    return false;
+  }
+  const scroll = root.querySelector<HTMLElement>("#realtime-interpreter-scroll");
+  if (!scroll) {
+    return false;
+  }
+  scroll.innerHTML = renderRealtimeInterpreterTranscriptScrollContents();
+  scrollRealtimeInterpreterTranscriptToBottom({ onlyIfPinned: true });
+  return true;
+}
+
+function renderOrPatchRealtimeInterpreterTranscript(): void {
+  if (!updateRealtimeInterpreterTranscriptDom()) {
+    render();
+  }
 }
 
 function renderRealtimeInterpreterQuestionStream(): string {
@@ -6478,6 +6547,7 @@ function renderRealtimeInterpreterLiveCaptions(): string {
 
 function renderRealtimeInterpreterControls(): string {
   const controlsDisabled = state.realtimeInterpreter.active || state.realtimeInterpreter.starting;
+  const languageDisabled = state.realtimeInterpreter.starting;
   const disabledAttribute = controlsDisabled ? "disabled" : "";
   const labels = stringsForState().realtimeInterpreter;
   const isKorean = isKoreanUiLocale();
@@ -6504,7 +6574,7 @@ function renderRealtimeInterpreterControls(): string {
     <section class="realtime-interpreter-controls" aria-label="${escapeAttribute(labels.controls)}">
       <label class="realtime-interpreter-control">
         <span>${escapeHtml(labels.translateTo)}</span>
-        <select id="realtime-interpreter-language" ${disabledAttribute}>
+        <select id="realtime-interpreter-language" ${languageDisabled ? "disabled" : ""}>
           ${languageOptions}
         </select>
       </label>
@@ -6581,7 +6651,7 @@ function getRealtimeInterpreterTargetLanguageLabel(value: string): string {
 
 function clampRealtimeInterpreterOutputVolume(value: number): number {
   if (!Number.isFinite(value)) {
-    return 1;
+    return DEFAULT_REALTIME_INTERPRETER_OUTPUT_VOLUME;
   }
   return Math.min(1, Math.max(0, value));
 }
@@ -6591,6 +6661,37 @@ function applyRealtimeInterpreterOutputVolume(): void {
     return;
   }
   realtimeInterpreterAudio.volume = clampRealtimeInterpreterOutputVolume(state.realtimeInterpreter.outputVolume);
+}
+
+function sendRealtimeInterpreterTargetLanguageUpdate(language: string): void {
+  if (!realtimeInterpreterDataChannel || realtimeInterpreterDataChannel.readyState !== "open") {
+    return;
+  }
+  realtimeInterpreterDataChannel.send(
+    JSON.stringify({
+      type: "session.update",
+      session: {
+        audio: {
+          output: {
+            language,
+          },
+        },
+      },
+    }),
+  );
+}
+
+function updateRealtimeInterpreterTargetLanguage(language: string): void {
+  const nextLanguage = language.trim();
+  if (!nextLanguage || state.realtimeInterpreter.targetLanguage === nextLanguage) {
+    return;
+  }
+  state.realtimeInterpreter.targetLanguage = nextLanguage;
+  state.realtimeInterpreter.error = "";
+  if (state.realtimeInterpreter.active || state.conferenceMode.active) {
+    sendRealtimeInterpreterTargetLanguageUpdate(nextLanguage);
+  }
+  render();
 }
 
 function partitionPromptActivityMessages(messages: ConversationMessage[]): {
@@ -18850,14 +18951,14 @@ function handleConferenceModeTranslationPayload(payload: Record<string, unknown>
   if (payload.type === "session.input_transcript.delta") {
     state.conferenceMode.partialSourceText = `${state.conferenceMode.partialSourceText}${extractRealtimeInterpreterText(payload)}`;
     conferenceModeDataChannelTranscriptsActive = true;
-    render();
+    renderOrPatchConferenceModeTranscript();
     return;
   }
 
   if (payload.type === "session.output_transcript.delta") {
     state.conferenceMode.partialTranslationText = `${state.conferenceMode.partialTranslationText}${extractRealtimeInterpreterText(payload)}`;
     conferenceModeDataChannelTranscriptsActive = true;
-    render();
+    renderOrPatchConferenceModeTranscript();
     return;
   }
 
@@ -18868,7 +18969,7 @@ function handleConferenceModeTranslationPayload(payload: Record<string, unknown>
       conferenceModeDataChannelTranscriptsActive = true;
     }
     commitConferenceModePartialIfReady();
-    render();
+    renderOrPatchConferenceModeTranscript();
     return;
   }
 
@@ -18879,7 +18980,7 @@ function handleConferenceModeTranslationPayload(payload: Record<string, unknown>
       conferenceModeDataChannelTranscriptsActive = true;
     }
     commitConferenceModePartialIfReady({ force: true });
-    render();
+    renderOrPatchConferenceModeTranscript();
   }
 }
 
@@ -19205,10 +19306,7 @@ function bindRealtimeInterpreterControls(): void {
   root.querySelector<HTMLSelectElement>("#realtime-interpreter-language")?.addEventListener("change", (event) => {
     const select = event.currentTarget as HTMLSelectElement | null;
     const value = select?.value.trim() ?? "";
-    if (!state.realtimeInterpreter.active && value) {
-      state.realtimeInterpreter.targetLanguage = value;
-      render();
-    }
+    updateRealtimeInterpreterTargetLanguage(value);
   });
   root.querySelectorAll<HTMLButtonElement>("[data-interpreter-source]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -19235,7 +19333,9 @@ function bindRealtimeInterpreterControls(): void {
   });
   root.querySelector<HTMLInputElement>("#realtime-interpreter-output-volume")?.addEventListener("input", (event) => {
     const input = event.currentTarget as HTMLInputElement | null;
-    const volume = clampRealtimeInterpreterOutputVolume(Number(input?.value ?? 100) / 100);
+    const volume = clampRealtimeInterpreterOutputVolume(
+      Number(input?.value ?? DEFAULT_REALTIME_INTERPRETER_OUTPUT_VOLUME * 100) / 100,
+    );
     state.realtimeInterpreter.outputVolume = volume;
     applyRealtimeInterpreterOutputVolume();
     const valueOutput = root.querySelector<HTMLOutputElement>("#realtime-interpreter-output-volume-value");
@@ -19756,12 +19856,12 @@ async function handleRealtimeInterpreterDataChannelMessage(data: unknown): Promi
   }
   if (payload.type === "session.input_transcript.delta") {
     state.realtimeInterpreter.partialSourceText = `${state.realtimeInterpreter.partialSourceText}${extractRealtimeInterpreterText(payload)}`;
-    render();
+    renderOrPatchRealtimeInterpreterTranscript();
     return;
   }
   if (payload.type === "session.output_transcript.delta") {
     state.realtimeInterpreter.partialTranslationText = `${state.realtimeInterpreter.partialTranslationText}${extractRealtimeInterpreterText(payload)}`;
-    render();
+    renderOrPatchRealtimeInterpreterTranscript();
     return;
   }
   if (payload.type === "session.input_transcript.done") {
@@ -19770,7 +19870,7 @@ async function handleRealtimeInterpreterDataChannelMessage(data: unknown): Promi
       state.realtimeInterpreter.partialSourceText = text;
     }
     commitRealtimeInterpreterPartialIfReady();
-    render();
+    renderOrPatchRealtimeInterpreterTranscript();
     return;
   }
   if (payload.type === "session.output_transcript.done") {
@@ -19779,7 +19879,7 @@ async function handleRealtimeInterpreterDataChannelMessage(data: unknown): Promi
       state.realtimeInterpreter.partialTranslationText = text;
     }
     commitRealtimeInterpreterPartialIfReady({ force: true });
-    render();
+    renderOrPatchRealtimeInterpreterTranscript();
   }
 }
 

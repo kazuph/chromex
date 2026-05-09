@@ -93,6 +93,8 @@ describe("realtime interpreter mode", () => {
     const renderBody = extractFunctionBody("renderRealtimeInterpreterControls");
 
     expect(renderBody).toContain('id="realtime-interpreter-language"');
+    expect(renderBody).toContain("const languageDisabled = state.realtimeInterpreter.starting");
+    expect(renderBody).toContain('${languageDisabled ? "disabled" : ""}');
     expect(renderBody).toContain('id="realtime-interpreter-microphone"');
     expect(renderBody).toContain('id="realtime-interpreter-refresh-devices"');
     expect(renderBody).toContain('data-interpreter-source="display"');
@@ -107,6 +109,22 @@ describe("realtime interpreter mode", () => {
     expect(sidepanelSource).toContain('state.realtimeInterpreter.inputSource === "microphone"');
     expect(sidepanelSource).toContain("requestRealtimeInterpreterMicrophoneStream");
     expect(sidepanelSource).toContain("requestComputerAudioStreamForDictation");
+  });
+
+  test("updates the active realtime translation target language through session.update", () => {
+    const bindBody = extractFunctionBody("bindRealtimeInterpreterControls");
+    const updateBody = extractFunctionBody("updateRealtimeInterpreterTargetLanguage");
+    const sendUpdateBody = extractFunctionBody("sendRealtimeInterpreterTargetLanguageUpdate");
+
+    expect(bindBody).toContain("updateRealtimeInterpreterTargetLanguage(value)");
+    expect(updateBody).toContain("state.realtimeInterpreter.targetLanguage = nextLanguage");
+    expect(updateBody).toContain("state.realtimeInterpreter.active || state.conferenceMode.active");
+    expect(updateBody).toContain("sendRealtimeInterpreterTargetLanguageUpdate(nextLanguage)");
+    expect(sendUpdateBody).toContain("realtimeInterpreterDataChannel.readyState !== \"open\"");
+    expect(sendUpdateBody).toContain('type: "session.update"');
+    expect(sendUpdateBody).toContain("audio");
+    expect(sendUpdateBody).toContain("output");
+    expect(sendUpdateBody).toContain("language");
   });
 
   test("uses a start and stop button for audio capture instead of an audio-select label", () => {
@@ -172,7 +190,8 @@ describe("realtime interpreter mode", () => {
     expect(peerBody).toContain("applyRealtimeInterpreterOutputVolume()");
     expect(sidepanelSource).toContain("function clampRealtimeInterpreterOutputVolume");
     expect(sidepanelSource).toContain("function applyRealtimeInterpreterOutputVolume");
-    expect(sidepanelSource).toContain("outputVolume: 1");
+    expect(sidepanelSource).toContain("const DEFAULT_REALTIME_INTERPRETER_OUTPUT_VOLUME = 0.5");
+    expect(sidepanelSource).toContain("outputVolume: DEFAULT_REALTIME_INTERPRETER_OUTPUT_VOLUME");
     expect(bindBody).toContain("#realtime-interpreter-output-volume");
     expect(bindBody).toContain("state.realtimeInterpreter.outputVolume = volume");
     expect(bindBody).toContain("applyRealtimeInterpreterOutputVolume()");
@@ -275,11 +294,13 @@ describe("realtime interpreter mode", () => {
 
   test("renders live source and translated subtitles without duplicating completed entries", () => {
     const viewBody = extractFunctionBody("renderRealtimeInterpreterView");
+    const transcriptBody = extractFunctionBody("renderRealtimeInterpreterTranscriptScrollContents");
     const captionBody = extractFunctionBody("renderRealtimeInterpreterLiveCaptions");
 
-    expect(viewBody).toContain("const liveCaptionHtml = hasPartial ? renderRealtimeInterpreterLiveCaptions() : \"\"");
-    expect(viewBody).toContain("${liveCaptionHtml}");
-    expect(viewBody).toContain("!rows && !hasPartial");
+    expect(viewBody).toContain("renderRealtimeInterpreterTranscriptScrollContents()");
+    expect(transcriptBody).toContain("const liveCaptionHtml = hasPartial ? renderRealtimeInterpreterLiveCaptions() : \"\"");
+    expect(transcriptBody).toContain("${liveCaptionHtml}");
+    expect(transcriptBody).toContain("!rows && !hasPartial");
     expect(viewBody).not.toContain("partialRow");
     expect(captionBody).toContain("state.realtimeInterpreter.partialSourceText");
     expect(captionBody).toContain("state.realtimeInterpreter.partialTranslationText");
@@ -304,6 +325,22 @@ describe("realtime interpreter mode", () => {
     expect(scrollBody).toContain("node.scrollTop = Math.max(0, node.scrollHeight - node.clientHeight)");
     expect(bindBody).toContain("#realtime-interpreter-scroll");
     expect(bindBody).toContain("handleRealtimeInterpreterTranscriptScroll");
+  });
+
+  test("patches live transcript DOM without replacing open interpreter settings", () => {
+    const conferencePayloadBody = extractFunctionBody("handleConferenceModeTranslationPayload");
+    const interpreterPayloadBody = extractFunctionBody("handleRealtimeInterpreterDataChannelMessage");
+    const conferencePatchBody = extractFunctionBody("updateConferenceModeTranscriptDom");
+    const interpreterPatchBody = extractFunctionBody("updateRealtimeInterpreterTranscriptDom");
+
+    expect(conferencePayloadBody).toContain("renderOrPatchConferenceModeTranscript()");
+    expect(interpreterPayloadBody).toContain("renderOrPatchRealtimeInterpreterTranscript()");
+    expect(conferencePatchBody).toContain('root.querySelector<HTMLElement>("#conference-transcript-scroll")');
+    expect(conferencePatchBody).toContain("list.innerHTML = renderConferenceModeTranscriptListContents()");
+    expect(interpreterPatchBody).toContain('root.querySelector<HTMLElement>("#realtime-interpreter-scroll")');
+    expect(interpreterPatchBody).toContain("scroll.innerHTML = renderRealtimeInterpreterTranscriptScrollContents()");
+    expect(conferencePatchBody).toContain("scrollConferenceTranscriptToBottom({ onlyIfPinned: true })");
+    expect(interpreterPatchBody).toContain("scrollRealtimeInterpreterTranscriptToBottom({ onlyIfPinned: true })");
   });
 
   test("keeps the interpreter settings reachable in short sidepanel heights", () => {

@@ -23,7 +23,7 @@ const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
 const extensionManifestPath = resolve(repoRoot, "packages/extension/public/manifest.json");
 const derivedExtensionId = await deriveExtensionIdFromManifest(extensionManifestPath);
-const extensionId = extensionIdArg ?? derivedExtensionId;
+const extensionId = extensionIdArg ?? derivedExtensionId ?? CHROME_WEB_STORE_EXTENSION_ID;
 
 if (!extensionId || !isValidExtensionId(extensionId)) {
   console.error(
@@ -32,7 +32,7 @@ if (!extensionId || !isValidExtensionId(extensionId)) {
       "",
       derivedExtensionId
         ? `Derived extension ID from manifest key: ${derivedExtensionId}`
-        : "No manifest key was available to derive the extension ID automatically.",
+        : `No manifest key was available; defaulting to Chrome Web Store extension ID ${CHROME_WEB_STORE_EXTENSION_ID}.`,
       "The extension ID must be a 32-character Chrome extension ID using letters a-p.",
     ].join("\n"),
   );
@@ -44,7 +44,9 @@ assertSelectedBrowsersSupportedOnPlatform(selectedBrowsers, currentPlatform);
 const appSupportDir = resolveAppSupportDir(currentPlatform);
 const hostInstallDir = resolve(appSupportDir, "native-host");
 const hostSourceDir = resolve(repoRoot, "packages/native-host/dist");
-const bridgeEntryPath = resolve(repoRoot, "packages/bridge/dist/cli.js");
+const bundledBridgeEntryPath = resolve(repoRoot, "bridge/cli.bundle.mjs");
+const sourceBridgeEntryPath = resolve(repoRoot, "packages/bridge/dist/cli.js");
+const bridgeEntryPath = (await pathExists(bundledBridgeEntryPath)) ? bundledBridgeEntryPath : sourceBridgeEntryPath;
 const hostPath = resolve(hostInstallDir, "bin.js");
 const launcherPath = resolve(hostInstallDir, currentPlatform === "win32" ? "run-bridge.cmd" : "run-bridge");
 const homeDir = homedir();
@@ -76,7 +78,10 @@ const allowedExtensionIds = [
 const allowedOrigins = allowedExtensionIds.map((id) => `chrome-extension://${id}/`);
 
 await assertBuiltAsset(hostSourceDir, "packages/native-host/dist");
-await assertBuiltAsset(bridgeEntryPath, "packages/bridge/dist/cli.js");
+await assertBuiltAsset(
+  bridgeEntryPath,
+  bridgeEntryPath === bundledBridgeEntryPath ? "bridge/cli.bundle.mjs" : "packages/bridge/dist/cli.js",
+);
 
 await rm(hostInstallDir, { recursive: true, force: true });
 await mkdir(hostInstallDir, { recursive: true });
@@ -591,6 +596,15 @@ async function assertBuiltAsset(path, label) {
     await stat(path);
   } catch {
     throw new Error(`Missing ${label}. Run "npm run build" before installing the native host.`);
+  }
+}
+
+async function pathExists(path) {
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
   }
 }
 

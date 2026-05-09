@@ -1,9 +1,50 @@
+import type { CodexModelOption } from "@codex-sidepanel/shared";
+
 export interface CatalogRefreshDecisionInput {
   inFlight: boolean;
   lastRequestedWorkspaceRoot: string | null;
   workspaceRoot: string | undefined;
   force: boolean | undefined;
 }
+
+export const FALLBACK_CODEX_MODELS: CodexModelOption[] = [
+  {
+    id: "gpt-5.5",
+    label: "GPT-5.5",
+    description: "Fallback model used when the Codex app-server model catalog is temporarily unavailable.",
+    isDefault: true,
+    supportsImages: true,
+    reasoningEfforts: ["low", "medium", "high", "xhigh"],
+    defaultReasoningEffort: "medium",
+    additionalSpeedTiers: ["fast"],
+    supportsParallelToolCalls: true,
+    supportsSearchTool: true,
+  },
+  {
+    id: "gpt-5.4",
+    label: "GPT-5.4",
+    description: "Fallback model used when the Codex app-server model catalog is temporarily unavailable.",
+    isDefault: false,
+    supportsImages: true,
+    reasoningEfforts: ["low", "medium", "high", "xhigh"],
+    defaultReasoningEffort: "medium",
+    additionalSpeedTiers: ["fast"],
+    supportsParallelToolCalls: true,
+    supportsSearchTool: true,
+  },
+  {
+    id: "gpt-5.3-codex",
+    label: "GPT-5.3 Codex",
+    description: "Fallback coding model used when the Codex app-server model catalog is temporarily unavailable.",
+    isDefault: false,
+    supportsImages: true,
+    reasoningEfforts: ["low", "medium", "high", "xhigh"],
+    defaultReasoningEffort: "medium",
+    additionalSpeedTiers: ["fast"],
+    supportsParallelToolCalls: true,
+    supportsSearchTool: true,
+  },
+];
 
 export interface CatalogAffectingSettingsInput {
   previousWorkspaceRoot: string | undefined;
@@ -56,6 +97,38 @@ export function resolveCatalogModelState(input: {
   }
 
   return input.models.length ? "ready" : "empty";
+}
+
+export function isRecoverableModelCatalogAuthError(message: string): boolean {
+  return /api[- ]?key auth|incorrect api key|invalid_api_key|openai authentication is required/iu.test(message);
+}
+
+export function recoverModelCatalogAfterAuthError(input: {
+  previousModels: CodexModelOption[];
+  selectedModel: string | null | undefined;
+}): CodexModelOption[] {
+  if (input.previousModels.length) {
+    return input.previousModels;
+  }
+  const selectedModel = input.selectedModel?.trim() ?? "";
+  if (!selectedModel || FALLBACK_CODEX_MODELS.some((model) => model.id === selectedModel)) {
+    return FALLBACK_CODEX_MODELS;
+  }
+  return [
+    {
+      id: selectedModel,
+      label: selectedModel,
+      description: "Previously selected model.",
+      isDefault: true,
+      supportsImages: true,
+      reasoningEfforts: ["low", "medium", "high", "xhigh"],
+      defaultReasoningEffort: "medium",
+      additionalSpeedTiers: ["fast"],
+      supportsParallelToolCalls: true,
+      supportsSearchTool: true,
+    },
+    ...FALLBACK_CODEX_MODELS.map((model) => ({ ...model, isDefault: false })),
+  ];
 }
 
 export function resolveSelectedCatalogModel(input: {

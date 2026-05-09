@@ -202,6 +202,7 @@ export interface ExtensionSettings {
   allowVoiceNavigation: boolean;
   allowBrowserActions: boolean;
   browserActionPermissionMode: BrowserActionPermissionMode;
+  imagePromptHoverButtonEnabled: boolean;
   planModeEnabled: boolean;
   playwrightBrowserControlEnabled: boolean;
   preferredVoice: string;

@@ -125,7 +125,8 @@ describe("online image prompt extraction", () => {
         }),
       ]),
     );
-    expect(normalizedContentSource).toContain("\ninstallImagePromptHover();\n");
+    expect(normalizedContentSource).toContain("\ninitializeImagePromptHoverSetting();\n");
+    expect(contentSource).toContain("function readImagePromptHoverButtonEnabled");
     expect(manifest.permissions).toContain("offscreen");
   });
 
@@ -268,7 +269,8 @@ describe("online image prompt extraction", () => {
   test("registers hover lifecycle listeners with an abort signal", () => {
     const installer = getFunctionSource(contentSource, "installImagePromptHover");
 
-    expect(installer).toContain("signal: chromexContentScriptAbortController.signal");
+    expect(installer).toContain("signal: imagePromptHoverAbortController.signal");
+    expect(installer).toContain("imagePromptHoverAbortController = new AbortController()");
     expect(installer).toContain('document.addEventListener("visibilitychange", handleImagePromptVisibilityChange, listenerOptions)');
     expect(installer).toContain('window.addEventListener("blur", handleImagePromptForceHide, listenerOptions)');
     expect(installer).not.toContain('document.addEventListener("visibilitychange", handleImagePromptVisibilityChange, true)');

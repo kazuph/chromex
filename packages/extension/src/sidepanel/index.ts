@@ -919,6 +919,7 @@ const state = {
     allowVoiceNavigation: true,
     allowBrowserActions: true,
     browserActionPermissionMode: "ask",
+    imagePromptHoverButtonEnabled: true,
     planModeEnabled: false,
     playwrightBrowserControlEnabled: false,
     preferredVoice: "",
@@ -2458,6 +2459,7 @@ function normalizeSettingsForState(settings: ExtensionSettings): ExtensionSettin
     ...settings,
     allowBrowserActions: true,
     browserActionPermissionMode: normalizeBrowserActionPermissionMode(settings.browserActionPermissionMode),
+    imagePromptHoverButtonEnabled: settings.imagePromptHoverButtonEnabled !== false,
     planModeEnabled: settings.planModeEnabled === true,
     playwrightBrowserControlEnabled: settings.playwrightBrowserControlEnabled === true,
     uiLanguage: normalizeUiLanguageSetting(settings.uiLanguage),
@@ -8311,6 +8313,17 @@ function renderWorkspaceView(strings: ReturnType<typeof getUiStrings>): string {
               strings.settingsPanel.siteSuggestionsDescription,
               renderCustomSiteSuggestionSettings(strings),
               { expanded: true },
+            ),
+            renderSettingsRow(
+              "image-hover-button",
+              strings.settings.imagePromptHoverButton,
+              strings.settingsPanel.imagePromptHoverButtonDescription,
+              renderSettingsSwitch(
+                "setting-image-hover-button",
+                state.settings.imagePromptHoverButtonEnabled,
+                strings.settings.imagePromptHoverButton,
+              ),
+              {},
             ),
             renderSettingsRow(
               strings.settings.rememberChats,
@@ -14310,6 +14323,14 @@ function bindEvents(): void {
     state.settings = await chrome.runtime.sendMessage({
       type: "settings.update",
       settings: { autoCompactConversations: (event.currentTarget as HTMLInputElement).checked },
+    });
+    render();
+  });
+
+  root.querySelector<HTMLInputElement>("#setting-image-hover-button")?.addEventListener("change", async (event) => {
+    state.settings = await chrome.runtime.sendMessage({
+      type: "settings.update",
+      settings: { imagePromptHoverButtonEnabled: (event.currentTarget as HTMLInputElement).checked },
     });
     render();
   });

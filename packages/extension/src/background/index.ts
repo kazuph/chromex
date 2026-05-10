@@ -3122,6 +3122,10 @@ async function installImagePromptHoverForTab(
   if (!tab?.id || !tab.url || !getCurrentPageSupport(tab.url).available) {
     return { ok: true, installed: false };
   }
+  const settings = await getStoredSettings();
+  if (!settings.imagePromptHoverButtonEnabled) {
+    return { ok: true, installed: false };
+  }
   try {
     await sendMessageToTab(tab as chrome.tabs.Tab & { id: number; url: string }, {
       type: "page.image-prompt-hover.install",

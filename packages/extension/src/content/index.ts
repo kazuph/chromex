@@ -35,6 +35,9 @@ let aiControlOverlayTimer: number | null = null;
 let aiControlOverlayWatchdogTimer: number | null = null;
 let aiControlCancelled = false;
 let imagePromptHoverInstalled = false;
+let imagePromptHoverEnabled = true;
+let imagePromptHoverAbortController: AbortController | null = null;
+let imagePromptHoverStorageListenerRegistered = false;
 let imagePromptHoverButton: HTMLButtonElement | null = null;
 let imagePromptHoverTarget: ImagePromptHoverTarget | null = null;
 let imagePromptHoverTargetRect: DOMRect | null = null;
@@ -52,6 +55,7 @@ const CHROMEX_CONTENT_CLEANUP_KEY = "__chromexContentScriptCleanup";
 const chromexContentScriptInstanceId = `${Date.now()}:${Math.random().toString(36).slice(2)}`;
 const chromexContentGlobal = globalThis as typeof globalThis & Record<string, unknown>;
 const chromexContentScriptAbortController = new AbortController();
+const SETTINGS_STORAGE_KEY = "codex.sidepanel.settings";
 const IMAGE_PROMPT_HOVER_BUTTON_CLASS = "chromex-image-prompt-button";
 const IMAGE_PROMPT_HOVER_BUTTON_SELECTOR = `.${IMAGE_PROMPT_HOVER_BUTTON_CLASS}`;
 const IMAGE_PROMPT_HOVER_SURFACE_PADDING_PX = 8;
@@ -97,7 +101,7 @@ chromexContentGlobal[CHROMEX_CONTENT_CLEANUP_KEY] = cleanupContentScriptInstance
 
 registerChromexRuntimeMessageListener();
 startContentScriptRuntimeWatchdog();
-installImagePromptHover();
+initializeImagePromptHoverSetting();
 installPageSelectionContextBridge();
 installDictationFocusBridge();
 
@@ -107,6 +111,17 @@ function getSafeChromeRuntime(): typeof chrome.runtime | null {
       return null;
     }
     return chrome.runtime;
+  } catch {
+    return null;
+  }
+}
+
+function getSafeChromeStorage(): typeof chrome.storage | null {
+  try {
+    if (typeof chrome === "undefined" || !chrome.runtime?.id || !chrome.storage?.local) {
+      return null;
+    }
+    return chrome.storage;
   } catch {
     return null;
   }
@@ -294,6 +309,8 @@ function cleanupPreviousContentScriptInstance(): void {
 }
 
 function cleanupContentScriptInstance(): void {
+  removeImagePromptHoverStorageListener();
+  uninstallImagePromptHover();
   chromexContentScriptAbortController.abort();
   stopContentScriptRuntimeWatchdog();
   if (chromexRuntimeMessageListenerRegistered) {
@@ -306,8 +323,6 @@ function cleanupContentScriptInstance(): void {
     chromexRuntimeMessageListenerRegistered = false;
   }
   clearPageSelectionContextTimer();
-  imagePromptHoverInstalled = false;
-  hideImagePromptHoverButton({ immediate: true });
 }
 
 function installPageSelectionContextBridge(): void {
@@ -837,7 +852,87 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
+function initializeImagePromptHoverSetting(): void {
+  registerImagePromptHoverStorageListener();
+  void readImagePromptHoverButtonEnabled()
+    .then((enabled) => setImagePromptHoverButtonEnabled(enabled))
+    .catch((error) => {
+      if (!handleImagePromptRuntimeError(error)) {
+        installImagePromptHover();
+      }
+    });
+}
+
+function registerImagePromptHoverStorageListener(): void {
+  const storage = getSafeChromeStorage();
+  if (!storage || imagePromptHoverStorageListenerRegistered) {
+    return;
+  }
+  storage.onChanged.addListener(handleImagePromptHoverStorageChanged);
+  imagePromptHoverStorageListenerRegistered = true;
+}
+
+function removeImagePromptHoverStorageListener(): void {
+  if (!imagePromptHoverStorageListenerRegistered) {
+    return;
+  }
+  try {
+    getSafeChromeStorage()?.onChanged.removeListener(handleImagePromptHoverStorageChanged);
+  } catch {
+    // The runtime can already be unavailable during extension reload cleanup.
+  }
+  imagePromptHoverStorageListenerRegistered = false;
+}
+
+function handleImagePromptHoverStorageChanged(
+  changes: Record<string, chrome.storage.StorageChange>,
+  areaName: string,
+): void {
+  if (areaName !== "local" || !Object.hasOwn(changes, SETTINGS_STORAGE_KEY)) {
+    return;
+  }
+  const settings = changes[SETTINGS_STORAGE_KEY]?.newValue;
+  setImagePromptHoverButtonEnabled(readImagePromptHoverButtonEnabledFromSettings(settings));
+}
+
+async function readImagePromptHoverButtonEnabled(): Promise<boolean> {
+  const storage = getSafeChromeStorage();
+  if (!storage) {
+    return true;
+  }
+  const result = await storage.local.get(SETTINGS_STORAGE_KEY);
+  return readImagePromptHoverButtonEnabledFromSettings(result[SETTINGS_STORAGE_KEY]);
+}
+
+function readImagePromptHoverButtonEnabledFromSettings(settings: unknown): boolean {
+  if (!settings || typeof settings !== "object") {
+    return true;
+  }
+  return (settings as { imagePromptHoverButtonEnabled?: unknown }).imagePromptHoverButtonEnabled !== false;
+}
+
+function setImagePromptHoverButtonEnabled(enabled: boolean): void {
+  if (enabled === imagePromptHoverEnabled) {
+    if (enabled && !imagePromptHoverInstalled) {
+      installImagePromptHover();
+    } else if (!enabled && imagePromptHoverInstalled) {
+      uninstallImagePromptHover();
+    }
+    return;
+  }
+  imagePromptHoverEnabled = enabled;
+  if (enabled) {
+    installImagePromptHover();
+    return;
+  }
+  uninstallImagePromptHover();
+}
+
 function installImagePromptHover(): void {
+  if (!imagePromptHoverEnabled) {
+    hideImagePromptHoverButton({ immediate: true });
+    return;
+  }
   if (imagePromptHoverInstalled) {
     removeImagePromptHoverButtons(imagePromptHoverButton);
     if (imagePromptHoverButton?.isConnected && imagePromptHoverTargetRect) {
@@ -846,16 +941,24 @@ function installImagePromptHover(): void {
     return;
   }
   imagePromptHoverInstalled = true;
+  imagePromptHoverAbortController = new AbortController();
   removeImagePromptHoverButtons();
   const listenerOptions: AddEventListenerOptions = {
     capture: true,
-    signal: chromexContentScriptAbortController.signal,
+    signal: imagePromptHoverAbortController.signal,
   };
   document.addEventListener("pointerover", handleImagePromptPointerOver, listenerOptions);
   document.addEventListener("click", handleImagePromptButtonClick, listenerOptions);
   document.addEventListener("scroll", handleImagePromptScroll, listenerOptions);
   document.addEventListener("visibilitychange", handleImagePromptVisibilityChange, listenerOptions);
   window.addEventListener("blur", handleImagePromptForceHide, listenerOptions);
+}
+
+function uninstallImagePromptHover(): void {
+  imagePromptHoverAbortController?.abort();
+  imagePromptHoverAbortController = null;
+  imagePromptHoverInstalled = false;
+  hideImagePromptHoverButton({ immediate: true });
 }
 
 function handleImagePromptForceHide(): void {

@@ -49,6 +49,7 @@ export const DEFAULT_SETTINGS: ExtensionSettings = {
   allowVoiceNavigation: true,
   allowBrowserActions: true,
   browserActionPermissionMode: "ask",
+  imagePromptHoverButtonEnabled: true,
   planModeEnabled: false,
   playwrightBrowserControlEnabled: false,
   preferredVoice: "",
@@ -77,6 +78,7 @@ export async function getStoredSettings(): Promise<ExtensionSettings> {
     preferredVoice: normalizeCodexRealtimeVoice(settings.preferredVoice),
     voiceInputAudioSource: normalizeVoiceInputAudioSource(settings.voiceInputAudioSource),
     browserActionPermissionMode: normalizeBrowserActionPermissionMode(settings.browserActionPermissionMode),
+    imagePromptHoverButtonEnabled: settings.imagePromptHoverButtonEnabled !== false,
     planModeEnabled: settings.planModeEnabled === true,
     playwrightBrowserControlEnabled: settings.playwrightBrowserControlEnabled === true,
     enabledCodexSkillIds: normalizeEnabledCodexSkillIds(settings.enabledCodexSkillIds),
@@ -99,6 +101,7 @@ export async function updateStoredSettings(patch: Partial<ExtensionSettings>): P
     browserActionPermissionMode: normalizeBrowserActionPermissionMode(
       patch.browserActionPermissionMode ?? current.browserActionPermissionMode,
     ),
+    imagePromptHoverButtonEnabled: (patch.imagePromptHoverButtonEnabled ?? current.imagePromptHoverButtonEnabled) !== false,
     planModeEnabled: (patch.planModeEnabled ?? current.planModeEnabled) === true,
     playwrightBrowserControlEnabled: (patch.playwrightBrowserControlEnabled ?? current.playwrightBrowserControlEnabled) === true,
     enabledCodexSkillIds: normalizeEnabledCodexSkillIds(

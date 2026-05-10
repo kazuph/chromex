@@ -37,6 +37,8 @@ npm install -g @openai/codex
 codex --version
 ```
 
+   Chromex 需要 `@openai/codex` **0.130.0 或更新版本**。更早的版本（例如 0.124.x、0.125.x）会拒绝部分启动期功能开关，即使 `codex login` 成功，也会反复出现 `codex app-server exited with code 1` 的错误。
+
 2. 从最新 [GitHub Release](https://github.com/GENEXIS-AI/chromex/releases/latest) 下载并解压 `chromex-local-bridge.zip`，然后运行:
 
 ```bash

@@ -25,8 +25,9 @@ describe("native host installer", () => {
   });
 
   test("supports the prebuilt local bridge package without source bridge dependencies", () => {
+    expect(installerSource).toContain('resolve(repoRoot, "bridge/cli.bundle.cjs")');
     expect(installerSource).toContain('resolve(repoRoot, "bridge/cli.bundle.mjs")');
-    expect(installerSource).toContain("pathExists(bundledBridgeEntryPath)");
+    expect(installerSource).toContain("findFirstExistingPath");
     expect(installerSource).toContain("sourceBridgeEntryPath");
   });
 });

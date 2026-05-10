@@ -24,12 +24,18 @@ await assertPathExists(resolve(root, "packages/native-host/dist/bin.js"), "packa
 
 await build({
   entryPoints: [resolve(root, "packages/bridge/dist/cli.js")],
-  outfile: resolve(stagingDir, "bridge/cli.bundle.mjs"),
+  outfile: resolve(stagingDir, "bridge/cli.bundle.cjs"),
   bundle: true,
   platform: "node",
-  format: "esm",
+  format: "cjs",
   target: "node20",
   sourcemap: false,
+  banner: {
+    js: 'const __chromexImportMetaUrl = require("node:url").pathToFileURL(__filename).href;',
+  },
+  define: {
+    "import.meta.url": "__chromexImportMetaUrl",
+  },
   packages: "bundle",
   external: ["@aws-sdk/client-s3"],
   logLevel: "silent",

@@ -2,6 +2,7 @@ import { spawn, type ChildProcessByStdio } from "node:child_process";
 import { createRequire } from "node:module";
 import type { Readable, Writable } from "node:stream";
 import readline from "node:readline";
+import { pathToFileURL } from "node:url";
 
 import { resolveCodexCommand, type CodexCommandResolution } from "./codex-discovery.js";
 
@@ -39,7 +40,7 @@ const APP_SERVER_OVERLOADED_MESSAGE = "Server overloaded; retry later.";
 const MAX_OVERLOAD_RETRIES = 4;
 const BASE_OVERLOAD_RETRY_DELAY_MS = 100;
 const MAX_OVERLOAD_RETRY_DELAY_MS = 2000;
-const require = createRequire(import.meta.url);
+const require = createRequire(resolveCurrentModuleUrl(import.meta.url));
 const BRIDGE_PACKAGE_VERSION = readBridgePackageVersion();
 const PROVIDER_API_KEY_ENV_KEYS = [
   "OPENAI_API_KEY",
@@ -47,6 +48,16 @@ const PROVIDER_API_KEY_ENV_KEYS = [
   "CODEX_API_KEY",
   "CODEX_API_KEY_FILE",
 ] as const;
+
+function resolveCurrentModuleUrl(moduleUrl: string | undefined): string {
+  if (moduleUrl) {
+    return moduleUrl;
+  }
+  if (typeof __filename === "string") {
+    return pathToFileURL(__filename).href;
+  }
+  return pathToFileURL(process.argv[1] ?? process.cwd()).href;
+}
 
 export class CodexAppServerClient {
   #process: ChildProcessByStdio<Writable, Readable, null> | null = null;

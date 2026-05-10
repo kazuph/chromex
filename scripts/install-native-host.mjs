@@ -44,9 +44,12 @@ assertSelectedBrowsersSupportedOnPlatform(selectedBrowsers, currentPlatform);
 const appSupportDir = resolveAppSupportDir(currentPlatform);
 const hostInstallDir = resolve(appSupportDir, "native-host");
 const hostSourceDir = resolve(repoRoot, "packages/native-host/dist");
-const bundledBridgeEntryPath = resolve(repoRoot, "bridge/cli.bundle.mjs");
+const bundledBridgeEntryPath = await findFirstExistingPath([
+  resolve(repoRoot, "bridge/cli.bundle.cjs"),
+  resolve(repoRoot, "bridge/cli.bundle.mjs"),
+]);
 const sourceBridgeEntryPath = resolve(repoRoot, "packages/bridge/dist/cli.js");
-const bridgeEntryPath = (await pathExists(bundledBridgeEntryPath)) ? bundledBridgeEntryPath : sourceBridgeEntryPath;
+const bridgeEntryPath = bundledBridgeEntryPath ?? sourceBridgeEntryPath;
 const hostPath = resolve(hostInstallDir, "bin.js");
 const launcherPath = resolve(hostInstallDir, currentPlatform === "win32" ? "run-bridge.cmd" : "run-bridge");
 const homeDir = homedir();
@@ -80,7 +83,7 @@ const allowedOrigins = allowedExtensionIds.map((id) => `chrome-extension://${id}
 await assertBuiltAsset(hostSourceDir, "packages/native-host/dist");
 await assertBuiltAsset(
   bridgeEntryPath,
-  bridgeEntryPath === bundledBridgeEntryPath ? "bridge/cli.bundle.mjs" : "packages/bridge/dist/cli.js",
+  bundledBridgeEntryPath ? `bridge/${basename(bundledBridgeEntryPath)}` : "packages/bridge/dist/cli.js",
 );
 
 await rm(hostInstallDir, { recursive: true, force: true });
@@ -606,6 +609,15 @@ async function pathExists(path) {
   } catch {
     return false;
   }
+}
+
+async function findFirstExistingPath(paths) {
+  for (const path of paths) {
+    if (await pathExists(path)) {
+      return path;
+    }
+  }
+  return null;
 }
 
 function readEnvValue(env, key) {

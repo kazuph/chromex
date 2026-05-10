@@ -145,6 +145,9 @@ describe("open-source repository hygiene", () => {
     expect(existsSync(resolve(repoRoot, "scripts/package-public-release.mjs"))).toBe(true);
     expect(existsSync(resolve(repoRoot, "scripts/package-local-bridge.mjs"))).toBe(true);
     expect(existsSync(resolve(repoRoot, "scripts/audit-git-history.mjs"))).toBe(true);
+    expect(readRepoFile("scripts/package-local-bridge.mjs")).toContain("bridge/cli.bundle.cjs");
+    expect(readRepoFile("scripts/package-local-bridge.mjs")).toContain('format: "cjs"');
+    expect(readRepoFile("scripts/package-local-bridge.mjs")).toContain('"import.meta.url": "__chromexImportMetaUrl"');
   });
 
   test("does not allow legacy extension ids in the native-host installer by default", () => {

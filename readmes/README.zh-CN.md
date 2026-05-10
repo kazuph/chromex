@@ -28,7 +28,7 @@ Published by **GenexisAI CHOI**.
 
 从 Chrome Web Store 安装的用户不需要从源码构建 Chromex。
 
-带复制按钮的分步说明在公开设置页面中: <https://genexis-ai.github.io/chromex/install/>
+带复制按钮的分步说明已提供英文、韩文、日文和简体中文版本，见公开设置页面: <https://genexis-ai.github.io/chromex/install/>
 
 1. 安装官方 Codex CLI 并确认可用。官方安装选项见 <https://github.com/openai/codex>:
 

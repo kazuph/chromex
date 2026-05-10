@@ -28,7 +28,7 @@ Published by **GenexisAI CHOI**.
 
 Chrome Web Store からインストールしたユーザーは、Chromex をソースからビルドする必要はありません。
 
-コピー用ボタン付きの手順は公開セットアップページにあります: <https://genexis-ai.github.io/chromex/install/>
+英語、韓国語、日本語、簡体字中国語に対応したコピー用ボタン付きの手順は公開セットアップページにあります: <https://genexis-ai.github.io/chromex/install/>
 
 1. 公式 Codex CLI をインストールし、動作を確認します。公式のインストール方法は <https://github.com/openai/codex> で確認できます。
 

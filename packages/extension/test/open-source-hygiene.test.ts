@@ -93,7 +93,11 @@ describe("open-source repository hygiene", () => {
     expect(pagesWorkflow).toContain("path: docs/pages");
     expect(publicIndex).toContain("./install/");
     expect(publicIndex).toContain("./privacy/");
+    expect(publicIndex).toContain("English, 한국어, 日本語, 简体中文");
     expect(installPage).toContain("Chromex 설치 가이드");
+    expect(installPage).toContain("Chromex Store Install Guide");
+    expect(installPage).toContain("日本語");
+    expect(installPage).toContain("简体中文");
     expect(installPage).toContain("nodejs.org/en/download");
     expect(installPage).toContain("github.com/openai/codex");
     expect(installPage).toContain("chromex-local-bridge.zip");
@@ -102,9 +106,11 @@ describe("open-source repository hygiene", () => {
     expect(installPage).not.toContain("npm run build");
     expect(installPage).not.toContain("npm install\n");
     expect(privacyPage).toContain("Chromex Privacy Policy");
+    expect(privacyPage).toContain("Chromex 개인정보 처리방침");
+    expect(privacyPage).toContain("Chromex プライバシーポリシー");
+    expect(privacyPage).toContain("Chromex 隐私政策");
     expect(privacyPage).toContain("Chromex does not sell user data.");
     expect(privacyPage).not.toContain("npm run package:webstore");
-    expect(privacyPage).not.toContain("Chrome Web Store");
   });
 
   test("keeps private maintainer rules out of public-facing documents", () => {

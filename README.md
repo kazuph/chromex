@@ -27,7 +27,7 @@ Published by **GenexisAI CHOI**.
 
 Chrome Web Store users do **not** need to build Chromex from source.
 
-For a step-by-step guide with copy buttons, use the public setup page: <https://genexis-ai.github.io/chromex/install/>
+For a step-by-step guide with copy buttons in English, Korean, Japanese, and Simplified Chinese, use the public setup page: <https://genexis-ai.github.io/chromex/install/>
 
 1. Install the official Codex CLI and confirm it works. See the official Codex CLI install options at <https://github.com/openai/codex>.
 

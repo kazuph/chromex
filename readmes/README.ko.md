@@ -28,7 +28,7 @@ Chromex는 Chrome과 Codex를 로컬 네이티브 브리지로 연결하는 Chro
 
 Chrome Web Store에서 설치한 사용자는 Chromex 소스를 빌드할 필요가 없습니다.
 
-복사 버튼이 있는 쉬운 설치 안내는 공개 설정 페이지에서 확인할 수 있습니다: <https://genexis-ai.github.io/chromex/install/>
+한국어, 영어, 일본어, 중국어 간체로 제공되는 복사 버튼 포함 설치 안내는 공개 설정 페이지에서 확인할 수 있습니다: <https://genexis-ai.github.io/chromex/install/>
 
 1. 공식 Codex CLI를 설치하고 동작을 확인합니다. 공식 설치 옵션은 <https://github.com/openai/codex>에서 확인할 수 있습니다.
 

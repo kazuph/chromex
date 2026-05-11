@@ -7,10 +7,24 @@ import readline from "node:readline";
 import { NativeMessageStreamDecoder, encodeNativeMessage } from "./framing.js";
 import { createBridgeProcessEnv, mergeShellProviderEnv } from "./environment.js";
 
+type BridgeMessage = {
+  id: string;
+  method: string;
+  params: Record<string, unknown>;
+};
+
+type BridgeResponse = {
+  id: string;
+  result?: unknown;
+  error?: { message: string };
+};
+
 export class NativeHostRelay {
   readonly #decoder = new NativeMessageStreamDecoder();
   #bridge?: ChildProcessByStdio<Writable, Readable, null>;
   #shuttingDown = false;
+  #pendingResponses = new Map<string, (msg: BridgeResponse) => void>();
+  #lineReader?: readline.Interface;
 
   start(): void {
     const bridgeBaseEnv = mergeShellProviderEnv(process.env);
@@ -52,15 +66,50 @@ export class NativeHostRelay {
       }
     });
 
-    const lineReader = readline.createInterface({
+    this.#lineReader = readline.createInterface({
       input: this.#bridge.stdout,
     });
-    lineReader.on("line", (line) => {
+    this.#lineReader.on("line", (line) => {
       if (!line.trim()) {
         return;
       }
 
-      this.#writeToStdout(encodeNativeMessage(JSON.parse(line)));
+      const response = JSON.parse(line) as BridgeResponse;
+      
+      // Handle HTTP requests waiting for responses
+      const handler = this.#pendingResponses.get(response.id);
+      if (handler) {
+        this.#pendingResponses.delete(response.id);
+        handler(response);
+      } else {
+        // Handle native messaging responses
+        this.#writeToStdout(encodeNativeMessage(response));
+      }
+    });
+  }
+
+  async sendToBridge(message: BridgeMessage): Promise<unknown> {
+    return new Promise((resolve, reject) => {
+      const handler = (response: BridgeResponse) => {
+        if (response.error) {
+          reject(new Error(response.error.message));
+        } else {
+          resolve(response.result);
+        }
+      };
+
+      this.#pendingResponses.set(message.id, handler);
+      if (!this.#writeToBridge(`${JSON.stringify(message)}\n`)) {
+        this.#pendingResponses.delete(message.id);
+        reject(new Error("Failed to write to bridge"));
+      }
+
+      // Timeout after 30 seconds
+      setTimeout(() => {
+        if (this.#pendingResponses.delete(message.id)) {
+          reject(new Error("Request timeout"));
+        }
+      }, 30000);
     });
   }
 

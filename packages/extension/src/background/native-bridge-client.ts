@@ -17,14 +17,15 @@ type PendingBridgeRequest = {
 };
 
 import { toFriendlyNativeHostErrorMessage } from "./native-host-errors.js";
-
-const NATIVE_HOST_NAME = "com.codex.sidepanel.bridge";
+import { getBridgeConfig } from "./bridge-config.js";
 
 export class NativeBridgeClient {
-  #port: chrome.runtime.Port | null = null;
-  #lastDisconnectError: string | null = null;
+  #baseUrl: string | null = null;
+  #authToken: string | null = null;
   #pending = new Map<string, PendingBridgeRequest>();
   #listeners = new Set<(event: unknown) => void>();
+  #initialized = false;
+  #initPromise: Promise<void> | null = null;
 
   subscribe(listener: (event: unknown) => void): () => void {
     this.#listeners.add(listener);
@@ -36,14 +37,16 @@ export class NativeBridgeClient {
     params: Record<string, unknown> = {},
     options: BridgeRequestOptions = {},
   ): Promise<TResult> {
-    const port = this.#ensurePort();
+    await this.#ensureInitialized();
     const id = crypto.randomUUID();
+    
     const response = new Promise<TResult>((resolve, reject) => {
       const pending: PendingBridgeRequest = {
         resolve: (value: unknown) => resolve(value as TResult),
         reject: (error: Error) => reject(error),
       };
       this.#pending.set(id, pending);
+      
       if (options.timeoutMs && options.timeoutMs > 0) {
         pending.timer = setTimeout(() => {
           if (!this.#pending.delete(id)) {
@@ -54,69 +57,80 @@ export class NativeBridgeClient {
       }
     });
 
-    port.postMessage({ id, method, params });
-    return response;
-  }
-
-  #ensurePort(): chrome.runtime.Port {
-    if (this.#port) {
-      return this.#port;
-    }
-
     try {
-      this.#port = chrome.runtime.connectNative(NATIVE_HOST_NAME);
-    } catch (error) {
-      throw new Error(
-        toFriendlyNativeHostErrorMessage(
-          error instanceof Error ? error.message : String(error),
-        ),
-      );
-    }
-    this.#lastDisconnectError = null;
-    this.#port.onMessage.addListener((message: BridgeMessage) => this.#handleMessage(message));
-    this.#port.onDisconnect.addListener(() => {
-      this.#lastDisconnectError = toFriendlyNativeHostErrorMessage(
-        chrome.runtime.lastError?.message ?? "Native host disconnected",
-      );
-      const error = new Error(this.#lastDisconnectError);
-      for (const pending of this.#pending.values()) {
+      const result = await fetch(`${this.#baseUrl}/rpc`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${this.#authToken}`,
+        },
+        body: JSON.stringify({ id, method, params }),
+      });
+
+      if (!result.ok) {
+        throw new Error(`HTTP ${result.status}: ${result.statusText}`);
+      }
+
+      const data = (await result.json()) as { id: string; result?: unknown; error?: { message: string } };
+      const pending = this.#pending.get(data.id);
+      if (pending) {
+        this.#pending.delete(data.id);
         if (pending.timer) {
           clearTimeout(pending.timer);
         }
-        pending.reject(error);
+        if (data.error) {
+          pending.reject(new Error(data.error.message));
+        } else {
+          pending.resolve(data.result);
+        }
       }
-      this.#pending.clear();
-      this.#port = null;
-    });
-    return this.#port;
+    } catch (error) {
+      const pending = this.#pending.get(id);
+      if (pending) {
+        this.#pending.delete(id);
+        if (pending.timer) {
+          clearTimeout(pending.timer);
+        }
+        pending.reject(
+          error instanceof Error
+            ? error
+            : new Error(String(error)),
+        );
+      }
+    }
+
+    return response;
   }
 
-  #handleMessage(message: BridgeMessage): void {
-    if (message.event) {
-      for (const listener of this.#listeners) {
-        listener(message.event);
+  async #ensureInitialized(): Promise<void> {
+    if (this.#initialized) {
+      return;
+    }
+
+    if (this.#initPromise) {
+      return this.#initPromise;
+    }
+
+    this.#initPromise = this.#initialize();
+    await this.#initPromise;
+  }
+
+  async #initialize(): Promise<void> {
+    try {
+      const config = await getBridgeConfig();
+      
+      if (config && config.port && config.authToken) {
+        this.#baseUrl = `http://127.0.0.1:${config.port}`;
+        this.#authToken = config.authToken;
+        this.#initialized = true;
+        return;
       }
-      return;
+    } catch {
+      // Config not available, will throw error below
     }
 
-    if (!message.id) {
-      return;
-    }
-
-    const pending = this.#pending.get(message.id);
-    if (!pending) {
-      return;
-    }
-    this.#pending.delete(message.id);
-    if (pending.timer) {
-      clearTimeout(pending.timer);
-    }
-
-    if (message.error) {
-      pending.reject(new Error(message.error.message));
-      return;
-    }
-
-    pending.resolve(message.result);
+    throw new Error(
+      toFriendlyNativeHostErrorMessage("Bridge is not running. Please check the connection."),
+    );
   }
 }

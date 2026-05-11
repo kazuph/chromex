@@ -20,7 +20,6 @@
     "scripting",
     "storage",
     "contextMenus",
-    "nativeMessaging",
     "desktopCapture"
   ],
   "host_permissions": [

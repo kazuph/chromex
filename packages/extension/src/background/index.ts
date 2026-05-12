@@ -193,6 +193,11 @@ import {
   resolvePaperPdfSourceUrl,
 } from "./pdf-page-context.js";
 import { materializeRemoteImageAttachments } from "./remote-image-attachments.js";
+import {
+  COPILOT_FIXED_MODEL_ID,
+  getPreferredModelForRuntimeBackend,
+  shouldAutoSwitchToCopilotBackend,
+} from "./runtime-backend-fallback.js";
 
 const bridge = new NativeBridgeClient();
 const UI_BRIDGE_TIMEOUT_MS = 4000;
@@ -1526,44 +1531,61 @@ async function handlePromptSend(payload: PromptRequestPayload) {
     return cancellationAfterCompact;
   }
 
-  emitPromptStatus(payload, "waiting-for-codex");
   const cwd = normalizeConfiguredPath(settings.workspaceRoot);
-  let threadId = conversationRuntime.get(conversationId).threadId;
-  if (!threadId) {
-    const opened = await bridge.request<{ threadId: string }>("session.open", {
+  const sendPromptTurn = async (modelOverride?: string) => {
+    emitPromptStatus(payload, "waiting-for-codex");
+    let threadId = conversationRuntime.get(conversationId).threadId;
+    if (!threadId) {
+      const opened = await bridge.request<{ threadId: string }>("session.open", {
+        ...(cwd ? { cwd } : {}),
+        ...((modelOverride || prepared.selectedModel) ? { model: modelOverride || prepared.selectedModel } : {}),
+      });
+      threadId = opened.threadId;
+      conversationRuntime.setThreadId(conversationId, threadId);
+      syncCurrentRuntimeState(conversationId);
+    }
+    const structuredInputs = mergeStructuredInputsWithEnabledCodexSkills(
+      prepared.structuredInputs,
+      state.appServerSkills,
+      settings.enabledCodexSkillIds,
+      createCodexSkillRuntimeAvailability(settings),
+      state.connectedApps,
+    );
+    return requestPromptSendWithAssistantCapture({
+      clientRequestId: payload.clientRequestId,
+      profile: prepared.profile,
+      message: payload.message,
+      conversationMessages: await getConversationMessageHistoryForBridge(conversationId),
+      conversationContext: payload.conversationContext ?? payload.contextHint ?? "",
+      contexts: prepared.contexts,
+      fileAttachments: prepared.fileAttachments,
+      routePlan: prepared.routePlan,
+      structuredInputs,
+      threadId,
+      ...(payload.planMode ? { planMode: true } : {}),
       ...(cwd ? { cwd } : {}),
-      ...(prepared.selectedModel ? { model: prepared.selectedModel } : {}),
+      ...((modelOverride || prepared.selectedModel) ? { model: modelOverride || prepared.selectedModel } : {}),
+      ...(payload.reasoningEffort ? { reasoningEffort: payload.reasoningEffort } : {}),
+      ...(payload.serviceTier ? { serviceTier: payload.serviceTier } : {}),
+      ...(payload.useGoal ? { useGoal: true } : {}),
+      ...(payload.goalObjective?.trim() ? { goalObjective: payload.goalObjective.trim() } : {}),
     });
-    threadId = opened.threadId;
-    conversationRuntime.setThreadId(conversationId, threadId);
-    syncCurrentRuntimeState(conversationId);
+  };
+  let promptTurn: Awaited<ReturnType<typeof requestPromptSendWithAssistantCapture>>;
+  try {
+    promptTurn = await sendPromptTurn();
+  } catch (error) {
+    const fallbackRuntimeConfig = await maybeAutoSwitchPromptRuntimeToCopilot({
+      settings,
+      conversationId,
+      ...(payload.clientRequestId ? { clientRequestId: payload.clientRequestId } : {}),
+      error,
+    });
+    if (!fallbackRuntimeConfig) {
+      throw error;
+    }
+    promptTurn = await sendPromptTurn(getPreferredModelForRuntimeBackend(fallbackRuntimeConfig, prepared.selectedModel));
   }
-  const structuredInputs = mergeStructuredInputsWithEnabledCodexSkills(
-    prepared.structuredInputs,
-    state.appServerSkills,
-    settings.enabledCodexSkillIds,
-    createCodexSkillRuntimeAvailability(settings),
-    state.connectedApps,
-  );
-  const promptTurn = await requestPromptSendWithAssistantCapture({
-    clientRequestId: payload.clientRequestId,
-    profile: prepared.profile,
-    message: payload.message,
-    conversationMessages: await getConversationMessageHistoryForBridge(conversationId),
-    conversationContext: payload.conversationContext ?? payload.contextHint ?? "",
-    contexts: prepared.contexts,
-    fileAttachments: prepared.fileAttachments,
-    routePlan: prepared.routePlan,
-    structuredInputs,
-    threadId,
-    ...(payload.planMode ? { planMode: true } : {}),
-    ...(cwd ? { cwd } : {}),
-    ...(prepared.selectedModel ? { model: prepared.selectedModel } : {}),
-    ...(payload.reasoningEffort ? { reasoningEffort: payload.reasoningEffort } : {}),
-    ...(payload.serviceTier ? { serviceTier: payload.serviceTier } : {}),
-    ...(payload.useGoal ? { useGoal: true } : {}),
-    ...(payload.goalObjective?.trim() ? { goalObjective: payload.goalObjective.trim() } : {}),
-  });
   const result = promptTurn.result;
   const cancellationAfterPrompt = await getPromptCancellationResponse(payload);
   if (cancellationAfterPrompt) {
@@ -1742,6 +1764,37 @@ async function getConversationMessageHistoryForBridge(
       role: message.role,
       text: message.text,
     }));
+}
+
+async function maybeAutoSwitchPromptRuntimeToCopilot(input: {
+  settings: ExtensionSettings;
+  conversationId: string;
+  clientRequestId?: string;
+  error: unknown;
+}): Promise<RuntimeConfigSnapshot | null> {
+  const runtimeConfig = await readCurrentRuntimeConfig(input.settings);
+  if (!shouldAutoSwitchToCopilotBackend({ runtimeConfig, error: input.error })) {
+    return null;
+  }
+  const workspaceRoot = normalizeConfiguredPath(input.settings.workspaceRoot);
+  await bridge.request("runtime.config.update", {
+    workspaceRoot,
+    codexBinPath: "copilot",
+  });
+  state.selectedModel = COPILOT_FIXED_MODEL_ID;
+  await setSelectedModel(COPILOT_FIXED_MODEL_ID);
+  conversationRuntime.resetConversation(input.conversationId);
+  syncCurrentRuntimeState(input.conversationId);
+  await triggerCatalogRefresh(workspaceRoot || undefined, { force: true });
+  const nextRuntimeConfig = await readCurrentRuntimeConfig(input.settings);
+  void recordDiagnostic("extension.runtime.auto_fallback.copilot", {
+    clientRequestId: input.clientRequestId ?? null,
+    conversationId: input.conversationId,
+    error: toErrorMessage(input.error),
+    previousBackendKind: runtimeConfig.backendKind ?? null,
+    nextBackendKind: nextRuntimeConfig.backendKind ?? null,
+  });
+  return nextRuntimeConfig.backendKind === "copilot" ? nextRuntimeConfig : null;
 }
 
 async function handlePromptCancel(clientRequestId?: unknown, threadId?: unknown, turnId?: unknown) {
@@ -4832,6 +4885,15 @@ async function syncBridgeRuntimeConfig(settings: ExtensionSettings): Promise<voi
   await bridge.request("runtime.config.update", {
     workspaceRoot: normalizeConfiguredPath(settings.workspaceRoot),
   });
+}
+
+async function readCurrentRuntimeConfig(settings: ExtensionSettings): Promise<RuntimeConfigSnapshot> {
+  return softTimeout(
+    bridge.request<RuntimeConfigSnapshot>("runtime.config.read"),
+    UI_BRIDGE_TIMEOUT_MS,
+    createFallbackRuntimeConfig(settings),
+    "runtime.config.read(current)",
+  );
 }
 
 async function syncRuntimeConfigAndNormalizeSettings(): Promise<{

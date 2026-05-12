@@ -5,7 +5,7 @@ import { basename, extname, join } from "node:path";
 
 import type { CodexModelOption, CodexThreadMessage } from "@codex-sidepanel/shared";
 
-import { CopilotAcpRunner, normalizeCopilotModel, type CopilotSessionUpdate } from "./copilot-acp.js";
+import { COPILOT_FIXED_MODEL_ID, CopilotAcpRunner, normalizeCopilotModel, type CopilotSessionUpdate } from "./copilot-acp.js";
 import type { BridgeDiagnostics } from "./diagnostics.js";
 import type { BridgeHarnessRuntime } from "./harness.js";
 import type {
@@ -60,9 +60,9 @@ type PlainConversationMessage = {
 };
 
 const DEFAULT_COPILOT_MODEL: CodexModelOption = {
-  id: "copilot-default",
-  label: "Copilot default",
-  description: "Use the default model configured by GitHub Copilot CLI.",
+  id: COPILOT_FIXED_MODEL_ID,
+  label: "GPT-5.4",
+  description: "Pinned default model for the Copilot backend.",
   isDefault: true,
   supportsImages: true,
   reasoningEfforts: ["low", "medium", "high", "xhigh"],

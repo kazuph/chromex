@@ -4,6 +4,8 @@ import { relative, resolve } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import readline from "node:readline";
 
+export const COPILOT_FIXED_MODEL_ID = "gpt-5.4";
+
 type JsonRpcMessage = {
   jsonrpc?: string;
   id?: number | string;
@@ -357,9 +359,6 @@ function jsonRpcError(id: number | string, code: number, message: string): JsonR
 }
 
 export function normalizeCopilotModel(model: string | null | undefined): string | undefined {
-  const normalized = String(model ?? "").trim();
-  if (!normalized || normalized === "copilot-default") {
-    return undefined;
-  }
-  return normalized;
+  void model;
+  return COPILOT_FIXED_MODEL_ID;
 }

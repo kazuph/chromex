@@ -22,6 +22,21 @@ export function getPreferredModelForRuntimeBackend(
   return runtimeConfig?.backendKind === "copilot" ? COPILOT_FIXED_MODEL_ID : fallbackModel;
 }
 
+export function forceCopilotRuntimeConfig(
+  runtimeConfig: RuntimeConfigSnapshot | null | undefined,
+  workspaceRoot = "",
+): RuntimeConfigSnapshot {
+  const configuredCommand = runtimeConfig?.codexBinPath?.trim() || "copilot";
+  return {
+    workspaceRoot: runtimeConfig?.workspaceRoot?.trim() || workspaceRoot,
+    codexBinPath: configuredCommand,
+    resolvedCodexBinPath: runtimeConfig?.resolvedCodexBinPath?.trim() || configuredCommand,
+    codexBinSource: runtimeConfig?.codexBinSource ?? "configured",
+    configuredCodexBinPathInvalid: runtimeConfig?.configuredCodexBinPathInvalid ?? false,
+    backendKind: "copilot",
+  };
+}
+
 function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error ?? "");
 }

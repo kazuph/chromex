@@ -4,6 +4,7 @@ import { describe, expect, test } from "vitest";
 
 import {
   COPILOT_FIXED_MODEL_ID,
+  forceCopilotRuntimeConfig,
   getPreferredModelForRuntimeBackend,
   shouldAutoSwitchToCopilotBackend,
 } from "../src/background/runtime-backend-fallback.js";
@@ -62,12 +63,32 @@ describe("runtime backend fallback", () => {
     ).toBe(COPILOT_FIXED_MODEL_ID);
   });
 
+  test("forces a usable Copilot runtime config even when backend detection is missing", () => {
+    expect(
+      forceCopilotRuntimeConfig({
+        workspaceRoot: "",
+        codexBinPath: "",
+        resolvedCodexBinPath: "",
+        codexBinSource: "missing",
+        configuredCodexBinPathInvalid: false,
+      }, "/tmp/workspace"),
+    ).toMatchObject({
+      workspaceRoot: "/tmp/workspace",
+      codexBinPath: "copilot",
+      resolvedCodexBinPath: "copilot",
+      backendKind: "copilot",
+    });
+  });
+
   test("captures turn.failed events from prompt.send before deciding fallback", () => {
     const requestPromptSendSource = getFunctionSource(backgroundSource, "requestPromptSendWithAssistantCapture");
     const collectFailedTurnErrorSource = getFunctionSource(backgroundSource, "collectFailedTurnError");
+    const autoSwitchSource = getFunctionSource(backgroundSource, "maybeAutoSwitchPromptRuntimeToCopilot");
 
     expect(requestPromptSendSource).toContain("isFailedTurnEvent");
     expect(requestPromptSendSource).toContain("collectFailedTurnError");
     expect(collectFailedTurnErrorSource).toContain('event.clientRequestId === clientRequestId');
+    expect(autoSwitchSource).toContain("forceCopilotRuntimeConfig");
+    expect(autoSwitchSource).not.toContain('return nextRuntimeConfig.backendKind === "copilot" ? nextRuntimeConfig : null;');
   });
 });

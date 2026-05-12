@@ -195,6 +195,7 @@ import {
 import { materializeRemoteImageAttachments } from "./remote-image-attachments.js";
 import {
   COPILOT_FIXED_MODEL_ID,
+  forceCopilotRuntimeConfig,
   getPreferredModelForRuntimeBackend,
   shouldAutoSwitchToCopilotBackend,
 } from "./runtime-backend-fallback.js";
@@ -1784,24 +1785,28 @@ async function maybeAutoSwitchPromptRuntimeToCopilot(input: {
     return null;
   }
   const workspaceRoot = normalizeConfiguredPath(input.settings.workspaceRoot);
-  await bridge.request("runtime.config.update", {
+  const updatedRuntimeConfig = forceCopilotRuntimeConfig(
+    await bridge.request<RuntimeConfigSnapshot>("runtime.config.update", {
+      workspaceRoot,
+      codexBinPath: "copilot",
+    }),
     workspaceRoot,
-    codexBinPath: "copilot",
-  });
+  );
   state.selectedModel = COPILOT_FIXED_MODEL_ID;
   await setSelectedModel(COPILOT_FIXED_MODEL_ID);
   conversationRuntime.resetConversation(input.conversationId);
   syncCurrentRuntimeState(input.conversationId);
   await triggerCatalogRefresh(workspaceRoot || undefined, { force: true });
-  const nextRuntimeConfig = await readCurrentRuntimeConfig(input.settings);
+  const refreshedRuntimeConfig = forceCopilotRuntimeConfig(await readCurrentRuntimeConfig(input.settings), workspaceRoot);
   void recordDiagnostic("extension.runtime.auto_fallback.copilot", {
     clientRequestId: input.clientRequestId ?? null,
     conversationId: input.conversationId,
     error: toErrorMessage(input.error),
     previousBackendKind: runtimeConfig.backendKind ?? null,
-    nextBackendKind: nextRuntimeConfig.backendKind ?? null,
+    updatedBackendKind: updatedRuntimeConfig.backendKind ?? null,
+    nextBackendKind: refreshedRuntimeConfig.backendKind ?? null,
   });
-  return nextRuntimeConfig.backendKind === "copilot" ? nextRuntimeConfig : null;
+  return updatedRuntimeConfig;
 }
 
 async function handlePromptCancel(clientRequestId?: unknown, threadId?: unknown, turnId?: unknown) {

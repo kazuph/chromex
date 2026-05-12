@@ -60,6 +60,26 @@ export async function resolveCodexCommand(options: {
         configuredCommandInvalid: false,
       };
     }
+    if (!looksLikePath(configuredCommand, platformName)) {
+      for (const candidate of commonNamedCommandCandidates(configuredCommand, homeDirectory, platformName, env)) {
+        const resolvedCommonConfigured = await findExecutable(candidate, {
+          env,
+          homeDirectory,
+          pathValue,
+          platformName,
+          isExecutable,
+          isDirectory,
+        });
+        if (resolvedCommonConfigured) {
+          return {
+            configuredCommand,
+            resolvedCommand: resolvedCommonConfigured,
+            source: "configured",
+            configuredCommandInvalid: false,
+          };
+        }
+      }
+    }
   }
 
   if (envCommand) {
@@ -304,6 +324,43 @@ function commonCodexCandidates(
     posix.resolve(homeDirectory, "bin/codex-app-server"),
     posix.resolve(homeDirectory, "bin/codex"),
   ];
+}
+
+function commonNamedCommandCandidates(
+  commandName: string,
+  homeDirectory: string,
+  platformName: NodeJS.Platform,
+  env: NodeJS.ProcessEnv,
+): string[] {
+  if (platformName === "win32") {
+    const localAppData = readEnvValue(env, "LOCALAPPDATA") || win32.resolve(homeDirectory, "AppData", "Local");
+    const appData = readEnvValue(env, "APPDATA") || win32.resolve(homeDirectory, "AppData", "Roaming");
+    const userProfile = readEnvValue(env, "USERPROFILE") || homeDirectory;
+    const pnpmHome = readEnvValue(env, "PNPM_HOME") || win32.resolve(localAppData, "pnpm");
+    const voltaHome = readEnvValue(env, "VOLTA_HOME") || win32.resolve(userProfile, ".volta");
+    const bunInstall = readEnvValue(env, "BUN_INSTALL") || win32.resolve(userProfile, ".bun");
+    return dedupeCandidates([
+      win32.resolve(appData, "npm", commandName),
+      win32.resolve(pnpmHome, commandName),
+      win32.resolve(localAppData, "pnpm", commandName),
+      win32.resolve(voltaHome, "bin", commandName),
+      win32.resolve(userProfile, ".volta", "bin", commandName),
+      win32.resolve(bunInstall, "bin", commandName),
+      win32.resolve(userProfile, ".bun", "bin", commandName),
+      win32.resolve(userProfile, ".local", "bin", commandName),
+      win32.resolve(homeDirectory, "scoop", "shims", commandName),
+      win32.resolve(userProfile, "scoop", "shims", commandName),
+      win32.resolve(localAppData, "Microsoft", "WindowsApps", commandName),
+    ]);
+  }
+
+  return dedupeCandidates([
+    `/opt/homebrew/bin/${commandName}`,
+    `/usr/local/bin/${commandName}`,
+    `/usr/bin/${commandName}`,
+    posix.resolve(homeDirectory, `.local/bin/${commandName}`),
+    posix.resolve(homeDirectory, `bin/${commandName}`),
+  ]);
 }
 
 function dedupeCandidates(candidates: string[]): string[] {

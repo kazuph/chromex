@@ -90,6 +90,27 @@ describe("resolveCodexCommand", () => {
     expect(detectBackendKind(result.resolvedCommand)).toBe("copilot");
   });
 
+  test("respects a configured copilot command even when PATH only exposes codex", async () => {
+    const result = await resolveCodexCommand({
+      configuredCommand: "copilot",
+      pathValue: "/Users/example/.local/share/mise/bin:/usr/bin",
+      platformName: "darwin",
+      homeDirectory: "/Users/example",
+      isExecutable: createExecutableProbe([
+        "/opt/homebrew/bin/copilot",
+        "/Users/example/.local/share/mise/bin/codex",
+      ]),
+    });
+
+    expect(result).toEqual({
+      configuredCommand: "copilot",
+      resolvedCommand: "/opt/homebrew/bin/copilot",
+      source: "configured",
+      configuredCommandInvalid: false,
+    });
+    expect(detectBackendKind(result.resolvedCommand)).toBe("copilot");
+  });
+
   test("prefers the standalone app-server command from PATH when it is installed", async () => {
     const result = await resolveCodexCommand({
       configuredCommand: "",

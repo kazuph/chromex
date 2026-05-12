@@ -29,29 +29,17 @@ type RelayOptions = {
 
 export class NativeHostRelay {
   readonly #decoder = new NativeMessageStreamDecoder();
-  #bridge?: ChildProcessByStdio<Writable, Readable, null>;
+  #bridge: ChildProcessByStdio<Writable, Readable, null> | undefined;
   #shuttingDown = false;
+  #restartingBridge = false;
   #pendingResponses = new Map<string, (msg: BridgeResponse) => void>();
-  #lineReader?: readline.Interface;
+  #lineReader: readline.Interface | undefined;
   #eventListeners = new Set<(event: unknown) => void>();
   #nativeMessagingEnabled = true;
 
   start(options: RelayOptions = {}): void {
     this.#nativeMessagingEnabled = options.enableNativeMessaging ?? true;
-    const bridgeBaseEnv = mergeShellProviderEnv(process.env);
-    this.#bridge = spawn(process.execPath, [this.#resolveBridgeEntry()], {
-      stdio: ["pipe", "pipe", "inherit"],
-      env: createBridgeProcessEnv(bridgeBaseEnv),
-    });
-    this.#bridge.stdin.on("error", (error) => {
-      if (this.#handleOutputError(error)) {
-        return;
-      }
-      throw error;
-    });
-    this.#bridge.on("exit", () => {
-      this.#shutdown();
-    });
+    this.#spawnBridge();
     if (this.#nativeMessagingEnabled) {
       process.stdout.on("error", (error) => {
         if (this.#handleOutputError(error)) {
@@ -78,38 +66,6 @@ export class NativeHostRelay {
       this.#shutdown();
     });
 
-    this.#lineReader = readline.createInterface({
-      input: this.#bridge.stdout,
-    });
-    this.#lineReader.on("line", (line) => {
-      if (!line.trim()) {
-        return;
-      }
-
-      const message = JSON.parse(line) as BridgeResponse | BridgeEventMessage;
-      if ("event" in message) {
-        for (const listener of this.#eventListeners) {
-          listener(message.event);
-        }
-        if (this.#nativeMessagingEnabled) {
-          this.#writeToStdout(encodeNativeMessage(message));
-        }
-        return;
-      }
-
-      if (message.id) {
-        const handler = this.#pendingResponses.get(message.id);
-        if (handler) {
-          this.#pendingResponses.delete(message.id);
-          handler(message);
-          return;
-        }
-      }
-
-      if (this.#nativeMessagingEnabled) {
-        this.#writeToStdout(encodeNativeMessage(message));
-      }
-    });
   }
 
   subscribe(listener: (event: unknown) => void): () => void {
@@ -143,6 +99,35 @@ export class NativeHostRelay {
         reject(new Error("Failed to write to bridge"));
       }
     });
+  }
+
+  async restartBridge(): Promise<void> {
+    if (!this.#bridge) {
+      this.#spawnBridge();
+      return;
+    }
+
+    this.#restartingBridge = true;
+    this.#failPendingResponses("Bridge restarted.");
+    const exitingBridge = this.#bridge;
+    this.#bridge = undefined;
+    this.#lineReader?.close();
+    this.#lineReader = undefined;
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        resolve();
+      };
+      exitingBridge.once("exit", finish);
+      exitingBridge.kill();
+      setTimeout(finish, 1_000);
+    });
+    this.#restartingBridge = false;
+    this.#spawnBridge();
   }
 
   #writeToBridge(payload: string): boolean {
@@ -184,9 +169,71 @@ export class NativeHostRelay {
     }
 
     this.#shuttingDown = true;
+    this.#failPendingResponses("Bridge stopped.");
     this.#lineReader?.close();
     this.#bridge?.kill();
     process.exit(0);
+  }
+
+  #spawnBridge(): void {
+    const bridgeBaseEnv = mergeShellProviderEnv(process.env);
+    this.#bridge = spawn(process.execPath, [this.#resolveBridgeEntry()], {
+      stdio: ["pipe", "pipe", "inherit"],
+      env: createBridgeProcessEnv(bridgeBaseEnv),
+    });
+    this.#bridge.stdin.on("error", (error) => {
+      if (this.#handleOutputError(error)) {
+        return;
+      }
+      throw error;
+    });
+    this.#bridge.on("exit", () => {
+      this.#lineReader?.close();
+      this.#lineReader = undefined;
+      if (this.#restartingBridge) {
+        return;
+      }
+      this.#shutdown();
+    });
+    this.#lineReader = readline.createInterface({
+      input: this.#bridge.stdout,
+    });
+    this.#lineReader.on("line", (line) => {
+      if (!line.trim()) {
+        return;
+      }
+
+      const message = JSON.parse(line) as BridgeResponse | BridgeEventMessage;
+      if ("event" in message) {
+        for (const listener of this.#eventListeners) {
+          listener(message.event);
+        }
+        if (this.#nativeMessagingEnabled) {
+          this.#writeToStdout(encodeNativeMessage(message));
+        }
+        return;
+      }
+
+      if (message.id) {
+        const handler = this.#pendingResponses.get(message.id);
+        if (handler) {
+          this.#pendingResponses.delete(message.id);
+          handler(message);
+          return;
+        }
+      }
+
+      if (this.#nativeMessagingEnabled) {
+        this.#writeToStdout(encodeNativeMessage(message));
+      }
+    });
+  }
+
+  #failPendingResponses(message: string): void {
+    for (const handler of this.#pendingResponses.values()) {
+      handler({ error: { message } });
+    }
+    this.#pendingResponses.clear();
   }
 
   #resolveBridgeEntry(): string {

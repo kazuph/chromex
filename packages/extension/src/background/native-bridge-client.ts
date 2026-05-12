@@ -29,6 +29,7 @@ export class NativeBridgeClient {
   #initPromise: Promise<void> | null = null;
   #eventStreamPromise: Promise<void> | null = null;
   #eventAbortController: AbortController | null = null;
+  #bridgeRestarted = false;
 
   subscribe(listener: (event: unknown) => void): () => void {
     this.#listeners.add(listener);
@@ -135,6 +136,7 @@ export class NativeBridgeClient {
     this.#rpcUrl = payload.rpcUrl;
     this.#eventsUrl = payload.eventsUrl;
     this.#initialized = true;
+    await this.#restartBridgeIfNeeded();
   }
 
   #ensureEventStream(): void {
@@ -222,7 +224,36 @@ export class NativeBridgeClient {
     this.#authToken = null;
     this.#rpcUrl = null;
     this.#eventsUrl = null;
+    this.#bridgeRestarted = false;
     this.#stopEventStream();
+  }
+
+  async #restartBridgeIfNeeded(): Promise<void> {
+    if (this.#bridgeRestarted || !this.#rpcUrl || !this.#authToken) {
+      return;
+    }
+    const restartUrl = this.#rpcUrl.replace(/\/rpc$/u, "/bridge/restart");
+    try {
+      const response = await fetch(restartUrl, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.#authToken}`,
+          "Content-Type": "application/json",
+        },
+      });
+      if (response.status === 404) {
+        this.#bridgeRestarted = true;
+        return;
+      }
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      this.#bridgeRestarted = true;
+    } catch (error) {
+      throw new Error(
+        toFriendlyNativeHostErrorMessage(error instanceof Error ? error.message : String(error)),
+      );
+    }
   }
 }
 

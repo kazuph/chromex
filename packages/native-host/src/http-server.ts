@@ -156,6 +156,12 @@ export class HttpBridgeServer {
       return;
     }
 
+    if (req.url === "/bridge/restart" && req.method === "POST") {
+      await this.#relay.restartBridge();
+      this.#writeJson(res, 200, { restarted: true });
+      return;
+    }
+
     this.#writeJson(res, 404, { error: "Not found" });
   }
 

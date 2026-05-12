@@ -17,6 +17,7 @@ function createTestServer() {
   const relay = {
     subscribe: () => () => undefined,
     sendToBridge: async (message: { method: string }) => ({ ok: true, method: message.method }),
+    restartBridge: async () => undefined,
   };
   const port = 19000 + Math.floor(Math.random() * 1000);
   const server = new HttpBridgeServer(relay as never, {
@@ -74,5 +75,36 @@ describe("http bridge server", () => {
 
     expect(response.status).toBe(200);
     expect(payload.result).toEqual({ ok: true, method: "account.status" });
+  });
+
+  test("restarts the bridge subprocess through an authenticated control endpoint", async () => {
+    let restarted = false;
+    const relay = {
+      subscribe: () => () => undefined,
+      sendToBridge: async (message: { method: string }) => ({ ok: true, method: message.method }),
+      restartBridge: async () => {
+        restarted = true;
+      },
+    };
+    const port = 20000 + Math.floor(Math.random() * 1000);
+    const server = new HttpBridgeServer(relay as never, {
+      port,
+      allowedOrigins: ["chrome-extension://menmlhahmendmkiicbjihgjhppkgaeom"],
+    });
+    servers.push(server);
+    const started = await server.start();
+
+    const response = await fetch(`http://127.0.0.1:${port}/bridge/restart`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${started.authToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+    const payload = (await response.json()) as { restarted: boolean };
+
+    expect(response.status).toBe(200);
+    expect(payload).toEqual({ restarted: true });
+    expect(restarted).toBe(true);
   });
 });

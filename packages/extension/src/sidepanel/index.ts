@@ -4534,11 +4534,12 @@ function getAuthOnboardingRuntimeStepLabel(
         : "Codex runtime ready";
   }
 
+  const command = state.runtimeConfig.backendKind === "copilot" ? "copilot login" : "codex login";
   return locale === "ko"
-    ? "필요하면 터미널에서 codex login을 실행하세요"
+    ? `필요하면 터미널에서 ${command}을 실행하세요`
     : locale === "ja"
-      ? "必要ならターミナルで codex login を実行してください"
-      : "If needed, run codex login in a terminal";
+      ? `必要ならターミナルで ${command} を実行してください`
+      : `If needed, run ${command} in a terminal`;
 }
 
 function isCodexRuntimeReady(
@@ -4559,15 +4560,20 @@ function isCodexRuntimeReady(
   return codexBinaryHealth.status === "connected" || codexBinaryHealth.status === "automatic";
 }
 
+function getActiveRuntimeLabel(runtimeConfig: UiInitPayload["runtimeConfig"]): string {
+  return runtimeConfig.backendKind === "copilot" ? "GitHub Copilot CLI" : "codex app-server";
+}
+
 function getCodexRuntimeSupportCopy(): string {
   const locale = getTranslatedUiLocale(state.uiLocale);
+  const runtimeLabel = getActiveRuntimeLabel(state.runtimeConfig);
   if (locale === "ko") {
-    return "Chromex는 로컬 codex app-server 세션을 그대로 사용합니다. 나중에 로그인하라는 메시지가 나오면 터미널에서 codex login을 실행한 뒤 Check connection을 누르세요.";
+    return `Chromex는 로컬 ${runtimeLabel} 세션을 그대로 사용합니다. 연결이 필요하면 터미널에서 해당 CLI로 로그인한 뒤 Check connection을 누르세요.`;
   }
   if (locale === "ja") {
-    return "Chromex はローカルの codex app-server セッションをそのまま使います。後でサインインが必要と言われたら、ターミナルで codex login を実行してから Check connection を押してください。";
+    return `Chromex はローカルの ${runtimeLabel} セッションをそのまま使います。後でサインインが必要と言われたら、ターミナルで該当 CLI のログインを済ませてから Check connection を押してください。`;
   }
-  return "Chromex uses your local codex app-server session directly. If a later request asks for sign-in, run codex login in a terminal and then press Check connection.";
+  return `Chromex uses your local ${runtimeLabel} session directly. If a later request asks for sign-in, complete login in a terminal for that CLI and then press Check connection.`;
 }
 
 function renderUsageNoticeOnboarding(strings: ReturnType<typeof getUiStrings>): string {

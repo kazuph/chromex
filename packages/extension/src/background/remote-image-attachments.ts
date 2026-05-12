@@ -52,6 +52,7 @@ function toRemoteImageAttachment(attachment: UserFileAttachment): RemoteImageAtt
   }
   return {
     ...attachment,
+    kind: "image",
     sourceUrl,
   };
 }

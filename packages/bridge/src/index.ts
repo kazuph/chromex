@@ -5,7 +5,9 @@ export {
   selectRoutePlanningModel,
 } from "./agentic-router.js";
 export { CodexBrowserActionPlane, createBrowserDomActionPlanPrompt, normalizeBrowserDomActionPlan } from "./browser-actions.js";
+export { detectBackendKind, isCopilotBackendCommand } from "./backend-kind.js";
 export { CodexAppServerClient } from "./codex-app-server.js";
+export { CopilotBridgePlane } from "./copilot-plane.js";
 export { AppServerCodexPlane, CodexImagePlane, CodexVoicePlane } from "./codex-plane.js";
 export { createHookProcessEnv } from "./environment.js";
 export { prepareUserFileAttachments } from "./file-attachments.js";

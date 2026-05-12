@@ -21,6 +21,7 @@ const CODEX_COMMAND_NAMES = [
   "codex-app-server-x86_64-unknown-linux-musl",
   "codex-app-server-aarch64-unknown-linux-musl",
   "codex",
+  "copilot",
 ] as const;
 
 export async function resolveCodexCommand(options: {

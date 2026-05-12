@@ -72,7 +72,7 @@ export class NativeBridgeClient {
           method,
           params,
         }),
-        signal: abortController?.signal,
+        ...(abortController ? { signal: abortController.signal } : {}),
       });
       if (!response.ok) {
         if (response.status === 401) {

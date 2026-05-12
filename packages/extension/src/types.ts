@@ -142,6 +142,7 @@ export interface RuntimeConfigSnapshot {
   resolvedCodexBinPath: string;
   codexBinSource: "configured" | "env" | "path" | "common" | "missing";
   configuredCodexBinPathInvalid: boolean;
+  backendKind?: "codex" | "copilot";
 }
 
 export interface PromptRequestPayload {

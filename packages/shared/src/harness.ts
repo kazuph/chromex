@@ -9,7 +9,8 @@ export type HarnessPermissionOperation =
   | "voice.session.start"
   | "page.navigate"
   | "page.dom.perform"
-  | "page.image.overlay";
+  | "page.image.overlay"
+  | "page.mermaid.overlay";
 
 export type WorkspaceInstructionKind = "memory" | "rule";
 export type WorkspaceInstructionScope = "user" | "project" | "local";

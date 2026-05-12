@@ -2,6 +2,10 @@ import readline from "node:readline";
 
 import { CodexBrowserActionPlane } from "./browser-actions.js";
 import { CodexAgenticRouterPlane } from "./agentic-router.js";
+import { detectBackendKind } from "./backend-kind.js";
+import { CopilotAgenticRouterPlane } from "./copilot-agentic-router.js";
+import { CopilotBrowserActionPlane } from "./copilot-browser-actions.js";
+import { CopilotBridgePlane } from "./copilot-plane.js";
 import { AppServerCodexPlane, CodexImagePlane, CodexVoicePlane } from "./codex-plane.js";
 import { CodexAppServerClient } from "./codex-app-server.js";
 import { BridgeDiagnosticLogStore } from "./diagnostics.js";
@@ -13,6 +17,7 @@ import { InMemoryBridgeSecrets } from "./secrets.js";
 import { RealtimeTranslationPlane } from "./realtime-translation.js";
 import { ExternalSkillArchiveStore } from "./skill-archives.js";
 import { PlaywrightRuntimeManager } from "./playwright-runtime.js";
+import { ActiveBackendRuntime, SwitchingBrowserActionPlane, SwitchingCodexPlane, SwitchingImagePlane, SwitchingRoutePlane, SwitchingVoicePlane } from "./switching-planes.js";
 import type { BridgeRequest } from "./types.js";
 
 const secrets = new InMemoryBridgeSecrets();
@@ -28,57 +33,104 @@ const imageAssets = new BridgeImageAssetStore({
   outputDir: async () => resolveGeneratedImageOutputDir(await harness.getWorkspaceRoot()),
   diagnostics,
 });
+const runtime = new ActiveBackendRuntime(async () => {
+  const inspected = await client.inspectRuntime();
+  return {
+    workspaceRoot: await harness.getWorkspaceRoot(),
+    codexBinPath: client.getConfiguredCommand(),
+    resolvedCodexBinPath: inspected.resolvedCommand,
+    codexBinSource: inspected.source,
+    configuredCodexBinPathInvalid: inspected.configuredCommandInvalid,
+    backendKind: detectBackendKind(inspected.resolvedCommand || client.getConfiguredCommand()),
+  };
+});
+const codexPlane = new AppServerCodexPlane({
+  client,
+  harness,
+  secrets,
+  emitEvent: emit,
+  imageAssets,
+  diagnostics,
+});
+const copilotPlane = new CopilotBridgePlane({
+  harness,
+  emitEvent: emit,
+  diagnostics,
+  resolveRuntime: async () => {
+    const inspected = await runtime.inspect();
+    return {
+      resolvedCommand: inspected.resolvedCodexBinPath,
+    };
+  },
+});
+const codexRoutePlane = new CodexAgenticRouterPlane({
+  client,
+  harness,
+});
+const copilotRoutePlane = new CopilotAgenticRouterPlane({
+  harness,
+  resolveRuntime: async () => {
+    const inspected = await runtime.inspect();
+    return {
+      resolvedCommand: inspected.resolvedCodexBinPath,
+    };
+  },
+});
+const switchingRoutePlane = new SwitchingRoutePlane({
+  runtime,
+  codex: codexRoutePlane,
+  copilot: copilotRoutePlane,
+});
+const codexBrowserPlane = new CodexBrowserActionPlane({
+  client,
+  harness,
+});
+const copilotBrowserPlane = new CopilotBrowserActionPlane({
+  harness,
+  resolveRuntime: async () => {
+    const inspected = await runtime.inspect();
+    return {
+      resolvedCommand: inspected.resolvedCodexBinPath,
+    };
+  },
+});
+const switchingBrowserPlane = new SwitchingBrowserActionPlane({
+  runtime,
+  codex: codexBrowserPlane,
+  copilot: copilotBrowserPlane,
+});
 const router = new BridgeRpcRouter({
-  codex: new AppServerCodexPlane({
-    client,
-    harness,
-    secrets,
-    emitEvent: emit,
-    imageAssets,
-    diagnostics,
+  codex: new SwitchingCodexPlane({
+    runtime,
+    codex: codexPlane,
+    copilot: copilotPlane,
   }),
-  voice: new CodexVoicePlane({
-    client,
-    harness,
-    emitEvent: emit,
-    diagnostics,
+  voice: new SwitchingVoicePlane({
+    runtime,
+    codex: new CodexVoicePlane({
+      client,
+      harness,
+      emitEvent: emit,
+      diagnostics,
+    }),
   }),
   translation: new RealtimeTranslationPlane({ secrets }),
-  image: new CodexImagePlane(harness, { imageAssets, diagnostics }),
+  image: new SwitchingImagePlane({
+    runtime,
+    codex: new CodexImagePlane(harness, { imageAssets, diagnostics }),
+  }),
   localFiles: new BridgeLocalFilePlane(),
-  route: new CodexAgenticRouterPlane({
-    client,
-    harness,
-  }),
-  browserAction: new CodexBrowserActionPlane({
-    client,
-    harness,
-  }),
+  route: switchingRoutePlane,
+  browserAction: switchingBrowserPlane,
   workspace: {
     readHarness: async () => harness.readSnapshot(),
-    readConfig: async () => {
-      const runtime = await client.inspectRuntime();
-      return {
-        workspaceRoot: await harness.getWorkspaceRoot(),
-        codexBinPath: client.getConfiguredCommand(),
-        resolvedCodexBinPath: runtime.resolvedCommand,
-        codexBinSource: runtime.source,
-        configuredCodexBinPathInvalid: runtime.configuredCommandInvalid,
-      };
-    },
+    readConfig: async () => runtime.inspect(),
     updateConfig: async (config) => {
       await harness.configure(
         typeof config.workspaceRoot === "string" ? { workspaceRoot: config.workspaceRoot } : {},
       );
       await client.configure(typeof config.codexBinPath === "string" ? { command: config.codexBinPath } : {});
-      const runtime = await client.inspectRuntime();
-      return {
-        workspaceRoot: await harness.getWorkspaceRoot(),
-        codexBinPath: client.getConfiguredCommand(),
-        resolvedCodexBinPath: runtime.resolvedCommand,
-        codexBinSource: runtime.source,
-        configuredCodexBinPathInvalid: runtime.configuredCommandInvalid,
-      };
+      return runtime.inspect();
     },
     readPlaywrightRuntime: async () => playwrightRuntime.readStatus(),
     installPlaywrightRuntime: async () => playwrightRuntime.installChromium(),

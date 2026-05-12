@@ -118,6 +118,7 @@ export interface BridgeRuntimeConfig {
   resolvedCodexBinPath: string;
   codexBinSource: "configured" | "env" | "path" | "common" | "missing";
   configuredCodexBinPathInvalid: boolean;
+  backendKind?: "codex" | "copilot";
 }
 
 export interface AccountStatus {
@@ -143,6 +144,10 @@ export interface PromptSendParams {
   clientRequestId?: string;
   profile: ProfileTemplate;
   message: string;
+  conversationMessages?: Array<{
+    role: "user" | "assistant";
+    text: string;
+  }>;
   conversationContext?: string;
   contexts: PageContextEnvelope[];
   fileAttachments?: UserFileAttachment[];

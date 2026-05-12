@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { describe, expect, test } from "vitest";
 
+import { detectBackendKind } from "../src/backend-kind.js";
 import { resolveCodexCommand } from "../src/codex-discovery.js";
 
 function createExecutableProbe(paths: string[]) {
@@ -68,6 +69,25 @@ describe("resolveCodexCommand", () => {
       source: "common",
       configuredCommandInvalid: false,
     });
+  });
+
+  test("falls back to Copilot on PATH when Codex is unavailable", async () => {
+    const result = await resolveCodexCommand({
+      configuredCommand: "",
+      envCommand: "",
+      pathValue: "/opt/homebrew/bin:/usr/bin",
+      platformName: "darwin",
+      homeDirectory: "/Users/example",
+      isExecutable: createExecutableProbe(["/opt/homebrew/bin/copilot"]),
+    });
+
+    expect(result).toEqual({
+      configuredCommand: "",
+      resolvedCommand: "/opt/homebrew/bin/copilot",
+      source: "path",
+      configuredCommandInvalid: false,
+    });
+    expect(detectBackendKind(result.resolvedCommand)).toBe("copilot");
   });
 
   test("prefers the standalone app-server command from PATH when it is installed", async () => {

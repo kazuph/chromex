@@ -1549,6 +1549,7 @@ async function handlePromptSend(payload: PromptRequestPayload) {
     clientRequestId: payload.clientRequestId,
     profile: prepared.profile,
     message: payload.message,
+    conversationMessages: await getConversationMessageHistoryForBridge(conversationId),
     conversationContext: payload.conversationContext ?? payload.contextHint ?? "",
     contexts: prepared.contexts,
     fileAttachments: prepared.fileAttachments,
@@ -1688,6 +1689,7 @@ async function handleTurnSteer(payload: PromptRequestPayload) {
       clientRequestId: payload.clientRequestId,
       profile: prepared.profile,
       message: payload.message,
+      conversationMessages: await getConversationMessageHistoryForBridge(payload.conversationId),
       conversationContext: payload.conversationContext ?? payload.contextHint ?? "",
       contexts: prepared.contexts,
       fileAttachments: prepared.fileAttachments,
@@ -1725,6 +1727,21 @@ async function handleTurnSteer(payload: PromptRequestPayload) {
     actionCards: prepared.actionCards,
     currentConversationId: conversationId,
   };
+}
+
+async function getConversationMessageHistoryForBridge(
+  conversationId?: string,
+): Promise<Array<{ role: "user" | "assistant"; text: string }>> {
+  if (!conversationId) {
+    return [];
+  }
+  const conversation = (await listConversations()).find((item) => item.id === conversationId);
+  return (conversation?.messages ?? [])
+    .filter((message) => (message.role === "user" || message.role === "assistant") && message.text.trim())
+    .map((message) => ({
+      role: message.role,
+      text: message.text,
+    }));
 }
 
 async function handlePromptCancel(clientRequestId?: unknown, threadId?: unknown, turnId?: unknown) {
@@ -3524,7 +3541,10 @@ async function createEditableImageInputFromPromptSource(
   const visibleCapture = capturePromptVisibleImage(tab, extraction.imageCandidate);
   const visibleInput = visibleCapture && extraction.imageCandidate
     ? await visibleCapture
-        .then((dataUrl) => (dataUrl ? cropVisibleTabDataUrlToImageCandidate(dataUrl, extraction.imageCandidate) : null))
+        .then((dataUrl) => {
+          const imageCandidate = extraction.imageCandidate;
+          return dataUrl && imageCandidate ? cropVisibleTabDataUrlToImageCandidate(dataUrl, imageCandidate) : null;
+        })
         .catch((error) => {
           void recordDiagnostic("extension.image_prompt.visible_capture.failed", {
             error: toErrorMessage(error),

@@ -79,7 +79,7 @@ export class NativeBridgeClient {
         if (response.status === 401) {
           this.#resetBootstrap();
         }
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        throw new Error(await getBridgeHttpErrorMessage(response));
       }
       const payload = (await response.json()) as { result?: TResult; error?: { message: string } };
       if (payload.error) {
@@ -259,4 +259,15 @@ export class NativeBridgeClient {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function getBridgeHttpErrorMessage(response: Response): Promise<string> {
+  try {
+    const payload = (await response.json()) as { error?: { message?: string } };
+    const message = payload.error?.message?.trim();
+    if (message) {
+      return message;
+    }
+  } catch {}
+  return `HTTP ${response.status}: ${response.statusText}`;
 }

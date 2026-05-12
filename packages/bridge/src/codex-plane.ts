@@ -1164,6 +1164,7 @@ export class AppServerCodexPlane implements BridgeCodexPlane {
   readonly #retryDelayImpl: RetryDelayImpl;
   #threadId: string | undefined = undefined;
   #activeTurnId: string | null = null;
+  #activeClientRequestId: string | null = null;
   #runtimeFeatureEnablementPromise: Promise<void> | null = null;
   #pendingUserInputRequests = new Map<
     string,
@@ -1671,6 +1672,7 @@ export class AppServerCodexPlane implements BridgeCodexPlane {
           turnId = turn.turn.id;
           this.#threadId = threadId;
           this.#activeTurnId = turnId;
+          this.#activeClientRequestId = params.clientRequestId ?? null;
 
           await completed;
           await this.#harness
@@ -1750,6 +1752,7 @@ export class AppServerCodexPlane implements BridgeCodexPlane {
             goalForNextTurn = null;
             this.#threadId = undefined;
             this.#activeTurnId = null;
+            this.#activeClientRequestId = null;
             await this.#record("plan.ephemeral_thread.recovering", {
               clientRequestId: params.clientRequestId ?? null,
               staleThreadId,
@@ -1768,6 +1771,7 @@ export class AppServerCodexPlane implements BridgeCodexPlane {
             goalForNextTurn = null;
             this.#threadId = undefined;
             this.#activeTurnId = null;
+            this.#activeClientRequestId = null;
           }
 
           const retryAttempt = failedAttempts + 1;
@@ -2266,6 +2270,7 @@ export class AppServerCodexPlane implements BridgeCodexPlane {
       const turnId = result.turnId ?? params.expectedTurnId;
       this.#threadId = threadId;
       this.#activeTurnId = turnId;
+      this.#activeClientRequestId = params.clientRequestId ?? null;
       return { threadId, turnId };
     } finally {
       await Promise.all(tempPaths.map(async (path) => rm(path, { force: true }).catch(() => undefined)));
@@ -2288,14 +2293,17 @@ export class AppServerCodexPlane implements BridgeCodexPlane {
       if (!threadId || !turnId) {
         return;
       }
+      const activeClientRequestId = turnId === this.#activeTurnId ? this.#activeClientRequestId : null;
       if (turnId === this.#activeTurnId) {
         this.#activeTurnId = null;
+        this.#activeClientRequestId = null;
       }
       this.#emitEvent?.({
         type: "turn.failed",
         threadId,
         turnId,
         message,
+        clientRequestId: activeClientRequestId,
       });
       return;
     }
@@ -2384,8 +2392,10 @@ export class AppServerCodexPlane implements BridgeCodexPlane {
         return;
       }
 
+      const activeClientRequestId = turnId === this.#activeTurnId ? this.#activeClientRequestId : null;
       if (turnId === this.#activeTurnId) {
         this.#activeTurnId = null;
+        this.#activeClientRequestId = null;
       }
       const errorMessage = getTurnErrorMessage(turn?.error);
       if (errorMessage) {
@@ -2394,6 +2404,7 @@ export class AppServerCodexPlane implements BridgeCodexPlane {
           threadId,
           turnId,
           message: errorMessage,
+          clientRequestId: activeClientRequestId,
         });
         return;
       }

@@ -113,4 +113,43 @@ describe("NativeBridgeClient", () => {
 
     unsubscribe();
   });
+
+  test("surfaces JSON bridge errors for non-ok rpc responses", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            authToken: "token-123",
+            rpcUrl: "http://127.0.0.1:8765/rpc",
+            eventsUrl: "http://127.0.0.1:8765/events",
+          }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ restarted: true }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('{"ready":true}\n'));
+          },
+        }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        statusText: "Internal Server Error",
+        json: () => Promise.resolve({ error: { message: "Authentication required" } }),
+      } as Response);
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new NativeBridgeClient();
+    const unsubscribe = client.subscribe(() => undefined);
+    await expect(client.request("prompt.send")).rejects.toThrow("Authentication required");
+    unsubscribe();
+  });
 });

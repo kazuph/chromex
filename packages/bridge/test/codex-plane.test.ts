@@ -1518,6 +1518,33 @@ describe("AppServerCodexPlane", () => {
     );
   });
 
+  test("preserves clientRequestId for turn/completed failure notifications", async () => {
+    const client = new FakeCodexClient({
+      emitImageBeforeTurnCompleted: false,
+      turnCompletedError: "You've hit your usage limit. Try again later.",
+    });
+    const plane = new AppServerCodexPlane({
+      client: client as never,
+      harness: harness as never,
+      secrets: new InMemoryBridgeSecrets(),
+    });
+    const events: BridgeEvent[] = [];
+
+    await expect(
+      plane.sendPrompt({ ...promptParams, clientRequestId: "prompt-turn-completed-error" }, (event) => events.push(event)),
+    ).rejects.toThrow("You've hit your usage limit. Try again later.");
+
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "turn.failed",
+        threadId: "thread-1",
+        turnId: "turn-1",
+        message: "You've hit your usage limit. Try again later.",
+        clientRequestId: "prompt-turn-completed-error",
+      }),
+    );
+  });
+
   test("does not retry a completed prompt when post-completion hooks fail", async () => {
     const client = new FakeCodexClient({
       emitImageBeforeTurnCompleted: false,

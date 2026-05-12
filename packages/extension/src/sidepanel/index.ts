@@ -919,7 +919,7 @@ const state = {
     allowVoiceNavigation: true,
     allowBrowserActions: true,
     browserActionPermissionMode: "ask",
-    imagePromptHoverButtonEnabled: true,
+    imagePromptHoverButtonEnabled: false,
     planModeEnabled: false,
     playwrightBrowserControlEnabled: false,
     preferredVoice: "",
@@ -1852,7 +1852,6 @@ function applyActiveTabUpdate(message: {
   state.actionCards = normalizeSidepanelCollections({ actionCards: message.actionCards ?? [] }).actionCards;
   sanitizeUnavailableCurrentPageState();
   render();
-  void installActiveTabImagePromptExtractor();
 }
 
 function doesSelectedPageTextContextMatchTab(
@@ -1969,25 +1968,6 @@ function getDomainFromUrl(url: string): string {
   } catch {
     return "";
   }
-}
-
-async function installActiveTabImagePromptExtractor(): Promise<void> {
-  if (!state.currentPageSupport.available) {
-    return;
-  }
-  const response = await sendRuntimeMessage<Record<string, unknown>>({ type: "page.image-prompt-hover.install" }).catch(
-    () => null,
-  );
-  const permissionPlan = response ? getPermissionRequestForRuntimeResponse(response) : null;
-  if (!permissionPlan) {
-    return;
-  }
-  state.pendingPermission = {
-    plan: permissionPlan,
-    errorMessage: "",
-  };
-  state.actionStatus = "";
-  render();
 }
 
 async function takePendingOnlineImagePromptExtraction(): Promise<void> {
@@ -2364,7 +2344,7 @@ async function initialize(options: { forceCatalog?: boolean } = {}): Promise<voi
     state.initError = "";
     state.accountStatus = payload.accountStatus;
     if (
-      state.accountStatus.authMode !== "chatgpt" ||
+      state.accountStatus?.authMode !== "chatgpt" ||
       (chatgptRealtimeEndpointFailureAccountKey &&
         chatgptRealtimeEndpointFailureAccountKey !== getCurrentChatgptRealtimeAccountKey())
     ) {
@@ -2418,7 +2398,6 @@ async function initialize(options: { forceCatalog?: boolean } = {}): Promise<voi
     syncSelectedReasoningEffort();
     sanitizeUnavailableCurrentPageState();
     renderSync();
-    void installActiveTabImagePromptExtractor();
     void takePendingOnlineImagePromptError();
     void takePendingOnlineImagePromptExtraction();
     void takePendingContextMenuImageAttachment();
@@ -2459,7 +2438,7 @@ function normalizeSettingsForState(settings: ExtensionSettings): ExtensionSettin
     ...settings,
     allowBrowserActions: true,
     browserActionPermissionMode: normalizeBrowserActionPermissionMode(settings.browserActionPermissionMode),
-    imagePromptHoverButtonEnabled: settings.imagePromptHoverButtonEnabled !== false,
+    imagePromptHoverButtonEnabled: settings.imagePromptHoverButtonEnabled === true,
     planModeEnabled: settings.planModeEnabled === true,
     playwrightBrowserControlEnabled: settings.playwrightBrowserControlEnabled === true,
     uiLanguage: normalizeUiLanguageSetting(settings.uiLanguage),
@@ -3228,8 +3207,12 @@ function renderNow(): void {
     nativeHostStatus: nativeHostHealth.status,
     runtimeConfig: state.runtimeConfig,
     modelCatalogState: state.modelCatalogState,
+    modelCatalogErrorMessage: state.modelCatalogErrorMessage,
+    accountStatus: state.accountStatus,
   });
-  const showAuthOnboarding = shouldShowAuthOnboarding(state.accountStatus);
+  const showAuthOnboarding =
+    shouldShowAuthOnboarding(state.accountStatus) &&
+    !isCodexRuntimeReady(nativeHostHealth, codexBinaryHealth, state.runtimeConfig, state.accountStatus);
   const showUsageNoticeOnboarding = shouldShowUsageNoticeOnboarding({
     accountStatus: state.accountStatus,
     usageNoticeAccepted: state.settings.usageNoticeAccepted,
@@ -4303,8 +4286,8 @@ function renderAuthOnboarding(
     nativeHostStatus: nativeHostHealth.status,
     codexBinaryStatus: codexBinaryHealth.status,
   });
-  const disabledAttribute = readiness.canStartAuth ? "" : " disabled aria-disabled=\"true\"";
   const installCopy = getNativeHostInstallCopy(strings);
+  const supportCopy = getCodexRuntimeSupportCopy();
 
   return `
     <section class="auth-onboarding" aria-labelledby="auth-onboarding-title">
@@ -4336,14 +4319,6 @@ function renderAuthOnboarding(
           <code>${escapeHtml(installCopy.command)}</code>
           <p>${escapeHtml(installCopy.footer)}</p>
         </div>
-        <div class="auth-onboarding-actions">
-          <button id="onboarding-chatgpt-login" class="auth-onboarding-primary" type="button"${disabledAttribute}>
-            ${escapeHtml(strings.onboarding.chatgptCta)}
-          </button>
-          <button id="onboarding-apikey-login" class="auth-onboarding-link" type="button"${disabledAttribute}>
-            ${escapeHtml(strings.onboarding.apiCta)}
-          </button>
-        </div>
         <div class="auth-onboarding-runtime-actions">
           <button id="onboarding-reconnect" class="auth-onboarding-secondary" type="button">
             ${renderUiIcon("refresh")}
@@ -4354,6 +4329,7 @@ function renderAuthOnboarding(
             <span>${escapeHtml(strings.onboarding.settingsCta)}</span>
           </button>
         </div>
+        <p class="auth-onboarding-note">${escapeHtml(supportCopy)}</p>
         <p class="auth-onboarding-note">${escapeHtml(strings.onboarding.bridgeNote)}</p>
         <p class="auth-onboarding-privacy">${escapeHtml(strings.onboarding.privacyNote)}</p>
       </div>
@@ -4386,8 +4362,9 @@ function getNativeHostInstallCopy(strings: ReturnType<typeof getUiStrings>): Nat
 function getChromeWebStoreNativeHostInstallCopy(): NativeHostInstallCopy {
   const extensionId = getCurrentExtensionId();
   const isKorean = getTranslatedUiLocale(state.uiLocale) === "ko";
+  const isJapanese = getTranslatedUiLocale(state.uiLocale) === "ja";
   const command = formatNativeHostInstallCommand(
-    "node scripts/install-native-host.mjs --browser=chrome",
+    "node scripts/install-http-bridge.mjs",
     extensionId,
   );
 
@@ -4395,10 +4372,22 @@ function getChromeWebStoreNativeHostInstallCopy(): NativeHostInstallCopy {
     return {
       title: "Codex CLI와 로컬 브리지 연결",
       body:
-        "먼저 공식 Codex CLI를 설치하고 codex --version이 동작하는지 확인하세요. 그 다음 GitHub Release에서 Chromex Local Bridge ZIP을 내려받아 압축을 풀고 아래 명령을 한 번만 실행하면 됩니다. 소스 빌드나 npm run build는 필요 없습니다.",
+        "먼저 공식 Codex CLI를 설치하고 codex --version이 동작하는지 확인하세요. 그 다음 GitHub Release에서 Chromex Local Bridge ZIP을 내려받아 압축을 풀고 아래 명령을 한 번만 실행하면 됩니다. macOS에서는 HTTP 로컬 브리지를 사용하므로 Chrome 재시작이 필요하지 않습니다.",
       command,
-      footer: "설치가 끝나면 모든 Chrome 창을 완전히 닫고 다시 여세요. Codex CLI 설치 명령: npm install -g @openai/codex",
+      footer: "설치가 끝나면 사이드 패널을 다시 열거나 Check connection을 누르세요. Codex CLI 설치 명령: npm install -g @openai/codex",
       guideLabel: "쉬운 설치 가이드 열기",
+      guideUrl: "https://genexis-ai.github.io/chromex/install/",
+    };
+  }
+
+  if (isJapanese) {
+    return {
+      title: "Codex CLI とローカルブリッジを接続",
+      body:
+        "先に公式 Codex CLI をインストールし、codex --version が動くことを確認してください。次に GitHub Releases から Chromex Local Bridge ZIP をダウンロードして展開し、下のコマンドを 1 回だけ実行します。macOS では HTTP ローカルブリッジを使うため、Chrome の再起動は不要です。",
+      command,
+      footer: "インストール後はサイドパネルを開き直すか、Check connection を押してください。Codex CLI のインストール: npm install -g @openai/codex",
+      guideLabel: "セットアップガイドを開く",
       guideUrl: "https://genexis-ai.github.io/chromex/install/",
     };
   }
@@ -4406,9 +4395,9 @@ function getChromeWebStoreNativeHostInstallCopy(): NativeHostInstallCopy {
   return {
     title: "Connect Codex CLI and the local bridge",
     body:
-      "Install the official Codex CLI first and confirm codex --version works. Then download the Chromex Local Bridge ZIP from GitHub Releases, unzip it, and run the command below once. You do not need to build Chromex from source or run npm run build.",
+      "Install the official Codex CLI first and confirm codex --version works. Then download the Chromex Local Bridge ZIP from GitHub Releases, unzip it, and run the command below once. On macOS this uses the HTTP local bridge, so Chrome does not need a restart.",
     command,
-    footer: "After the installer finishes, quit every Chrome window and reopen Chrome. Codex CLI install command: npm install -g @openai/codex",
+    footer: "After the installer finishes, reopen the side panel or press Check connection. Codex CLI install command: npm install -g @openai/codex",
     guideLabel: "Open step-by-step setup guide",
     guideUrl: "https://genexis-ai.github.io/chromex/install/",
   };
@@ -4416,7 +4405,7 @@ function getChromeWebStoreNativeHostInstallCopy(): NativeHostInstallCopy {
 
 function getNativeHostInstallCommand(strings: ReturnType<typeof getUiStrings>): string {
   const extensionId = getCurrentExtensionId();
-  return formatNativeHostInstallCommand(strings.onboarding.sourceInstallCommand, extensionId);
+  return formatNativeHostInstallCommand("npm install && npm run build && node scripts/install-http-bridge.mjs", extensionId);
 }
 
 function formatNativeHostInstallCommand(sourceInstallCommand: string, extensionId: string): string {
@@ -4494,27 +4483,85 @@ function getAuthOnboardingRuntimeStepLabel(
   nativeHostHealth: NativeHostHealth,
   codexBinaryHealth: CodexBinaryHealth,
 ): string {
+  const locale = getTranslatedUiLocale(state.uiLocale);
   if (stepId === "native-host") {
     if (nativeHostHealth.status === "setup-needed") {
-      return strings.onboarding.nativeHostSetup;
+      return locale === "ko"
+        ? "로컬 브리지를 설치하세요"
+        : locale === "ja"
+          ? "ローカルブリッジをインストールしてください"
+          : "Install the local bridge";
     }
     if (nativeHostHealth.status === "reconnect") {
-      return strings.onboarding.nativeHostReconnect;
+      return locale === "ko"
+        ? "로컬 브리지를 다시 연결하세요"
+        : locale === "ja"
+          ? "ローカルブリッジを再接続してください"
+          : "Reconnect the local bridge";
     }
-    return strings.onboarding.nativeHostReady;
+    return locale === "ko"
+      ? "로컬 브리지가 연결되었습니다"
+      : locale === "ja"
+        ? "ローカルブリッジが接続されました"
+        : "Local bridge connected";
   }
 
   if (stepId === "codex-binary") {
     if (codexBinaryHealth.status === "not-detected") {
-      return strings.onboarding.codexBinaryMissing;
+      return locale === "ko"
+        ? "Codex CLI 또는 codex app-server를 찾을 수 없습니다"
+        : locale === "ja"
+          ? "Codex CLI または codex app-server が見つかりません"
+          : "Codex CLI or codex app-server was not detected";
     }
     if (codexBinaryHealth.status === "pending") {
-      return strings.onboarding.codexBinaryPending;
+      return locale === "ko"
+        ? "Codex 런타임을 확인하는 중입니다"
+        : locale === "ja"
+          ? "Codex ランタイムを確認しています"
+          : "Checking the Codex runtime";
     }
-    return strings.onboarding.codexBinaryReady;
+    return locale === "ko"
+      ? "Codex 런타임이 준비되었습니다"
+      : locale === "ja"
+        ? "Codex ランタイムの準備ができました"
+        : "Codex runtime ready";
   }
 
-  return strings.onboarding.accountStep;
+  return locale === "ko"
+    ? "필요하면 터미널에서 codex login을 실행하세요"
+    : locale === "ja"
+      ? "必要ならターミナルで codex login を実行してください"
+      : "If needed, run codex login in a terminal";
+}
+
+function isCodexRuntimeReady(
+  nativeHostHealth: NativeHostHealth,
+  codexBinaryHealth: CodexBinaryHealth,
+  runtimeConfig: UiInitPayload["runtimeConfig"],
+  accountStatus: UiInitPayload["accountStatus"] | null,
+): boolean {
+  if (nativeHostHealth.status !== "connected") {
+    return false;
+  }
+  if (accountStatus?.codexAuthenticated) {
+    return true;
+  }
+  if (runtimeConfig.resolvedCodexBinPath.trim()) {
+    return true;
+  }
+  return codexBinaryHealth.status === "connected" || codexBinaryHealth.status === "automatic";
+}
+
+function getCodexRuntimeSupportCopy(): string {
+  const locale = getTranslatedUiLocale(state.uiLocale);
+  if (locale === "ko") {
+    return "Chromex는 로컬 codex app-server 세션을 그대로 사용합니다. 나중에 로그인하라는 메시지가 나오면 터미널에서 codex login을 실행한 뒤 Check connection을 누르세요.";
+  }
+  if (locale === "ja") {
+    return "Chromex はローカルの codex app-server セッションをそのまま使います。後でサインインが必要と言われたら、ターミナルで codex login を実行してから Check connection を押してください。";
+  }
+  return "Chromex uses your local codex app-server session directly. If a later request asks for sign-in, run codex login in a terminal and then press Check connection.";
 }
 
 function renderUsageNoticeOnboarding(strings: ReturnType<typeof getUiStrings>): string {
@@ -8246,6 +8293,8 @@ function renderWorkspaceView(strings: ReturnType<typeof getUiStrings>): string {
     nativeHostStatus: nativeHostHealth.status,
     runtimeConfig: state.runtimeConfig,
     modelCatalogState: state.modelCatalogState,
+    modelCatalogErrorMessage: state.modelCatalogErrorMessage,
+    accountStatus: state.accountStatus,
   });
   return `
     <div class="view-scroll workspace-view settings-view" data-scroll-key="workspace-view">
@@ -8313,17 +8362,6 @@ function renderWorkspaceView(strings: ReturnType<typeof getUiStrings>): string {
               strings.settingsPanel.siteSuggestionsDescription,
               renderCustomSiteSuggestionSettings(strings),
               { expanded: true },
-            ),
-            renderSettingsRow(
-              "image-hover-button",
-              strings.settings.imagePromptHoverButton,
-              strings.settingsPanel.imagePromptHoverButtonDescription,
-              renderSettingsSwitch(
-                "setting-image-hover-button",
-                state.settings.imagePromptHoverButtonEnabled,
-                strings.settings.imagePromptHoverButton,
-              ),
-              {},
             ),
             renderSettingsRow(
               strings.settings.rememberChats,
@@ -13302,7 +13340,6 @@ function bindEvents(): void {
       });
       state.pendingPermission = null;
       state.initError = "";
-      void installActiveTabImagePromptExtractor();
       if (retryMessage && canSendCurrentComposerMessage()) {
         state.actionStatus =
           stringsForState().status.siteAccessRetry;
@@ -14323,14 +14360,6 @@ function bindEvents(): void {
     state.settings = await chrome.runtime.sendMessage({
       type: "settings.update",
       settings: { autoCompactConversations: (event.currentTarget as HTMLInputElement).checked },
-    });
-    render();
-  });
-
-  root.querySelector<HTMLInputElement>("#setting-image-hover-button")?.addEventListener("change", async (event) => {
-    state.settings = await chrome.runtime.sendMessage({
-      type: "settings.update",
-      settings: { imagePromptHoverButtonEnabled: (event.currentTarget as HTMLInputElement).checked },
     });
     render();
   });

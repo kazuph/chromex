@@ -83,7 +83,7 @@ export interface UiInitPayload {
     openAiApiKeyConfigured: boolean;
     email?: string | null;
     planType?: string | null;
-  };
+  } | null;
   currentPageSupport: {
     available: boolean;
     blockedReason: string;
@@ -208,7 +208,6 @@ export interface ExtensionSettings {
   preferredVoice: string;
   voiceInputAudioSource: VoiceInputAudioSource;
   workspaceRoot: string;
-  codexBinPath: string;
   enabledCodexSkillIds: string[];
   autoCompactConversations: boolean;
   customSiteSuggestions: CustomSiteSuggestion[];

@@ -13,10 +13,18 @@ type BridgeMessage = {
   params: Record<string, unknown>;
 };
 
+type BridgeEventMessage = {
+  event: unknown;
+};
+
 type BridgeResponse = {
-  id: string;
+  id?: string;
   result?: unknown;
   error?: { message: string };
+};
+
+type RelayOptions = {
+  enableNativeMessaging?: boolean;
 };
 
 export class NativeHostRelay {
@@ -25,8 +33,11 @@ export class NativeHostRelay {
   #shuttingDown = false;
   #pendingResponses = new Map<string, (msg: BridgeResponse) => void>();
   #lineReader?: readline.Interface;
+  #eventListeners = new Set<(event: unknown) => void>();
+  #nativeMessagingEnabled = true;
 
-  start(): void {
+  start(options: RelayOptions = {}): void {
+    this.#nativeMessagingEnabled = options.enableNativeMessaging ?? true;
     const bridgeBaseEnv = mergeShellProviderEnv(process.env);
     this.#bridge = spawn(process.execPath, [this.#resolveBridgeEntry()], {
       stdio: ["pipe", "pipe", "inherit"],
@@ -41,29 +52,30 @@ export class NativeHostRelay {
     this.#bridge.on("exit", () => {
       this.#shutdown();
     });
-    process.stdout.on("error", (error) => {
-      if (this.#handleOutputError(error)) {
-        return;
-      }
-      throw error;
-    });
-    process.stdin.on("end", () => {
-      this.#shutdown();
-    });
+    if (this.#nativeMessagingEnabled) {
+      process.stdout.on("error", (error) => {
+        if (this.#handleOutputError(error)) {
+          return;
+        }
+        throw error;
+      });
+      process.stdin.on("end", () => {
+        this.#shutdown();
+      });
+      process.stdin.on("data", (chunk: Buffer) => {
+        const messages = this.#decoder.push(chunk);
+        for (const message of messages) {
+          if (!this.#writeToBridge(`${JSON.stringify(message)}\n`)) {
+            return;
+          }
+        }
+      });
+    }
     process.on("SIGTERM", () => {
       this.#shutdown();
     });
     process.on("SIGINT", () => {
       this.#shutdown();
-    });
-
-    process.stdin.on("data", (chunk: Buffer) => {
-      const messages = this.#decoder.push(chunk);
-      for (const message of messages) {
-        if (!this.#writeToBridge(`${JSON.stringify(message)}\n`)) {
-          return;
-        }
-      }
     });
 
     this.#lineReader = readline.createInterface({
@@ -74,23 +86,49 @@ export class NativeHostRelay {
         return;
       }
 
-      const response = JSON.parse(line) as BridgeResponse;
-      
-      // Handle HTTP requests waiting for responses
-      const handler = this.#pendingResponses.get(response.id);
-      if (handler) {
-        this.#pendingResponses.delete(response.id);
-        handler(response);
-      } else {
-        // Handle native messaging responses
-        this.#writeToStdout(encodeNativeMessage(response));
+      const message = JSON.parse(line) as BridgeResponse | BridgeEventMessage;
+      if ("event" in message) {
+        for (const listener of this.#eventListeners) {
+          listener(message.event);
+        }
+        if (this.#nativeMessagingEnabled) {
+          this.#writeToStdout(encodeNativeMessage(message));
+        }
+        return;
+      }
+
+      if (message.id) {
+        const handler = this.#pendingResponses.get(message.id);
+        if (handler) {
+          this.#pendingResponses.delete(message.id);
+          handler(message);
+          return;
+        }
+      }
+
+      if (this.#nativeMessagingEnabled) {
+        this.#writeToStdout(encodeNativeMessage(message));
       }
     });
   }
 
+  subscribe(listener: (event: unknown) => void): () => void {
+    this.#eventListeners.add(listener);
+    return () => {
+      this.#eventListeners.delete(listener);
+    };
+  }
+
   async sendToBridge(message: BridgeMessage): Promise<unknown> {
     return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        if (this.#pendingResponses.delete(message.id)) {
+          reject(new Error("Request timeout"));
+        }
+      }, 30_000);
+
       const handler = (response: BridgeResponse) => {
+        clearTimeout(timeout);
         if (response.error) {
           reject(new Error(response.error.message));
         } else {
@@ -100,16 +138,10 @@ export class NativeHostRelay {
 
       this.#pendingResponses.set(message.id, handler);
       if (!this.#writeToBridge(`${JSON.stringify(message)}\n`)) {
+        clearTimeout(timeout);
         this.#pendingResponses.delete(message.id);
         reject(new Error("Failed to write to bridge"));
       }
-
-      // Timeout after 30 seconds
-      setTimeout(() => {
-        if (this.#pendingResponses.delete(message.id)) {
-          reject(new Error("Request timeout"));
-        }
-      }, 30000);
     });
   }
 
@@ -152,6 +184,7 @@ export class NativeHostRelay {
     }
 
     this.#shuttingDown = true;
+    this.#lineReader?.close();
     this.#bridge?.kill();
     process.exit(0);
   }

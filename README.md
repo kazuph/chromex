@@ -41,12 +41,12 @@ codex --version
 2. Download `chromex-local-bridge.zip` from the latest [GitHub Release](https://github.com/GENEXIS-AI/chromex/releases/latest), unzip it, and run:
 
 ```bash
-node scripts/install-native-host.mjs --browser=chrome
+node scripts/install-http-bridge.mjs
 ```
 
-3. Fully quit every Chrome window, reopen Chrome, then press **Check connection** in Chromex.
+3. Reopen the Chromex side panel or press **Check connection** in Chromex.
 
-The Store extension can run only after this one-time local bridge registration. The bridge lets Chrome start the local Codex app-server safely through Chrome Native Messaging; the extension itself cannot install that local host automatically.
+The Store extension can run only after this one-time local bridge installation. On macOS, the preferred path is the local HTTP bridge service, which avoids Chrome restarts and keeps the bridge on loopback-only localhost with extension-origin checks.
 
 ## Install From Source
 
@@ -57,7 +57,7 @@ git clone https://github.com/GENEXIS-AI/chromex.git
 cd chromex
 npm install
 npm run build
-node scripts/install-native-host.mjs
+node scripts/install-http-bridge.mjs
 ```
 
 Then close every Chrome window, reopen Chrome, open `chrome://extensions`, enable **Developer mode**, select **Load unpacked**, and choose:
@@ -66,7 +66,7 @@ Then close every Chrome window, reopen Chrome, open `chrome://extensions`, enabl
 packages/extension/dist
 ```
 
-Important: run `npm install`, `npm run build`, and `install-native-host.mjs` from the `chromex` source folder that contains `package.json`. If Windows reports `ENOENT Could not read package.json`, you are in the wrong folder.
+Important: run `npm install`, `npm run build`, and `install-http-bridge.mjs` from the `chromex` source folder that contains `package.json`. If Windows reports `ENOENT Could not read package.json`, you are in the wrong folder.
 
 ### Windows Local Bridge Setup
 

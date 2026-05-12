@@ -30,8 +30,20 @@ export function toFriendlyNativeHostErrorMessage(rawMessage: string | undefined)
   }
 
   if (normalized.includes("disconnected")) {
-    return "The Codex native host disconnected. Reload the extension, then check Workspace > Connection if it keeps happening.";
+    return "The local Chromex bridge disconnected. If the native host or bridge service is not running, start it and retry from Workspace > Connection.";
   }
 
-  return message || "The Codex native host is unavailable. Reinstall the local bridge once, then reconnect from Workspace > Connection.";
+  if (normalized.includes("failed to fetch") || normalized.includes("networkerror")) {
+    return "The local Chromex bridge is not running yet. Start or reinstall the local bridge service, then retry from Workspace > Connection.";
+  }
+
+  if (normalized.includes("403")) {
+    return "The local Chromex bridge rejected this extension. Reinstall the local bridge service so it authorizes the current Chromex extension ID.";
+  }
+
+  if (normalized.includes("401")) {
+    return "The local Chromex bridge session expired. Retry once; if it keeps happening, restart the local bridge service.";
+  }
+
+  return message || "The local Chromex bridge is unavailable. Install or start the local bridge service, then reconnect from Workspace > Connection.";
 }

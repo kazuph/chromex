@@ -42,12 +42,12 @@ codex --version
 2. 最新の [GitHub Release](https://github.com/GENEXIS-AI/chromex/releases/latest) から `chromex-local-bridge.zip` をダウンロードして展開し、次を実行します。
 
 ```bash
-node scripts/install-native-host.mjs --browser=chrome
+node scripts/install-http-bridge.mjs
 ```
 
-3. すべての Chrome ウィンドウを完全に終了して開き直し、Chromex で **Check connection** を押します。
+3. Chromex のサイドパネルを開き直すか、**Check connection** を押します。
 
-Chrome 拡張機能はセキュリティ上、ローカルブリッジを自動インストールできません。この 1 回だけのブリッジ登録で、Chrome とローカル Codex app-server を安全につなぎます。
+Chrome 拡張機能はセキュリティ上、ローカルブリッジを自動インストールできません。macOS では、推奨のローカル HTTP ブリッジサービスを 1 回インストールすると、Chrome 再起動なしで loopback 限定の安全な接続を使えます。
 
 ## ソースからインストール
 
@@ -58,7 +58,7 @@ git clone https://github.com/GENEXIS-AI/chromex.git
 cd chromex
 npm install
 npm run build
-node scripts/install-native-host.mjs
+node scripts/install-http-bridge.mjs
 ```
 
 その後、すべての Chrome ウィンドウを閉じて開き直し、`chrome://extensions` で **Developer mode** を有効にし、**Load unpacked** から次のフォルダを選択します。
@@ -67,7 +67,7 @@ node scripts/install-native-host.mjs
 packages/extension/dist
 ```
 
-重要: `npm install`、`npm run build`、`install-native-host.mjs` は、必ず `package.json` がある `chromex` ソースフォルダで実行してください。Windows で `ENOENT Could not read package.json` が出る場合は、別のフォルダにいます。
+重要: `npm install`、`npm run build`、`install-http-bridge.mjs` は、必ず `package.json` がある `chromex` ソースフォルダで実行してください。Windows で `ENOENT Could not read package.json` が出る場合は、別のフォルダにいます。
 
 ### Windows ローカルブリッジ設定
 

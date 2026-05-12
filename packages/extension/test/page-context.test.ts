@@ -4,6 +4,7 @@ import {
   createRawCaptureForReadStrategy,
   createEffectivePromptRoutePlan,
   filterSuppressedPageContextRequests,
+  filterUnavailableCurrentPageContextRequests,
   ensureDefaultCurrentPageContextRequests,
   isCurrentPageAttachment,
   sanitizeUnavailableCurrentPageAttachments,
@@ -197,6 +198,42 @@ describe("page context helpers", () => {
         ["current-page", "image", "selection"],
       ).map((request) => request.source),
     ).toEqual(["current-page", "image", "selection", "open-tabs"]);
+  });
+
+  test("drops only failed current-page-derived requests while preserving unrelated context", () => {
+    expect(
+      filterUnavailableCurrentPageContextRequests(
+        [
+          { source: "current-page", readStrategy: "dom", required: true, reason: "Read page." },
+          { source: "selection", readStrategy: "dom", required: true, reason: "Read selection." },
+          { source: "image", readStrategy: "vision", required: true, reason: "Read image." },
+          { source: "open-tabs", readStrategy: "auto", required: true, reason: "Compare tabs." },
+          { source: "history", readStrategy: "auto", required: true, reason: "Read history." },
+        ],
+        {
+          hasCurrentPageContext: false,
+          hasSelectionContext: true,
+          hasImageContext: false,
+        },
+      ).map((request) => request.source),
+    ).toEqual(["selection", "open-tabs", "history"]);
+  });
+
+  test("keeps all current-page-derived requests when equivalent fallback context is still available", () => {
+    expect(
+      filterUnavailableCurrentPageContextRequests(
+        [
+          { source: "current-page", readStrategy: "dom", required: true, reason: "Read page." },
+          { source: "selection", readStrategy: "dom", required: true, reason: "Read selection." },
+          { source: "image", readStrategy: "vision", required: true, reason: "Read image." },
+        ],
+        {
+          hasCurrentPageContext: true,
+          hasSelectionContext: true,
+          hasImageContext: true,
+        },
+      ).map((request) => request.source),
+    ).toEqual(["current-page", "selection", "image"]);
   });
 
   test("updates the route plan context mode when baseline page context is attached", () => {

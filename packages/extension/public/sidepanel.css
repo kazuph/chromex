@@ -1,5 +1,16 @@
 :root {
   color-scheme: dark;
+  --font-ui:
+    -apple-system,
+    BlinkMacSystemFont,
+    "Hiragino Sans",
+    "Hiragino Kaku Gothic ProN",
+    "Yu Gothic UI",
+    "Yu Gothic",
+    Meiryo,
+    "IBM Plex Sans",
+    "Pretendard",
+    sans-serif;
   --bg: #121315;
   --bg-glow: #1a2338;
   --surface: rgba(27, 29, 35, 0.94);
@@ -66,7 +77,7 @@ body {
 
 body {
   margin: 0;
-  font-family: "IBM Plex Sans", "Pretendard", sans-serif;
+  font-family: var(--font-ui);
   color: var(--text);
   background:
     radial-gradient(circle at bottom right, rgba(142, 245, 198, 0.08), transparent 22%),
@@ -2579,7 +2590,7 @@ button.plugin-connect-row-action:hover {
 }
 
 body {
-  font-family: "Avenir Next", "Apple SD Gothic Neo", "Pretendard", "Noto Sans KR", sans-serif;
+  font-family: var(--font-ui);
   background:
     radial-gradient(circle at 18% 0%, rgba(169, 199, 255, 0.08), transparent 34%),
     linear-gradient(180deg, #111214 0%, #0f1011 100%);
@@ -9502,6 +9513,35 @@ button.primary,
 :root[data-theme="light"] .auth-onboarding-note,
 :root[data-theme="light"] .auth-onboarding-privacy {
   color: var(--muted);
+}
+
+:root[data-theme="light"] .usage-notice-hero {
+  color: #355db8;
+}
+
+:root[data-theme="light"] .usage-notice-plus {
+  color: #64748b;
+}
+
+:root[data-theme="light"] .usage-notice-codex-icon {
+  filter: grayscale(1) brightness(0.48);
+  opacity: 1;
+}
+
+:root[data-theme="light"] .usage-notice-eyebrow {
+  color: #5b6474;
+}
+
+:root[data-theme="light"] .usage-notice-item-icon {
+  color: #5b6474;
+}
+
+:root[data-theme="light"] .usage-notice-item strong {
+  color: #0f172a;
+}
+
+:root[data-theme="light"] .usage-notice-item span span {
+  color: #475569;
 }
 
 :root[data-theme="light"] .native-dialog-description a {

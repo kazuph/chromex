@@ -4,6 +4,7 @@
   "license": "MIT",
   "type": "module",
   "bin": {
+    "chromex-http-bridge": "dist/http-bin.js",
     "codex-sidepanel-native-host": "dist/bin.js"
   },
   "main": "dist/index.js",

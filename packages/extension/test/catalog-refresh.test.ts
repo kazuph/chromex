@@ -78,19 +78,15 @@ describe("catalog refresh decisions", () => {
       shouldRefreshCatalogAfterSettingsUpdate({
         previousWorkspaceRoot: "/tmp/workspace",
         nextWorkspaceRoot: "/tmp/workspace",
-        previousCodexBinPath: "/usr/local/bin/codex",
-        nextCodexBinPath: "/usr/local/bin/codex",
       }),
     ).toBe(false);
   });
 
-  test("does not refresh the catalog when path formatting changes without changing the value", () => {
+  test("does not refresh the catalog when workspace path formatting changes without changing the value", () => {
     expect(
       shouldRefreshCatalogAfterSettingsUpdate({
         previousWorkspaceRoot: '"/tmp/workspace"',
         nextWorkspaceRoot: "/tmp/workspace",
-        previousCodexBinPath: "'/usr/local/bin/codex'",
-        nextCodexBinPath: "/usr/local/bin/codex",
       }),
     ).toBe(false);
   });
@@ -100,19 +96,6 @@ describe("catalog refresh decisions", () => {
       shouldRefreshCatalogAfterSettingsUpdate({
         previousWorkspaceRoot: "/tmp/workspace",
         nextWorkspaceRoot: "/tmp/other-workspace",
-        previousCodexBinPath: "/usr/local/bin/codex",
-        nextCodexBinPath: "/usr/local/bin/codex",
-      }),
-    ).toBe(true);
-  });
-
-  test("refreshes the catalog when the Codex binary path changes", () => {
-    expect(
-      shouldRefreshCatalogAfterSettingsUpdate({
-        previousWorkspaceRoot: "/tmp/workspace",
-        nextWorkspaceRoot: "/tmp/workspace",
-        previousCodexBinPath: "/usr/local/bin/codex",
-        nextCodexBinPath: "/opt/homebrew/bin/codex",
       }),
     ).toBe(true);
   });

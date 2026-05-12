@@ -18,9 +18,11 @@ await rm(outDir, { recursive: true, force: true });
 await mkdir(resolve(stagingDir, "scripts"), { recursive: true });
 await mkdir(resolve(stagingDir, "bridge"), { recursive: true });
 await mkdir(resolve(stagingDir, "packages/native-host"), { recursive: true });
+await mkdir(resolve(stagingDir, "packages/shared"), { recursive: true });
 
 await assertPathExists(resolve(root, "packages/bridge/dist/cli.js"), "packages/bridge/dist/cli.js");
 await assertPathExists(resolve(root, "packages/native-host/dist/bin.js"), "packages/native-host/dist/bin.js");
+await assertPathExists(resolve(root, "packages/shared/dist/index.js"), "packages/shared/dist/index.js");
 
 await build({
   entryPoints: [resolve(root, "packages/bridge/dist/cli.js")],
@@ -44,6 +46,11 @@ await build({
 await cp(resolve(root, "packages/native-host/dist"), resolve(stagingDir, "packages/native-host/dist"), {
   recursive: true,
 });
+await cp(resolve(root, "packages/shared/dist"), resolve(stagingDir, "packages/shared/dist"), {
+  recursive: true,
+});
+await copyFile(resolve(root, "packages/shared/package.json"), resolve(stagingDir, "packages/shared/package.json"));
+await copyFile(resolve(root, "scripts/install-http-bridge.mjs"), resolve(stagingDir, "scripts/install-http-bridge.mjs"));
 await copyFile(resolve(root, "scripts/install-native-host.mjs"), resolve(stagingDir, "scripts/install-native-host.mjs"));
 await writeFile(
   resolve(stagingDir, "package.json"),
@@ -68,7 +75,7 @@ async function assertPathExists(path, label) {
 function createInstallReadme(version) {
   return `# Chromex Local Bridge ${version}
 
-This package is for Chrome Web Store users. It registers the local native bridge that lets Chrome start Codex on this computer.
+This package is for Chrome Web Store users. It installs the local bridge service that lets Chromex talk to Codex on this computer without Chrome native messaging restarts.
 
 ## Before You Start
 
@@ -84,27 +91,21 @@ codex --version
 From this extracted \`chromex-local-bridge\` folder, run:
 
 \`\`\`bash
-node scripts/install-native-host.mjs --browser=chrome
+node scripts/install-http-bridge.mjs
 \`\`\`
 
 The Chrome Web Store extension ID is included automatically. If Chrome shows a different Chromex extension ID, pass it explicitly:
 
 \`\`\`bash
-node scripts/install-native-host.mjs <extension-id> --browser=chrome
+node scripts/install-http-bridge.mjs <extension-id>
 \`\`\`
 
-After installation, fully quit every Chrome window, reopen Chrome, then press **Check connection** in Chromex.
+After installation, Chrome restart is not required. Reopen the Chromex side panel or press **Check connection**.
 
-## Windows Notes
+## Compatibility
 
-If Codex is not detected after installation:
-
-\`\`\`powershell
-where codex
-codex --version
-\`\`\`
-
-If \`where codex\` prints \`C:\\Users\\<you>\\AppData\\Roaming\\npm\\codex.cmd\`, open Chromex connection settings and set the optional Codex binary path to \`%APPDATA%\\npm\\codex.cmd\`.
+- \`install-http-bridge.mjs\` currently supports macOS.
+- The legacy \`install-native-host.mjs\` script remains bundled for older native-messaging setups.
 `;
 }
 

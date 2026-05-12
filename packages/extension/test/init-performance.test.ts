@@ -69,6 +69,6 @@ describe("startup performance", () => {
     expect(refreshIndex).toBeGreaterThan(guardIndex);
     expect(settingsUpdateBlock).toContain("return settings;");
     expect(settingsUpdateBlock).toContain("previousWorkspaceRoot: previousSettings.workspaceRoot");
-    expect(settingsUpdateBlock).toContain("previousCodexBinPath: previousSettings.codexBinPath");
+    expect(settingsUpdateBlock).not.toContain("previousCodexBinPath");
   });
 });

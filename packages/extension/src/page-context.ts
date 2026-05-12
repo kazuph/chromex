@@ -62,6 +62,28 @@ export function filterSuppressedPageContextRequests(
   });
 }
 
+export function filterUnavailableCurrentPageContextRequests(
+  requests: AgenticContextRequest[],
+  input: {
+    hasCurrentPageContext: boolean;
+    hasSelectionContext: boolean;
+    hasImageContext: boolean;
+  },
+): AgenticContextRequest[] {
+  return requests.filter((request) => {
+    if (request.source === "current-page") {
+      return input.hasCurrentPageContext;
+    }
+    if (request.source === "selection") {
+      return input.hasSelectionContext;
+    }
+    if (request.source === "image") {
+      return input.hasImageContext;
+    }
+    return true;
+  });
+}
+
 export function shouldSuppressDefaultCurrentPageContextForHistory(
   routePlan: PromptRoutingPlan,
   requests: AgenticContextRequest[],

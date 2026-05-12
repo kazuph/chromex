@@ -35,7 +35,7 @@ let aiControlOverlayTimer: number | null = null;
 let aiControlOverlayWatchdogTimer: number | null = null;
 let aiControlCancelled = false;
 let imagePromptHoverInstalled = false;
-let imagePromptHoverEnabled = true;
+let imagePromptHoverEnabled = false;
 let imagePromptHoverAbortController: AbortController | null = null;
 let imagePromptHoverStorageListenerRegistered = false;
 let imagePromptHoverButton: HTMLButtonElement | null = null;
@@ -101,7 +101,6 @@ chromexContentGlobal[CHROMEX_CONTENT_CLEANUP_KEY] = cleanupContentScriptInstance
 
 registerChromexRuntimeMessageListener();
 startContentScriptRuntimeWatchdog();
-initializeImagePromptHoverSetting();
 installPageSelectionContextBridge();
 installDictationFocusBridge();
 
@@ -217,12 +216,6 @@ function chromexRuntimeMessageListener(
 
   if (message.type === "page.clear-image-overlay") {
     clearImageOverlay();
-    sendResponse({ ok: true });
-    return true;
-  }
-
-  if (message.type === "page.image-prompt-hover.install") {
-    installImagePromptHover();
     sendResponse({ ok: true });
     return true;
   }
@@ -858,7 +851,7 @@ function initializeImagePromptHoverSetting(): void {
     .then((enabled) => setImagePromptHoverButtonEnabled(enabled))
     .catch((error) => {
       if (!handleImagePromptRuntimeError(error)) {
-        installImagePromptHover();
+        setImagePromptHoverButtonEnabled(false);
       }
     });
 }
@@ -898,7 +891,7 @@ function handleImagePromptHoverStorageChanged(
 async function readImagePromptHoverButtonEnabled(): Promise<boolean> {
   const storage = getSafeChromeStorage();
   if (!storage) {
-    return true;
+    return false;
   }
   const result = await storage.local.get(SETTINGS_STORAGE_KEY);
   return readImagePromptHoverButtonEnabledFromSettings(result[SETTINGS_STORAGE_KEY]);
@@ -906,9 +899,9 @@ async function readImagePromptHoverButtonEnabled(): Promise<boolean> {
 
 function readImagePromptHoverButtonEnabledFromSettings(settings: unknown): boolean {
   if (!settings || typeof settings !== "object") {
-    return true;
+    return false;
   }
-  return (settings as { imagePromptHoverButtonEnabled?: unknown }).imagePromptHoverButtonEnabled !== false;
+  return (settings as { imagePromptHoverButtonEnabled?: unknown }).imagePromptHoverButtonEnabled === true;
 }
 
 function setImagePromptHoverButtonEnabled(enabled: boolean): void {

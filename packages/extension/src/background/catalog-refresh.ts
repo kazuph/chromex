@@ -49,8 +49,6 @@ export const FALLBACK_CODEX_MODELS: CodexModelOption[] = [
 export interface CatalogAffectingSettingsInput {
   previousWorkspaceRoot: string | undefined;
   nextWorkspaceRoot: string | undefined;
-  previousCodexBinPath: string | undefined;
-  nextCodexBinPath: string | undefined;
 }
 
 export function normalizeCatalogWorkspaceRoot(workspaceRoot?: string): string {
@@ -82,10 +80,7 @@ export function shouldTriggerCatalogRefresh(input: CatalogRefreshDecisionInput):
 }
 
 export function shouldRefreshCatalogAfterSettingsUpdate(input: CatalogAffectingSettingsInput): boolean {
-  return (
-    normalizeCatalogSettingsPath(input.previousWorkspaceRoot) !== normalizeCatalogSettingsPath(input.nextWorkspaceRoot) ||
-    normalizeCatalogSettingsPath(input.previousCodexBinPath) !== normalizeCatalogSettingsPath(input.nextCodexBinPath)
-  );
+  return normalizeCatalogSettingsPath(input.previousWorkspaceRoot) !== normalizeCatalogSettingsPath(input.nextWorkspaceRoot);
 }
 
 export function resolveCatalogModelState(input: {

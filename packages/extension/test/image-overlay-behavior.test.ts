@@ -26,15 +26,13 @@ describe("generated image page overlays", () => {
     expect(contentSource).not.toContain('document.addEventListener("mousemove"');
   });
 
-  test("makes the image prompt hover button configurable and enabled by default", () => {
-    expect(storageSource).toContain("imagePromptHoverButtonEnabled: true");
-    expect(storageSource).toContain("imagePromptHoverButtonEnabled: settings.imagePromptHoverButtonEnabled !== false");
-    expect(contentSource).toContain("initializeImagePromptHoverSetting()");
-    expect(contentSource).toContain("handleImagePromptHoverStorageChanged");
-    expect(contentSource).toContain("uninstallImagePromptHover()");
-    expect(contentSource).toContain("if (enabled === imagePromptHoverEnabled)");
-    expect(backgroundSource).toContain("if (!settings.imagePromptHoverButtonEnabled)");
-    expect(normalizedSidepanelSource).toContain('renderSettingsSwitch(\n                "setting-image-hover-button"');
-    expect(sidepanelSource).toContain("settings: { imagePromptHoverButtonEnabled:");
+  test("keeps the image prompt hover button disabled and hidden from the UI", () => {
+    expect(storageSource).toContain("imagePromptHoverButtonEnabled: false");
+    expect(storageSource).toContain("imagePromptHoverButtonEnabled: settings.imagePromptHoverButtonEnabled === true");
+    expect(contentSource).not.toContain("\ninitializeImagePromptHoverSetting();\n");
+    expect(backgroundSource).not.toContain("void installImagePromptHoverForTab(activeTab).catch(() => undefined)");
+    expect(normalizedSidepanelSource).not.toContain('renderSettingsSwitch(\n                "setting-image-hover-button"');
+    expect(sidepanelSource).not.toContain("installActiveTabImagePromptExtractor");
+    expect(sidepanelSource).toContain("imagePromptHoverButtonEnabled: false");
   });
 });

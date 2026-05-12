@@ -12,6 +12,7 @@ import {
 import type { UiInitPayload } from "../src/types.js";
 
 const sidepanelSource = readFileSync(resolve(process.cwd(), "src/sidepanel/index.ts"), "utf8");
+const backgroundSource = readFileSync(resolve(process.cwd(), "src/background/index.ts"), "utf8");
 const sidepanelCss = readFileSync(resolve(process.cwd(), "public/sidepanel.css"), "utf8");
 
 const signedOutAccount: UiInitPayload["accountStatus"] = {
@@ -26,6 +27,11 @@ describe("auth onboarding", () => {
     expect(shouldShowAuthOnboarding(null)).toBe(false);
     expect(shouldShowAuthOnboarding(signedOutAccount)).toBe(true);
     expect(shouldShowAuthOnboarding({ ...signedOutAccount, codexAuthenticated: true, authMode: "chatgpt" })).toBe(false);
+  });
+
+  test("keeps account status unknown until the bridge actually responds", () => {
+    expect(backgroundSource).toContain("state.accountStatus,\n      \"account.status\"");
+    expect(backgroundSource).not.toContain("createFallbackAccountStatus");
   });
 
   test("localizes welcome copy and login choices", () => {
@@ -45,26 +51,26 @@ describe("auth onboarding", () => {
     expect(getUiStrings("ko").onboarding.codexBinaryMissing).toContain("where codex");
   });
 
-  test("renders a centered internal onboarding surface with existing login actions", () => {
+  test("renders a centered internal onboarding surface with runtime recovery actions", () => {
     expect(sidepanelSource).toContain("renderAuthOnboarding");
-    expect(sidepanelSource).toContain("shouldShowAuthOnboarding(state.accountStatus)");
-    expect(sidepanelSource).toContain('id="onboarding-chatgpt-login"');
-    expect(sidepanelSource).toContain('id="onboarding-apikey-login"');
+    expect(sidepanelSource).toContain("shouldShowAuthOnboarding(state.accountStatus) &&");
+    expect(sidepanelSource).toContain("isCodexRuntimeReady(");
     expect(sidepanelSource).toContain('id="onboarding-reconnect"');
     expect(sidepanelSource).toContain('id="onboarding-open-settings"');
     expect(sidepanelSource).toContain('class="auth-onboarding-install"');
     expect(sidepanelSource).toContain('class="auth-onboarding-install-guide"');
     expect(sidepanelSource).toContain("https://genexis-ai.github.io/chromex/install/");
     expect(sidepanelSource).toContain("getNativeHostInstallCopy(strings)");
+    expect(sidepanelSource).toContain("getCodexRuntimeSupportCopy()");
     expect(sidepanelSource).toContain("isChromeWebStoreInstall");
     expect(sidepanelSource).toContain("odlalmnpmmakfigepbaabimjcmcppgfo");
     expect(sidepanelSource).toContain("syncAuthOnboardingAutoReconnect");
     expect(sidepanelSource).toContain("getNativeHostInstallCommand(strings)");
     expect(sidepanelSource).toContain("formatNativeHostInstallCommand");
+    expect(sidepanelSource).toContain("install-http-bridge.mjs");
     expect(sidepanelSource).toContain('.join("\\n")');
     expect(sidepanelSource).toContain("chrome.runtime?.id");
     expect(sidepanelSource).toContain("strings.onboarding.webOnlyUnavailable");
-    expect(sidepanelSource).toContain('openNativeTextDialog("api-key")');
     expect(sidepanelCss).toContain(".auth-onboarding");
     expect(sidepanelCss).toContain(".auth-onboarding-card");
     expect(sidepanelCss).toContain(".auth-onboarding-readiness");

@@ -152,6 +152,7 @@ import {
   createEffectivePromptRoutePlan,
   createRawCaptureForReadStrategy,
   ensureDefaultCurrentPageContextRequests,
+  filterUnavailableCurrentPageContextRequests,
   filterSuppressedPageContextRequests,
   shouldSuppressDefaultCurrentPageContextForHistory,
   shouldAttachVisualAssetsForReadStrategy,
@@ -191,6 +192,7 @@ import {
   isSameDocumentAttachment,
   resolvePaperPdfSourceUrl,
 } from "./pdf-page-context.js";
+import { materializeRemoteImageAttachments } from "./remote-image-attachments.js";
 
 const bridge = new NativeBridgeClient();
 const UI_BRIDGE_TIMEOUT_MS = 4000;
@@ -958,7 +960,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sendResponse({ ok: true });
           return;
         case "page.image-prompt-hover.install":
-          sendResponse(await installImagePromptHoverForTab(await getActiveTab().catch(() => null)));
+          sendResponse({ ok: true, installed: false });
           return;
         case "page.image-attachment.add":
           sendResponse(await handlePageImageAttachmentAdd(message, sender.tab));
@@ -1226,7 +1228,7 @@ async function buildUiInitPayload(
     softTimeout(
       bridge.request<UiInitPayload["accountStatus"]>("account.status"),
       UI_BRIDGE_TIMEOUT_MS,
-      state.accountStatus ?? createFallbackAccountStatus(),
+      state.accountStatus,
       "account.status",
     ),
     listConversations(),
@@ -1854,13 +1856,7 @@ async function buildPromptRequest(
         shouldSuppressDefaultCurrentPageContextForHistory(routePlan, requestedContextRequests),
     },
   );
-  const effectiveRoutePlan = createEffectivePromptRoutePlan(
-    routePlan,
-    effectiveContextRequests,
-    Boolean(payload.fileAttachments?.length),
-  );
-  const effectiveAttachments = effectiveContextRequests.map((request) => request.source);
-  const requestedPageAttachments = effectiveAttachments.filter(
+  const requestedPageAttachments = effectiveContextRequests.map((request) => request.source).filter(
     (attachment): attachment is "current-page" | "selection" | "image" =>
       attachment === "current-page" || attachment === "selection" || attachment === "image",
   );
@@ -1872,18 +1868,48 @@ async function buildPromptRequest(
   const actionCards: ActionCard[] = [];
   const needsCurrentContext = pageAttachments.some((attachment) => attachment !== "selection" || !selectedTextContext);
   const deferPageContextForImageWorkflow = shouldDeferPageContextCollectionForImageWorkflow(agenticRoutePlan);
+  let currentContextAttempted = false;
   if (needsCurrentContext && !deferPageContextForImageWorkflow) {
     emitStatus("collecting-context");
   }
-  const currentContext =
-    needsCurrentContext && !deferPageContextForImageWorkflow
-      ? await collectCurrentPageContext(routePlan.pageReadStrategy)
-      : null;
-  const fileAttachments = await collectAutomaticDocumentAttachments(
+  let currentContext: CurrentPageContextResult | null = null;
+  if (needsCurrentContext && !deferPageContextForImageWorkflow) {
+    currentContextAttempted = true;
+    try {
+      currentContext = await collectCurrentPageContext(routePlan.pageReadStrategy);
+    } catch (error) {
+      void recordDiagnostic("extension.prompt.current_page_context.skipped", {
+        clientRequestId: payload.clientRequestId ?? null,
+        conversationId: payload.conversationId ?? null,
+        url: activeTab?.url ?? null,
+        error: toErrorMessage(error),
+      });
+    }
+  }
+  const resolvedContextRequests =
+    currentContextAttempted && !currentContext
+      ? filterUnavailableCurrentPageContextRequests(effectiveContextRequests, {
+          hasCurrentPageContext: false,
+          hasSelectionContext: Boolean(selectedTextContext),
+          hasImageContext: false,
+        })
+      : filterUnavailableCurrentPageContextRequests(effectiveContextRequests, {
+          hasCurrentPageContext: Boolean(currentContext),
+          hasSelectionContext: Boolean(currentContext?.envelope.selectionText || selectedTextContext),
+          hasImageContext: Boolean(currentContext?.envelope.visionAssets.length),
+        });
+  const effectiveRoutePlan = createEffectivePromptRoutePlan(
+    routePlan,
+    resolvedContextRequests,
+    Boolean(payload.fileAttachments?.length),
+  );
+  const effectiveAttachments = resolvedContextRequests.map((request) => request.source);
+  const automaticFileAttachments = await collectAutomaticDocumentAttachments(
     activeTab,
     effectiveAttachments,
     payload.fileAttachments ?? [],
   );
+  const fileAttachments = await materializePromptRemoteImageAttachments(activeTab, automaticFileAttachments);
 
   if (effectiveAttachments.includes("current-page") && currentContext) {
     contexts.push(currentContext.envelope);
@@ -3039,6 +3065,118 @@ async function collectAutomaticDocumentAttachments(
   }
 }
 
+async function materializePromptRemoteImageAttachments(
+  activeTab: chrome.tabs.Tab | null,
+  attachments: UserFileAttachment[],
+): Promise<UserFileAttachment[]> {
+  if (!attachments.some((attachment) => attachment.kind === "image" && !attachment.base64.trim() && attachment.sourceUrl?.trim())) {
+    return attachments;
+  }
+
+  const readableTab = activeTab?.id && activeTab.url && activeTab.windowId
+    ? activeTab as ReadableBrowserTab
+    : null;
+  const currentPageSupport = getCurrentPageSupport(readableTab?.url);
+  let probePromise: Promise<ContentProbeResult | null> | null = null;
+
+  return materializeRemoteImageAttachments(attachments, {
+    resolveVisibleCandidate: async (sourceUrl) => {
+      if (!readableTab || !currentPageSupport.available) {
+        return null;
+      }
+      probePromise ??= collectPromptRemoteImageProbe(readableTab);
+      const probe = await probePromise;
+      return findPromptImageCandidateForSourceUrl(probe?.rawCapture.images ?? [], sourceUrl);
+    },
+    materializeAttachment: async (attachment, imageCandidate) => {
+      const input = await createEditableImageInputFromPromptSource(
+        {
+          imageUrl: attachment.sourceUrl,
+          ...(imageCandidate ? { imageCandidate } : {}),
+        },
+        readableTab ?? undefined,
+      );
+      if (!input?.base64) {
+        return null;
+      }
+      return {
+        ...attachment,
+        mimeType: input.mimeType || attachment.mimeType || "image/png",
+        sizeBytes: estimateBase64ByteLength(input.base64),
+        lastModified: Date.now(),
+        base64: input.base64,
+      };
+    },
+    onMaterializationError: (sourceUrl, error) => {
+      void recordDiagnostic("extension.prompt.remote_image_attachment.materialize.failed", {
+        url: sourceUrl,
+        error: toErrorMessage(error),
+      });
+    },
+  });
+}
+
+async function collectPromptRemoteImageProbe(activeTab: ReadableBrowserTab): Promise<ContentProbeResult | null> {
+  try {
+    return (await sendMessageToTab(activeTab, {
+      type: "page.collect",
+    })) as ContentProbeResult;
+  } catch (error) {
+    void recordDiagnostic("extension.prompt.remote_image_attachment.page_collect.failed", {
+      url: activeTab.url,
+      error: toErrorMessage(error),
+    });
+    return null;
+  }
+}
+
+function findPromptImageCandidateForSourceUrl(
+  images: ContentProbeResult["rawCapture"]["images"],
+  sourceUrl: string,
+): EditablePageImageCandidate | null {
+  const normalizedFullUrl = normalizeComparableHttpUrl(sourceUrl);
+  const normalizedPathUrl = normalizeComparableHttpUrl(sourceUrl, { ignoreSearch: true });
+  if (!normalizedFullUrl && !normalizedPathUrl) {
+    return null;
+  }
+
+  const matchingImages = images
+    .filter((image) => {
+      const fullUrl = normalizeComparableHttpUrl(image.url);
+      const pathUrl = normalizeComparableHttpUrl(image.url, { ignoreSearch: true });
+      return (normalizedFullUrl && fullUrl === normalizedFullUrl) || (normalizedPathUrl && pathUrl === normalizedPathUrl);
+    })
+    .sort((left, right) => {
+      const leftArea = left.visibleArea ?? (left.renderedWidth ?? left.width ?? 0) * (left.renderedHeight ?? left.height ?? 0);
+      const rightArea = right.visibleArea ?? (right.renderedWidth ?? right.width ?? 0) * (right.renderedHeight ?? right.height ?? 0);
+      return rightArea - leftArea;
+    });
+
+  for (const image of matchingImages) {
+    const candidate = normalizePromptImageCandidate(image, image.url);
+    if (candidate) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function normalizeComparableHttpUrl(value: string, options: { ignoreSearch?: boolean } = {}): string {
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      return "";
+    }
+    url.hash = "";
+    if (options.ignoreSearch) {
+      url.search = "";
+    }
+    return url.toString();
+  } catch {
+    return "";
+  }
+}
+
 async function ensureContentScript(tabId: number, url?: string): Promise<void> {
   if (await hasActiveContentScript(tabId)) {
     return;
@@ -3104,7 +3242,6 @@ async function broadcastActiveTabSnapshot(): Promise<void> {
   if (!activeTab) {
     return;
   }
-  void installImagePromptHoverForTab(activeTab).catch(() => undefined);
   const currentTab = tabToOpenTabContext(activeTab);
   await chrome.runtime
     .sendMessage({
@@ -3114,34 +3251,6 @@ async function broadcastActiveTabSnapshot(): Promise<void> {
       actionCards: inferActionCardsForOpenTab(currentTab, await getActiveUiLocale()),
     })
     .catch(() => undefined);
-}
-
-async function installImagePromptHoverForTab(
-  tab: chrome.tabs.Tab | undefined | null,
-): Promise<{ ok: true; installed: boolean }> {
-  if (!tab?.id || !tab.url || !getCurrentPageSupport(tab.url).available) {
-    return { ok: true, installed: false };
-  }
-  const settings = await getStoredSettings();
-  if (!settings.imagePromptHoverButtonEnabled) {
-    return { ok: true, installed: false };
-  }
-  try {
-    await sendMessageToTab(tab as chrome.tabs.Tab & { id: number; url: string }, {
-      type: "page.image-prompt-hover.install",
-    });
-  } catch (error) {
-    if (isRecoverableTabMessagingError(error)) {
-      void recordDiagnostic("extension.image_prompt.hover_install.transient_disconnect", {
-        tabId: tab.id,
-        url: tab.url,
-        error: toErrorMessage(error),
-      });
-      return { ok: true, installed: false };
-    }
-    throw error;
-  }
-  return { ok: true, installed: true };
 }
 
 function normalizePendingImagePromptExtraction(message: Record<string, unknown>): PendingImagePromptExtraction | null {
@@ -3380,28 +3489,7 @@ async function createOnlineImagePromptAttachment(
     return extraction.attachment;
   }
 
-  const visibleCapture = capturePromptVisibleImage(tab, extraction.imageCandidate);
-  const visibleInput = visibleCapture && extraction.imageCandidate
-    ? await visibleCapture
-        .then((dataUrl) => (dataUrl ? cropVisibleTabDataUrlToImageCandidate(dataUrl, extraction.imageCandidate!) : null))
-        .catch((error) => {
-          void recordDiagnostic("extension.image_prompt.visible_capture.failed", {
-            error: toErrorMessage(error),
-          });
-          return null;
-        })
-    : null;
-  const input = visibleInput ?? (isFetchableImagePromptSource(extraction.imageUrl)
-    ? await fetchImageUrlAsEditableInput(extraction.imageUrl, filenameFromImageUrl(extraction.imageUrl))
-        .catch((error) => {
-          void recordDiagnostic("extension.image_prompt.remote_fetch.failed", {
-            url: extraction.imageUrl,
-            error: toErrorMessage(error),
-          });
-          return null;
-        })
-    : null);
-
+  const input = await createEditableImageInputFromPromptSource(extraction, tab);
   if (!input?.base64) {
     return null;
   }
@@ -3416,6 +3504,36 @@ async function createOnlineImagePromptAttachment(
     kind: "image",
     ...(isHttpUrl(extraction.imageUrl) ? { sourceUrl: extraction.imageUrl } : {}),
   };
+}
+
+async function createEditableImageInputFromPromptSource(
+  extraction: Pick<PendingImagePromptExtraction, "imageUrl"> & { imageCandidate?: EditablePageImageCandidate },
+  tab: chrome.tabs.Tab | undefined,
+): Promise<{ base64: string; mimeType: string; filename: string } | null> {
+  const visibleCapture = capturePromptVisibleImage(tab, extraction.imageCandidate);
+  const visibleInput = visibleCapture && extraction.imageCandidate
+    ? await visibleCapture
+        .then((dataUrl) => (dataUrl ? cropVisibleTabDataUrlToImageCandidate(dataUrl, extraction.imageCandidate) : null))
+        .catch((error) => {
+          void recordDiagnostic("extension.image_prompt.visible_capture.failed", {
+            error: toErrorMessage(error),
+          });
+          return null;
+        })
+    : null;
+  if (visibleInput?.base64) {
+    return visibleInput;
+  }
+  return isFetchableImagePromptSource(extraction.imageUrl)
+    ? await fetchImageUrlAsEditableInput(extraction.imageUrl, filenameFromImageUrl(extraction.imageUrl))
+        .catch((error) => {
+          void recordDiagnostic("extension.image_prompt.remote_fetch.failed", {
+            url: extraction.imageUrl,
+            error: toErrorMessage(error),
+          });
+          return null;
+        })
+    : null;
 }
 
 function capturePromptVisibleImage(
@@ -4661,8 +4779,6 @@ async function handleSettingsUpdate(patch: Partial<ExtensionSettings>): Promise<
     !shouldRefreshCatalogAfterSettingsUpdate({
       previousWorkspaceRoot: previousSettings.workspaceRoot,
       nextWorkspaceRoot: settings.workspaceRoot,
-      previousCodexBinPath: previousSettings.codexBinPath,
-      nextCodexBinPath: settings.codexBinPath,
     })
   ) {
     return settings;
@@ -4684,7 +4800,6 @@ async function handleSettingsUpdate(patch: Partial<ExtensionSettings>): Promise<
 async function syncBridgeRuntimeConfig(settings: ExtensionSettings): Promise<void> {
   await bridge.request("runtime.config.update", {
     workspaceRoot: normalizeConfiguredPath(settings.workspaceRoot),
-    codexBinPath: normalizeConfiguredPath(settings.codexBinPath),
   });
 }
 
@@ -4692,31 +4807,15 @@ async function syncRuntimeConfigAndNormalizeSettings(): Promise<{
   settings: ExtensionSettings;
   runtimeConfig: RuntimeConfigSnapshot;
 }> {
-  let settings = await getStoredSettings();
+  const settings = await getStoredSettings();
   await softTimeout(syncBridgeRuntimeConfig(settings), UI_BRIDGE_TIMEOUT_MS, undefined, "runtime.config.update");
 
-  let runtimeConfig = await softTimeout(
+  const runtimeConfig = await softTimeout(
     bridge.request<RuntimeConfigSnapshot>("runtime.config.read"),
     UI_BRIDGE_TIMEOUT_MS,
     createFallbackRuntimeConfig(settings),
     "runtime.config.read",
   );
-
-  if (runtimeConfig.configuredCodexBinPathInvalid && settings.codexBinPath) {
-    settings = await updateStoredSettings({ codexBinPath: "" });
-    await softTimeout(
-      syncBridgeRuntimeConfig(settings),
-      UI_BRIDGE_TIMEOUT_MS,
-      undefined,
-      "runtime.config.update(reset-invalid-codex-bin)",
-    );
-    runtimeConfig = await softTimeout(
-      bridge.request<RuntimeConfigSnapshot>("runtime.config.read"),
-      UI_BRIDGE_TIMEOUT_MS,
-      createFallbackRuntimeConfig(settings),
-      "runtime.config.read(reset-invalid-codex-bin)",
-    );
-  }
 
   return { settings, runtimeConfig };
 }
@@ -4917,16 +5016,6 @@ async function ensureOperationAllowed(operation: HarnessPermissionOperation, con
   };
 }
 
-function createFallbackAccountStatus(): UiInitPayload["accountStatus"] {
-  return {
-    authMode: null,
-    codexAuthenticated: false,
-    multimodalAvailable: false,
-    openAiApiKeyConfigured: false,
-    planType: null,
-  };
-}
-
 function createFallbackWorkspaceHarness(workspaceRoot = ""): WorkspaceHarnessSnapshot {
   return {
     workspaceRoot: normalizeConfiguredPath(workspaceRoot),
@@ -4978,12 +5067,11 @@ function createCodexSkillRuntimeAvailability(settings: ExtensionSettings) {
 }
 
 function createFallbackRuntimeConfig(settings: ExtensionSettings): RuntimeConfigSnapshot {
-  const codexBinPath = normalizeConfiguredPath(settings.codexBinPath);
   return {
     workspaceRoot: normalizeConfiguredPath(settings.workspaceRoot),
-    codexBinPath,
-    resolvedCodexBinPath: codexBinPath,
-    codexBinSource: codexBinPath ? "configured" : "missing",
+    codexBinPath: "",
+    resolvedCodexBinPath: "",
+    codexBinSource: "missing",
     configuredCodexBinPathInvalid: false,
   };
 }

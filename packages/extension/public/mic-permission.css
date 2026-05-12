@@ -1,5 +1,16 @@
 :root {
   color-scheme: light dark;
+  --font-ui:
+    -apple-system,
+    BlinkMacSystemFont,
+    "Hiragino Sans",
+    "Hiragino Kaku Gothic ProN",
+    "Yu Gothic UI",
+    "Yu Gothic",
+    Meiryo,
+    "IBM Plex Sans",
+    "Pretendard",
+    sans-serif;
   --bg: #111214;
   --panel: #1f2023;
   --text: #f4f5f6;
@@ -23,7 +34,7 @@ body {
     radial-gradient(circle at top left, rgba(169, 194, 255, 0.16), transparent 30%),
     var(--bg);
   color: var(--text);
-  font-family: "IBM Plex Sans", "Pretendard", sans-serif;
+  font-family: var(--font-ui);
 }
 
 .mic-shell {

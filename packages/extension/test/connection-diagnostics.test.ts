@@ -70,6 +70,8 @@ describe("connection diagnostics", () => {
         nativeHostStatus: "setup-needed",
         runtimeConfig: readyRuntime,
         modelCatalogState: "ready",
+        modelCatalogErrorMessage: "",
+        accountStatus: null,
       }),
     ).toEqual({
       status: "pending",
@@ -87,6 +89,8 @@ describe("connection diagnostics", () => {
           configuredCodexBinPathInvalid: false,
         },
         modelCatalogState: "error",
+        modelCatalogErrorMessage: 'Failed to start codex app-server with "codex": spawn codex ENOENT',
+        accountStatus: null,
       }),
     ).toEqual({
       status: "not-detected",
@@ -104,6 +108,8 @@ describe("connection diagnostics", () => {
           configuredCodexBinPathInvalid: false,
         },
         modelCatalogState: "ready",
+        modelCatalogErrorMessage: "",
+        accountStatus: null,
       }),
     ).toEqual({
       status: "automatic",
@@ -121,6 +127,46 @@ describe("connection diagnostics", () => {
           configuredCodexBinPathInvalid: false,
         },
         modelCatalogState: "loading",
+        modelCatalogErrorMessage: "",
+        accountStatus: null,
+      }),
+    ).toEqual({
+      status: "pending",
+      tone: "neutral",
+      detailSource: "waiting-for-host",
+    });
+  });
+
+  test("trusts an authenticated Codex account even before runtime path diagnostics settle", () => {
+    expect(
+      getCodexBinaryHealth({
+        nativeHostStatus: "connected",
+        runtimeConfig: {
+          codexBinSource: "missing",
+          configuredCodexBinPathInvalid: false,
+        },
+        modelCatalogState: "loading",
+        modelCatalogErrorMessage: "",
+        accountStatus: { codexAuthenticated: true },
+      }),
+    ).toEqual({
+      status: "connected",
+      tone: "ok",
+      detailSource: "detected",
+    });
+  });
+
+  test("keeps runtime detection pending when the catalog failed for a non-runtime reason", () => {
+    expect(
+      getCodexBinaryHealth({
+        nativeHostStatus: "connected",
+        runtimeConfig: {
+          codexBinSource: "missing",
+          configuredCodexBinPathInvalid: false,
+        },
+        modelCatalogState: "error",
+        modelCatalogErrorMessage: "workspace.harness.read timed out after 4000ms",
+        accountStatus: null,
       }),
     ).toEqual({
       status: "pending",

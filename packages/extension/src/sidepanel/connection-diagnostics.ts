@@ -20,6 +20,15 @@ export interface CodexBinaryHealth {
   detailSource: "detected" | "recovered" | "missing" | "waiting-for-host";
 }
 
+const CODEX_RUNTIME_MISSING_PATTERNS = [
+  "failed to start codex app-server",
+  "spawn codex",
+  "spawn codex-app-server",
+  "enoent",
+  "codex app-server exited",
+  "codex cli or codex app-server was not detected",
+];
+
 const NATIVE_HOST_SETUP_PATTERNS = [
   "native host is not installed",
   "different native host registration",
@@ -77,12 +86,22 @@ export function getCodexBinaryHealth(input: {
   nativeHostStatus: NativeHostStatus;
   runtimeConfig: RuntimeConfig;
   modelCatalogState: ModelCatalogState;
+  modelCatalogErrorMessage?: string;
+  accountStatus?: { codexAuthenticated: boolean } | null;
 }): CodexBinaryHealth {
   if (input.nativeHostStatus !== "connected") {
     return {
       status: "pending",
       tone: "neutral",
       detailSource: "waiting-for-host",
+    };
+  }
+
+  if (input.accountStatus?.codexAuthenticated) {
+    return {
+      status: "connected",
+      tone: "ok",
+      detailSource: "detected",
     };
   }
 
@@ -103,18 +122,19 @@ export function getCodexBinaryHealth(input: {
       };
     }
 
-    return {
-      status: "not-detected",
-      tone: "warn",
-      detailSource: "missing",
-    };
-  }
+    const error = input.modelCatalogErrorMessage?.toLowerCase() ?? "";
+    if (CODEX_RUNTIME_MISSING_PATTERNS.some((pattern) => error.includes(pattern))) {
+      return {
+        status: "not-detected",
+        tone: "warn",
+        detailSource: "missing",
+      };
+    }
 
-  if (input.runtimeConfig.configuredCodexBinPathInvalid) {
     return {
-      status: "automatic",
-      tone: "ok",
-      detailSource: "recovered",
+      status: "pending",
+      tone: "neutral",
+      detailSource: "waiting-for-host",
     };
   }
 

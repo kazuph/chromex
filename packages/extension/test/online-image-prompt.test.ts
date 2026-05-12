@@ -85,24 +85,11 @@ describe("online image prompt extraction", () => {
     expect(prompt).not.toContain("참고 맥락");
   });
 
-  test("wires the hover icon click through background into a composer image attachment", () => {
-    expect(contentSource).toContain('message.type === "page.image-prompt-hover.install"');
+  test("keeps page image attachment plumbing without auto-injecting a hover icon", () => {
+    expect(contentSource).not.toContain('message.type === "page.image-prompt-hover.install"');
     expect(contentSource).toContain('type: "page.image-attachment.add"');
     expect(contentSource).toContain("const imageCandidate = describePageImage(image)");
-    expect(contentSource).toContain("chromex-image-prompt-button");
-    expect(contentSource).toContain("IMAGE_PROMPT_HOVER_ICON_DATA_URL");
-    expect(contentSource).not.toContain('chrome.runtime.getURL("icons/codex-32.png")');
-    expect(contentSource).not.toContain('button.textContent = "✦"');
-    expect(contentSource).toContain('document.addEventListener("pointerover", handleImagePromptPointerOver, listenerOptions)');
-    expect(contentSource).not.toContain('document.addEventListener("pointerout"');
-    expect(contentSource).not.toContain('document.addEventListener("pointermove"');
-    expect(contentSource).not.toContain('document.addEventListener("mousemove"');
-    expect(contentSource).not.toContain('document.addEventListener("mouseover"');
-    expect(contentSource).toContain("function handleImagePromptPointerOver");
-    expect(contentSource).toContain("function isPointerInsideImagePromptHoverSurface");
-    expect(backgroundSource).toContain("function installImagePromptHoverForTab");
-    expect(backgroundSource).toContain("void installImagePromptHoverForTab(activeTab).catch(() => undefined)");
-    expect(backgroundSource).toContain('case "page.image-prompt-hover.install"');
+    expect(backgroundSource).not.toContain("void installImagePromptHoverForTab(activeTab).catch(() => undefined)");
     expect(backgroundSource).toContain('case "page.image-attachment.add"');
     expect(backgroundSource).toContain('case "page.image-prompt.extract"');
     expect(backgroundSource).toContain("chrome.sidePanel.open");
@@ -114,7 +101,7 @@ describe("online image prompt extraction", () => {
     expect(sidepanelSource).toContain("normalizeOnlineImagePromptAttachment");
   });
 
-  test("loads the hover button content script automatically on normal web pages", () => {
+  test("loads the content script on normal web pages without starting the hover icon feature", () => {
     expect(manifest.content_scripts).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -125,44 +112,8 @@ describe("online image prompt extraction", () => {
         }),
       ]),
     );
-    expect(normalizedContentSource).toContain("\ninitializeImagePromptHoverSetting();\n");
-    expect(contentSource).toContain("function readImagePromptHoverButtonEnabled");
+    expect(normalizedContentSource).not.toContain("\ninitializeImagePromptHoverSetting();\n");
     expect(manifest.permissions).toContain("offscreen");
-  });
-
-  test("keeps hover installation idempotent so active tab refreshes do not hide the button", () => {
-    const installer = getFunctionSource(contentSource, "installImagePromptHover");
-    const installedBranch = installer.slice(
-      installer.indexOf("if (imagePromptHoverInstalled)"),
-      installer.indexOf("imagePromptHoverInstalled = true"),
-    );
-
-    expect(installedBranch).toContain("removeImagePromptHoverButtons(imagePromptHoverButton)");
-    expect(installedBranch).toContain("imagePromptHoverButton?.isConnected && imagePromptHoverTargetRect");
-    expect(installedBranch).toContain("positionImagePromptHoverButton(imagePromptHoverTargetRect, imagePromptHoverButton)");
-    expect(installedBranch).not.toContain("hideImagePromptHoverButton");
-    expect(installedBranch).not.toContain("imagePromptHoverTarget = null");
-    expect(installedBranch).not.toContain("setImagePromptHoverButtonVisible");
-  });
-
-  test("removes stale hover buttons from the page instead of leaving hidden DOM behind", () => {
-    expect(contentSource).toContain("function removeImagePromptHoverButtons");
-    expect(contentSource).toContain("function safeRemoveElement");
-    expect(contentSource).toContain('error.name === "NotFoundError"');
-    expect(contentSource).toContain("removeImagePromptHoverButtons(button)");
-    expect(contentSource).toContain("removeImagePromptHoverButtons(imagePromptHoverButton)");
-    expect(contentSource).toContain("safeRemoveElement(button)");
-    expect(contentSource).not.toContain('document.addEventListener("pointerleave"');
-    expect(contentSource).not.toContain('document.addEventListener("mouseleave"');
-    expect(contentSource).toContain('window.addEventListener("blur", handleImagePromptForceHide, listenerOptions)');
-  });
-
-  test("keeps repeated hover installation idempotent", () => {
-    const installer = getFunctionSource(contentSource, "installImagePromptHover");
-
-    expect(installer).toContain("if (imagePromptHoverInstalled)");
-    expect(installer).toContain("removeImagePromptHoverButtons(imagePromptHoverButton)");
-    expect(installer).not.toContain("if (imagePromptHoverInstalled) {\n    removeImagePromptHoverButtons();");
   });
 
   test("pings content scripts before injecting to avoid duplicate hover listeners", () => {
@@ -178,26 +129,11 @@ describe("online image prompt extraction", () => {
     expect(backgroundSource).toContain('chrome.tabs.sendMessage(tabId, { type: "page.ping" })');
   });
 
-  test("surfaces site access requirements when hover injection is blocked on real pages", () => {
-    const runtimeCaseStart = backgroundSource.indexOf('case "page.image-prompt-hover.install"');
-    const runtimeCase = backgroundSource.slice(
-      runtimeCaseStart,
-      backgroundSource.indexOf('case "page.image-prompt.extract"', runtimeCaseStart),
-    );
-    const backgroundInstaller = getFunctionSource(backgroundSource, "installImagePromptHoverForTab");
-    const sidepanelInstaller = getFunctionSource(sidepanelSource, "installActiveTabImagePromptExtractor");
-
-    expect(runtimeCase).toContain("sendResponse(await installImagePromptHoverForTab");
-    expect(backgroundInstaller).toContain("return { ok: true, installed: false }");
-    expect(backgroundInstaller).toContain("await sendMessageToTab");
-    expect(backgroundInstaller).toContain("isRecoverableTabMessagingError(error)");
-    expect(backgroundInstaller).toContain("extension.image_prompt.hover_install.transient_disconnect");
-    expect(backgroundInstaller).toContain("return { ok: true, installed: true }");
-    expect(backgroundInstaller).not.toContain(".catch(() => undefined)");
-    expect(sidepanelInstaller).toContain("getPermissionRequestForRuntimeResponse(response)");
-    expect(sidepanelInstaller).toContain("state.pendingPermission =");
-    expect(sidepanelInstaller).not.toContain("await requestPermissionPlan");
-    expect(sidepanelSource).toContain("void installActiveTabImagePromptExtractor();");
+  test("does not request hover-icon installation permissions anymore", () => {
+    expect(sidepanelSource).not.toContain("installActiveTabImagePromptExtractor");
+    expect(sidepanelSource).not.toContain('type: "page.image-prompt-hover.install"');
+    expect(backgroundSource).toContain('case "page.image-prompt-hover.install"');
+    expect(backgroundSource).toContain('sendResponse({ ok: true, installed: false });');
   });
 
   test("aborts the previous injected content script instance before registering page listeners", () => {
@@ -548,7 +484,7 @@ describe("online image prompt extraction", () => {
     const extractableGuard = getFunctionSource(contentSource, "isPromptExtractableImage");
     const clickHandler = getFunctionSource(contentSource, "extractPromptFromHoveredImage");
     const backgroundNormalizer = getFunctionSource(backgroundSource, "normalizePendingImagePromptExtraction");
-    const backgroundAttachment = getFunctionSource(backgroundSource, "createOnlineImagePromptAttachment");
+    const backgroundInputMaterializer = getFunctionSource(backgroundSource, "createEditableImageInputFromPromptSource");
     const sidepanelNormalizer = getFunctionSource(sidepanelSource, "normalizeOnlineImagePromptExtraction");
     const sidepanelHandler = getFunctionSource(sidepanelSource, "handleOnlineImagePromptExtraction");
 
@@ -560,7 +496,7 @@ describe("online image prompt extraction", () => {
     expect(clickHandler).not.toContain("if (!/^https?:");
     expect(backgroundNormalizer).toContain("isSupportedImagePromptSource(imageUrl)");
     expect(backgroundNormalizer).toContain("attachment || imageCandidate || isFetchableImagePromptSource(imageUrl)");
-    expect(backgroundAttachment).toContain("isFetchableImagePromptSource(extraction.imageUrl)");
+    expect(backgroundInputMaterializer).toContain("isFetchableImagePromptSource(extraction.imageUrl)");
     expect(sidepanelNormalizer).toContain("isSupportedImagePromptSource(imageUrl)");
     expect(sidepanelHandler).toContain(
       "extraction.attachment ?? (isHttpUrl(extraction.imageUrl) ? createRemoteImageAttachment(extraction.imageUrl) : null)",

@@ -59,6 +59,17 @@ describe("runtime backend fallback", () => {
     ).toBe(true);
   });
 
+  test("auto-switches on the live Codex usage-limit wording with try again at", () => {
+    expect(
+      shouldAutoSwitchToCopilotBackend({
+        runtimeConfig: { workspaceRoot: "", codexBinPath: "", resolvedCodexBinPath: "codex", codexBinSource: "path", configuredCodexBinPathInvalid: false, backendKind: "codex" },
+        error: new Error(
+          "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 9:13 AM.",
+        ),
+      }),
+    ).toBe(true);
+  });
+
   test("pins Copilot backend to gpt-5.4", () => {
     expect(
       getPreferredModelForRuntimeBackend({

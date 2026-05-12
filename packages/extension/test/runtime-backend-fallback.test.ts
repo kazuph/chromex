@@ -50,6 +50,15 @@ describe("runtime backend fallback", () => {
     ).toBe(false);
   });
 
+  test("still auto-switches when runtime claims Copilot but the error is clearly from Codex", () => {
+    expect(
+      shouldAutoSwitchToCopilotBackend({
+        runtimeConfig: { workspaceRoot: "", codexBinPath: "copilot", resolvedCodexBinPath: "copilot", codexBinSource: "configured", configuredCodexBinPathInvalid: false, backendKind: "copilot" },
+        error: new Error("You've hit your Codex usage limit. Try again after tomorrow."),
+      }),
+    ).toBe(true);
+  });
+
   test("pins Copilot backend to gpt-5.4", () => {
     expect(
       getPreferredModelForRuntimeBackend({

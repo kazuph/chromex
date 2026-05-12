@@ -4,15 +4,17 @@ export const COPILOT_FIXED_MODEL_ID = "gpt-5.4";
 
 const AUTO_COPILOT_FALLBACK_ERROR_RE =
   /(?:you['’]ve hit your codex usage limit|codex usage limit|try again after|http\s*500|internal server error)/iu;
+const CODEX_BRANDED_FAILURE_RE = /(?:you['’]ve hit your codex usage limit|codex usage limit|try again after)/iu;
 
 export function shouldAutoSwitchToCopilotBackend(input: {
   runtimeConfig: RuntimeConfigSnapshot | null | undefined;
   error: unknown;
 }): boolean {
-  if (input.runtimeConfig?.backendKind === "copilot") {
+  const message = toErrorMessage(input.error);
+  if (input.runtimeConfig?.backendKind === "copilot" && !CODEX_BRANDED_FAILURE_RE.test(message)) {
     return false;
   }
-  return AUTO_COPILOT_FALLBACK_ERROR_RE.test(toErrorMessage(input.error));
+  return AUTO_COPILOT_FALLBACK_ERROR_RE.test(message);
 }
 
 export function getPreferredModelForRuntimeBackend(

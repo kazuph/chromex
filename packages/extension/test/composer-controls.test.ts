@@ -38,10 +38,10 @@ describe("composer control helpers", () => {
     expect(normalizeServiceTier("flex", ["fast"])).toBe("");
   });
 
-  test("defaults to speed tier when the selected model supports it", () => {
-    expect(getDefaultServiceTier(["fast"])).toBe("fast");
+  test("does not auto-select a speed tier by default", () => {
+    expect(getDefaultServiceTier(["fast"])).toBe("");
     expect(getDefaultServiceTier(["flex"])).toBe("");
-    expect(normalizeServiceTier("", ["fast"], getDefaultServiceTier(["fast"]))).toBe("fast");
+    expect(normalizeServiceTier("", ["fast"], getDefaultServiceTier(["fast"]))).toBe("");
   });
 
   test("keeps explicit normal speed when no default tier is requested", () => {

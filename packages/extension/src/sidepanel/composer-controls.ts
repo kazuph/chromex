@@ -38,7 +38,8 @@ export function normalizeServiceTier(
 }
 
 export function getDefaultServiceTier(additionalSpeedTiers: string[]): string {
-  return additionalSpeedTiers.includes("fast") ? "fast" : "";
+  void additionalSpeedTiers;
+  return "";
 }
 
 export function normalizeServiceTierWithDefault(

@@ -8251,6 +8251,49 @@ button.primary,
   word-break: normal;
 }
 
+.message-mermaid-diagram {
+  padding: 10px 14px 18px;
+  overflow: auto;
+}
+
+.message-mermaid-fallback pre {
+  margin: 0;
+  max-width: 100%;
+  overflow: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #f1f2f4;
+}
+
+.message-mermaid-fallback code {
+  display: block;
+  max-width: none;
+  font-family: "SFMono-Regular", "Cascadia Code", "Liberation Mono", Menlo, monospace;
+  font-size: 13px;
+  line-height: 21px;
+  white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+.message-mermaid-svg {
+  display: flex;
+  justify-content: center;
+  min-width: fit-content;
+}
+
+.message-mermaid-svg svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+.message-mermaid-diagram[data-mermaid-state="rendered"] .message-mermaid-fallback {
+  display: none;
+}
+
 .native-dialog-backdrop {
   position: fixed;
   inset: 0;

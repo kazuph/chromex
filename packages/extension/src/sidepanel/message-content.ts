@@ -537,6 +537,7 @@ function formatCodeLanguageLabel(language: string): string {
     jsx: "JSX",
     markdown: "Markdown",
     md: "Markdown",
+    mermaid: "Mermaid",
     py: "Python",
     python: "Python",
     sh: "Shell",
@@ -551,6 +552,30 @@ function formatCodeLanguageLabel(language: string): string {
   return labels[normalized] ?? normalized.replace(/(^|[-_])([a-z0-9])/gu, (_, separator: string, value: string) =>
     `${separator ? " " : ""}${value.toUpperCase()}`,
   );
+}
+
+function renderMermaidBlock(rawCode: string): string {
+  const language = "mermaid";
+  const label = formatCodeLanguageLabel(language);
+  const code = rawCode.replace(/\n$/u, "");
+  return `
+    <figure class="message-code-block message-mermaid-block" data-code-language="${language}">
+      <figcaption class="message-code-header">
+        <span class="message-code-title">
+          ${renderUiIcon("code")}
+          ${escapeHtml(label)}
+        </span>
+        <button type="button" class="message-code-copy" data-code-copy="1" title="Copy code" aria-label="Copy code">
+          ${renderUiIcon("copy")}
+        </button>
+      </figcaption>
+      <div class="message-mermaid-diagram" data-mermaid-state="pending" data-mermaid-definition="${escapeAttribute(code)}">
+        <div class="message-mermaid-fallback">
+          <pre><code class="language-mermaid">${escapeHtml(code)}</code></pre>
+        </div>
+      </div>
+    </figure>
+  `;
 }
 
 function renderCodeBlock(rawLanguage: string, rawCode: string): string {
@@ -616,7 +641,12 @@ export function renderMessageContentHtml(
     if (index < lines.length) {
       index += 1;
     }
-    parts.push(renderCodeBlock(rawLanguage, codeLines.join("\n")));
+    const normalizedLanguage = normalizeCodeLanguage(rawLanguage);
+    parts.push(
+      normalizedLanguage === "mermaid"
+        ? renderMermaidBlock(codeLines.join("\n"))
+        : renderCodeBlock(rawLanguage, codeLines.join("\n")),
+    );
   }
 
   flushTextBuffer();

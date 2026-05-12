@@ -31,6 +31,15 @@ describe("renderMessageContentHtml", () => {
     expect(html).toContain('<pre><code class="language-markdown"># Title\n- item</code></pre>');
   });
 
+  test("renders mermaid fences as renderable diagram cards", () => {
+    const html = renderMessageContentHtml("```mermaid\ngraph TD\n  A-->B\n```");
+
+    expect(html).toContain('<figure class="message-code-block message-mermaid-block" data-code-language="mermaid">');
+    expect(html).toContain('data-mermaid-state="pending"');
+    expect(html).toContain('data-mermaid-definition="graph TD');
+    expect(html).toContain('<code class="language-mermaid">graph TD\n  A--&gt;B</code>');
+  });
+
   test("renders common markdown syntax in chat messages", () => {
     const html = renderMessageContentHtml(
       [

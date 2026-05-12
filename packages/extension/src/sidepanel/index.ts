@@ -28,6 +28,7 @@ import { createPendingComposerDraftState, createRestoredComposerDraftState } fro
 import { getDroppedFiles, hasComposerDropPayload } from "./composer-drop.js";
 import { isTextFirstActionCard } from "./action-card-routing.js";
 import { mergePromptResultActionCards } from "./action-card-state.js";
+import { renderMermaidDiagramsIn } from "./mermaid-rendering.js";
 import {
   createConferenceModeTranslationRequestEvent,
   mergeConferenceModeTranscriptEntry,
@@ -3359,6 +3360,11 @@ function renderNow(): void {
   scrollConferenceTranscriptToBottom({ onlyIfPinned: true });
   scrollRealtimeInterpreterTranscriptToBottom({ onlyIfPinned: true });
   updateScrollToBottomButtonVisibility();
+  void renderMermaidDiagramsIn(root)
+    .then(() => {
+      updateScrollToBottomButtonVisibility();
+    })
+    .catch(() => undefined);
   restoreComposerRenderState(composerState);
   scheduleFloatingSurfaceLayoutSync();
   lastRenderedActiveView = state.activeView;
@@ -16623,6 +16629,11 @@ function patchStreamingAssistantMessageDoms(itemIds: string[]): boolean {
     content.innerHTML = renderMessageContentHtml(message.text, {
       enableYouTubeTimestampLinks: shouldRenderYouTubeTimestampLinksForMessage(message),
     });
+    void renderMermaidDiagramsIn(content)
+      .then(() => {
+        updateScrollToBottomButtonVisibility();
+      })
+      .catch(() => undefined);
   }
   restoreScrollPositions(scrollState);
   updateScrollToBottomButtonVisibility();

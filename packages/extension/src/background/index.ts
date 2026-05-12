@@ -955,6 +955,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             }),
           );
           return;
+        case "page.apply-mermaid-overlay":
+          sendResponse(
+            await guardAndRun("page.mermaid.overlay", Boolean(message.confirmed), async () => {
+              await sendMessageToActiveTab({
+                type: "page.apply-mermaid-overlay",
+                definition: typeof message.definition === "string" ? message.definition : "",
+              });
+              return { ok: true };
+            }),
+          );
+          return;
         case "page.clear-image-overlay":
           await sendMessageToActiveTab({ type: "page.clear-image-overlay" });
           sendResponse({ ok: true });

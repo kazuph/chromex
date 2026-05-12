@@ -8203,7 +8203,14 @@ button.primary,
   flex: 0 0 auto;
 }
 
-.message-code-copy {
+.message-code-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.message-code-copy,
+.message-code-action {
   width: 34px;
   height: 34px;
   flex: 0 0 auto;
@@ -8217,12 +8224,15 @@ button.primary,
 }
 
 .message-code-copy:hover,
-.message-code-copy:focus-visible {
+.message-code-copy:focus-visible,
+.message-code-action:hover,
+.message-code-action:focus-visible {
   background: rgba(255, 255, 255, 0.08);
   outline: none;
 }
 
-.message-code-copy svg {
+.message-code-copy svg,
+.message-code-action svg {
   width: 20px;
   height: 20px;
   display: block;
@@ -9670,6 +9680,7 @@ button.primary,
 
 :root[data-theme="light"] .message-action-button,
 :root[data-theme="light"] .message-code-copy,
+:root[data-theme="light"] .message-code-action,
 :root[data-theme="light"] .image-action-button.overlay,
 :root[data-theme="light"] .top-quick-action,
 :root[data-theme="light"] .settings-compact-button,
@@ -9681,6 +9692,7 @@ button.primary,
 
 :root[data-theme="light"] .message-action-button:hover,
 :root[data-theme="light"] .message-code-copy:hover,
+:root[data-theme="light"] .message-code-action:hover,
 :root[data-theme="light"] .image-action-button.overlay:hover,
 :root[data-theme="light"] .top-quick-action:hover,
 :root[data-theme="light"] .top-quick-action:focus-visible,
@@ -9829,13 +9841,16 @@ button.primary,
   color: #1e293b;
 }
 
-:root[data-theme="light"] .message-code-copy {
+:root[data-theme="light"] .message-code-copy,
+:root[data-theme="light"] .message-code-action {
   background: transparent;
   box-shadow: none;
 }
 
 :root[data-theme="light"] .message-code-copy:hover,
-:root[data-theme="light"] .message-code-copy:focus-visible {
+:root[data-theme="light"] .message-code-copy:focus-visible,
+:root[data-theme="light"] .message-code-action:hover,
+:root[data-theme="light"] .message-code-action:focus-visible {
   background: rgba(15, 23, 42, 0.06);
 }
 
@@ -10045,6 +10060,7 @@ button.primary,
 :root[data-theme="light"] .top-quick-action,
 :root[data-theme="light"] .message-action-button,
 :root[data-theme="light"] .message-code-copy,
+:root[data-theme="light"] .message-code-action,
 :root[data-theme="light"] .image-action-button.overlay,
 :root[data-theme="light"] .settings-compact-button,
 :root[data-theme="light"] .auth-onboarding-install-guide,
@@ -10063,6 +10079,8 @@ button.primary,
 :root[data-theme="light"] .message-action-button:focus-visible,
 :root[data-theme="light"] .message-code-copy:hover,
 :root[data-theme="light"] .message-code-copy:focus-visible,
+:root[data-theme="light"] .message-code-action:hover,
+:root[data-theme="light"] .message-code-action:focus-visible,
 :root[data-theme="light"] .image-action-button.overlay:hover,
 :root[data-theme="light"] .image-action-button.overlay:focus-visible,
 :root[data-theme="light"] .settings-compact-button:hover,

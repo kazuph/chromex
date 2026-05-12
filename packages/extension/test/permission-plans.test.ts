@@ -194,6 +194,17 @@ describe("permission plans", () => {
     ).toBeNull();
   });
 
+  test("treats Mermaid preview expansion as a current-page action", () => {
+    expect(
+      getPermissionRequestForMessage(
+        {
+          type: "page.apply-mermaid-overlay",
+        },
+        "https://example.org/docs",
+      ),
+    ).toBeNull();
+  });
+
   test("does not block plain prompting when the current tab is restricted", () => {
     expect(
       getPermissionRequestForMessage(

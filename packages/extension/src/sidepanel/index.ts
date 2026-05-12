@@ -13402,6 +13402,12 @@ function bindEvents(): void {
     });
   });
 
+  root.querySelectorAll<HTMLButtonElement>("[data-mermaid-open]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await openConversationMermaidPreview(button);
+    });
+  });
+
   root.querySelectorAll<HTMLButtonElement>("[data-message-regenerate]").forEach((button) => {
     button.addEventListener("click", async () => {
       await replayConversationFromMessage(button.dataset.messageRegenerate);
@@ -15887,6 +15893,34 @@ async function copyMessageCodeBlock(button: HTMLButtonElement): Promise<void> {
   const strings = stringsForState();
   state.actionStatus = strings.status.messageCopied;
   render();
+}
+
+async function openConversationMermaidPreview(button: HTMLButtonElement): Promise<void> {
+  const definition = button
+    .closest(".message-mermaid-block")
+    ?.querySelector<HTMLElement>("[data-mermaid-definition]")
+    ?.dataset.mermaidDefinition?.trim();
+  if (!definition) {
+    return;
+  }
+
+  try {
+    const result = await sendRuntimeMessageWithConfirmation<{ ok?: boolean; error?: string }>({
+      type: "page.apply-mermaid-overlay",
+      definition,
+    });
+    if (isCancelledResult(result)) {
+      return;
+    }
+    if (result.error || result.ok === false) {
+      throw new Error(typeof result.error === "string" ? result.error : "Could not open the Mermaid preview.");
+    }
+    state.initError = "";
+    render();
+  } catch (error) {
+    state.initError = toUserFacingRuntimeError(error);
+    render();
+  }
 }
 
 async function replayConversationFromMessage(
@@ -22179,6 +22213,7 @@ function getHarnessConfirmationPrompt(operation: string, fallback: unknown): str
     case "page.navigate":
     case "page.dom.perform":
     case "page.image.overlay":
+    case "page.mermaid.overlay":
       return strings.permissions.currentPageAction;
     case "voice.session.start":
       return strings.prompts.voiceSessionStart;

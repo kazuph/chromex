@@ -565,9 +565,20 @@ function renderMermaidBlock(rawCode: string): string {
           ${renderUiIcon("code")}
           ${escapeHtml(label)}
         </span>
-        <button type="button" class="message-code-copy" data-code-copy="1" title="Copy code" aria-label="Copy code">
-          ${renderUiIcon("copy")}
-        </button>
+        <span class="message-code-actions">
+          <button
+            type="button"
+            class="message-code-action message-code-preview"
+            data-mermaid-open="1"
+            title="Open preview"
+            aria-label="Open preview"
+          >
+            ${renderUiIcon("external-link")}
+          </button>
+          <button type="button" class="message-code-copy" data-code-copy="1" title="Copy code" aria-label="Copy code">
+            ${renderUiIcon("copy")}
+          </button>
+        </span>
       </figcaption>
       <div class="message-mermaid-diagram" data-mermaid-state="pending" data-mermaid-definition="${escapeAttribute(code)}">
         <div class="message-mermaid-fallback">

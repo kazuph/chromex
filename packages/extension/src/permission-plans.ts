@@ -91,6 +91,7 @@ export function getPermissionRequestForMessage(
       return null;
     case "youtube.seek":
     case "page.apply-image-overlay":
+    case "page.apply-mermaid-overlay":
     case "page.clear-image-overlay":
     case "page.dom.perform":
     case "page.dictation.insert":

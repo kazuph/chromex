@@ -4,6 +4,7 @@ import { collectPdfAdapterPayload, isLikelyPdfUrl } from "../adapters/pdf.js";
 import { collectYouTubeAdapterPayload, collectYouTubePlaybackState, isYouTubeUrl } from "../adapters/youtube.js";
 import { collectBodyText } from "./dom-text.js";
 import { extractCssImageUrls, sortEditablePageImageCandidates, type EditablePageImageCandidate } from "../page-image-target.js";
+import { renderMermaidToSvg } from "../mermaid-core.js";
 import { createSelectedTextContextExcerpt } from "../page-selection-context.js";
 import { resolveImagePreviewRefForUi } from "../sidepanel/image-preview-assets.js";
 import { createSitePayload } from "../site-payload.js";
@@ -209,6 +210,13 @@ function chromexRuntimeMessageListener(
 
   if (message.type === "page.apply-image-overlay") {
     void applyImageOverlay(message.previewRef)
+      .then(() => sendResponse({ ok: true }))
+      .catch((error) => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+    return true;
+  }
+
+  if (message.type === "page.apply-mermaid-overlay") {
+    void applyMermaidOverlay(typeof message.definition === "string" ? message.definition : "")
       .then(() => sendResponse({ ok: true }))
       .catch((error) => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
     return true;
@@ -1804,6 +1812,83 @@ async function applyImageOverlay(previewRef: string): Promise<void> {
   image.style.borderRadius = "16px";
 
   overlayNode.appendChild(image);
+  document.documentElement.appendChild(overlayNode);
+}
+
+async function applyMermaidOverlay(definition: string): Promise<void> {
+  const trimmed = definition.trim();
+  if (!trimmed) {
+    return;
+  }
+  clearImageOverlay();
+
+  overlayNode = document.createElement("div");
+  overlayNode.style.position = "fixed";
+  overlayNode.style.inset = "24px";
+  overlayNode.style.zIndex = "2147483647";
+  overlayNode.style.background = "rgba(10, 14, 18, 0.92)";
+  overlayNode.style.display = "grid";
+  overlayNode.style.placeItems = "center";
+  overlayNode.style.padding = "24px";
+  overlayNode.addEventListener("click", clearImageOverlay);
+
+  const panel = document.createElement("div");
+  panel.style.position = "relative";
+  panel.style.width = "min(1200px, 100%)";
+  panel.style.maxWidth = "100%";
+  panel.style.maxHeight = "100%";
+  panel.style.overflow = "auto";
+  panel.style.padding = "28px";
+  panel.style.border = "1px solid rgba(255,255,255,0.12)";
+  panel.style.borderRadius = "20px";
+  panel.style.background = "#0f1318";
+  panel.style.boxShadow = "0 24px 80px rgba(0,0,0,0.35)";
+  panel.addEventListener("click", (event) => event.stopPropagation());
+
+  const closeButton = document.createElement("button");
+  closeButton.type = "button";
+  closeButton.textContent = "Close";
+  closeButton.style.position = "absolute";
+  closeButton.style.top = "14px";
+  closeButton.style.right = "14px";
+  closeButton.style.height = "36px";
+  closeButton.style.padding = "0 14px";
+  closeButton.style.border = "0";
+  closeButton.style.borderRadius = "999px";
+  closeButton.style.background = "rgba(255,255,255,0.12)";
+  closeButton.style.color = "#f8fafc";
+  closeButton.style.font = "600 14px/1.2 -apple-system, BlinkMacSystemFont, sans-serif";
+  closeButton.style.cursor = "pointer";
+  closeButton.addEventListener("click", clearImageOverlay);
+
+  const content = document.createElement("div");
+  content.style.marginTop = "20px";
+  content.style.minWidth = "fit-content";
+
+  try {
+    const { svg, bindFunctions } = await renderMermaidToSvg(trimmed, { theme: "dark" });
+    content.innerHTML = svg;
+    const svgElement = content.querySelector("svg");
+    if (svgElement) {
+      svgElement.removeAttribute("height");
+      svgElement.style.display = "block";
+      svgElement.style.maxWidth = "100%";
+      svgElement.style.height = "auto";
+      svgElement.style.margin = "0 auto";
+    }
+    bindFunctions?.(content);
+  } catch {
+    const fallback = document.createElement("pre");
+    fallback.textContent = trimmed;
+    fallback.style.margin = "0";
+    fallback.style.color = "#f8fafc";
+    fallback.style.font = '13px/1.65 "SFMono-Regular", Menlo, monospace';
+    fallback.style.whiteSpace = "pre-wrap";
+    content.appendChild(fallback);
+  }
+
+  panel.append(closeButton, content);
+  overlayNode.appendChild(panel);
   document.documentElement.appendChild(overlayNode);
 }
 

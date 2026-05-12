@@ -1,25 +1,4 @@
-import mermaid from "mermaid";
-
-let mermaidRenderSequence = 0;
-let configuredTheme = "";
-
-function getMermaidTheme(): "default" | "dark" {
-  return document.documentElement.dataset.theme === "light" ? "default" : "dark";
-}
-
-function ensureMermaidInitialized(): void {
-  const theme = getMermaidTheme();
-  if (configuredTheme === theme) {
-    return;
-  }
-  mermaid.initialize({
-    startOnLoad: false,
-    securityLevel: "strict",
-    theme,
-    fontFamily: "inherit",
-  });
-  configuredTheme = theme;
-}
+import { getMermaidThemeFromDocument, renderMermaidToSvg } from "../mermaid-core.js";
 
 async function renderMermaidDiagram(container: HTMLElement): Promise<void> {
   const source = container.dataset.mermaidDefinition?.trim() ?? "";
@@ -29,7 +8,9 @@ async function renderMermaidDiagram(container: HTMLElement): Promise<void> {
 
   container.dataset.mermaidState = "rendering";
   try {
-    const { svg, bindFunctions } = await mermaid.render(`chromex-mermaid-${++mermaidRenderSequence}`, source);
+    const { svg, bindFunctions } = await renderMermaidToSvg(source, {
+      theme: getMermaidThemeFromDocument(container.ownerDocument ?? document),
+    });
     const preview = document.createElement("div");
     preview.className = "message-mermaid-svg";
     preview.innerHTML = svg;
@@ -48,6 +29,5 @@ export async function renderMermaidDiagramsIn(scope: ParentNode): Promise<void> 
   if (!diagrams.length) {
     return;
   }
-  ensureMermaidInitialized();
   await Promise.all(diagrams.map((diagram) => renderMermaidDiagram(diagram)));
 }

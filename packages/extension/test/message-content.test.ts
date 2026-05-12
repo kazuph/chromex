@@ -35,6 +35,8 @@ describe("renderMessageContentHtml", () => {
     const html = renderMessageContentHtml("```mermaid\ngraph TD\n  A-->B\n```");
 
     expect(html).toContain('<figure class="message-code-block message-mermaid-block" data-code-language="mermaid">');
+    expect(html).toContain('class="message-code-action message-code-preview"');
+    expect(html).toContain('data-mermaid-open="1"');
     expect(html).toContain('data-mermaid-state="pending"');
     expect(html).toContain('data-mermaid-definition="graph TD');
     expect(html).toContain('<code class="language-mermaid">graph TD\n  A--&gt;B</code>');

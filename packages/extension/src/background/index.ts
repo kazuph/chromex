@@ -224,6 +224,13 @@ type CompletedAssistantMessageEvent = {
   threadId?: string;
   turnId?: string;
 };
+type FailedTurnEvent = {
+  type: "turn.failed";
+  message?: string;
+  clientRequestId?: string | null;
+  threadId?: string;
+  turnId?: string;
+};
 type HarnessPermissionBlockedResponse = {
   error: string;
   requiresConfirmation?: boolean;
@@ -2395,14 +2402,23 @@ async function requestPromptSendWithAssistantCapture(
   params: Record<string, unknown>,
 ): Promise<{ result: PromptTurnResult; assistantText: string }> {
   const completedMessages: CompletedAssistantMessageEvent[] = [];
+  const failedTurns: FailedTurnEvent[] = [];
   const unsubscribe = bridge.subscribe((event) => {
     if (isCompletedAssistantMessageEvent(event)) {
       completedMessages.push(event);
+      return;
+    }
+    if (isFailedTurnEvent(event)) {
+      failedTurns.push(event);
     }
   });
 
   try {
     const result = await bridge.request<PromptTurnResult>("prompt.send", params);
+    const failedTurn = collectFailedTurnError(failedTurns, result, params.clientRequestId);
+    if (failedTurn) {
+      throw new Error(failedTurn.message || "Prompt send failed.");
+    }
     return {
       result,
       assistantText: collectCompletedAssistantText(completedMessages, result),
@@ -2414,6 +2430,24 @@ async function requestPromptSendWithAssistantCapture(
 
 function isCompletedAssistantMessageEvent(event: unknown): event is CompletedAssistantMessageEvent {
   return typeof event === "object" && event !== null && (event as { type?: unknown }).type === "message.completed";
+}
+
+function isFailedTurnEvent(event: unknown): event is FailedTurnEvent {
+  return typeof event === "object" && event !== null && (event as { type?: unknown }).type === "turn.failed";
+}
+
+function collectFailedTurnError(
+  events: FailedTurnEvent[],
+  result: PromptTurnResult,
+  clientRequestId: unknown,
+): FailedTurnEvent | null {
+  if (typeof clientRequestId === "string" && clientRequestId) {
+    const matchedByClientRequest = events.find((event) => event.clientRequestId === clientRequestId);
+    if (matchedByClientRequest) {
+      return matchedByClientRequest;
+    }
+  }
+  return events.find((event) => event.threadId === result.threadId && event.turnId === result.turnId) ?? null;
 }
 
 function collectCompletedAssistantText(

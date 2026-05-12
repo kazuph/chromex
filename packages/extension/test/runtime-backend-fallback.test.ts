@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, test } from "vitest";
 
 import {
@@ -5,6 +7,19 @@ import {
   getPreferredModelForRuntimeBackend,
   shouldAutoSwitchToCopilotBackend,
 } from "../src/background/runtime-backend-fallback.js";
+
+const backgroundSource = readFileSync(resolve(process.cwd(), "src/background/index.ts"), "utf8");
+
+function getFunctionSource(source: string, name: string): string {
+  const startMatch = new RegExp(`(?:async\\s+)?function\\s+${name}\\b`, "u").exec(source);
+  const start = startMatch?.index ?? -1;
+  if (start < 0) {
+    return "";
+  }
+  const rest = source.slice(start + 1);
+  const nextMatch = /\n(?:async\s+)?function\s+/u.exec(rest);
+  return nextMatch ? source.slice(start, start + 1 + nextMatch.index) : source.slice(start);
+}
 
 describe("runtime backend fallback", () => {
   test("auto-switches to Copilot on Codex usage limit errors", () => {
@@ -45,5 +60,14 @@ describe("runtime backend fallback", () => {
         backendKind: "copilot",
       }),
     ).toBe(COPILOT_FIXED_MODEL_ID);
+  });
+
+  test("captures turn.failed events from prompt.send before deciding fallback", () => {
+    const requestPromptSendSource = getFunctionSource(backgroundSource, "requestPromptSendWithAssistantCapture");
+    const collectFailedTurnErrorSource = getFunctionSource(backgroundSource, "collectFailedTurnError");
+
+    expect(requestPromptSendSource).toContain("isFailedTurnEvent");
+    expect(requestPromptSendSource).toContain("collectFailedTurnError");
+    expect(collectFailedTurnErrorSource).toContain('event.clientRequestId === clientRequestId');
   });
 });

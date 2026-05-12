@@ -131,6 +131,9 @@ export class CodexAppServerClient {
   }
 
   async configure(options: { command?: string | null }): Promise<void> {
+    if (!Object.prototype.hasOwnProperty.call(options, "command")) {
+      return;
+    }
     const nextCommand = options.command?.trim() ? options.command.trim() : null;
     if (nextCommand === this.#commandOverride) {
       return;

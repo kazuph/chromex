@@ -934,4 +934,24 @@ describe("CodexAppServerClient", () => {
 
     await client.shutdown();
   });
+
+  test("does not clear the configured command when configure is called without command", async () => {
+    const client = new CodexAppServerClient({
+      resolveCommandImpl: async ({ configuredCommand }) => ({
+        configuredCommand: configuredCommand ?? "",
+        resolvedCommand: configuredCommand ?? "/opt/homebrew/bin/codex",
+        source: configuredCommand ? "configured" : "path",
+        configuredCommandInvalid: false,
+      }),
+    });
+
+    await client.configure({ command: "copilot" });
+    await client.configure({});
+
+    await expect(client.inspectRuntime()).resolves.toMatchObject({
+      configuredCommand: "copilot",
+      resolvedCommand: "copilot",
+      source: "configured",
+    });
+  });
 });

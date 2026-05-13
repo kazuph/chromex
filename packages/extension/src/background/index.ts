@@ -68,6 +68,7 @@ import {
   clearConversations,
   deleteConversation,
   getCurrentConversation,
+  getPreferredCodexCommand,
   getSelectedModel,
   getSelectedProfileId,
   getSelectedReasoningEffort,
@@ -84,6 +85,7 @@ import {
   saveSkill,
   resetStoredSettings,
   setCurrentConversationId,
+  setPreferredCodexCommand,
   setSelectedModel,
   setSelectedProfileId,
   setSelectedReasoningEffort,
@@ -659,6 +661,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             selectedReasoningEffort: state.selectedReasoningEffort,
             selectedServiceTier: state.selectedServiceTier,
           });
+          return;
+        case "runtime.backend.select":
+          sendResponse(await handleRuntimeBackendSelect(message.backendKind === "copilot" ? "copilot" : "codex"));
           return;
         case "settings.update":
           sendResponse(await handleSettingsUpdate(message.settings ?? {}));
@@ -1829,26 +1834,94 @@ async function maybeAutoSwitchPromptRuntimeToCopilot(input: {
   return updatedRuntimeConfig;
 }
 
+async function handleRuntimeBackendSelect(backendKind: "codex" | "copilot"): Promise<{
+  runtimeConfig: RuntimeConfigSnapshot;
+  models: CodexModelOption[];
+  selectedModel: string;
+  selectedReasoningEffort: string;
+  selectedServiceTier: string;
+  modelCatalogState: UiInitPayload["modelCatalogState"];
+  modelCatalogErrorMessage: string;
+}> {
+  if (state.activeTurn) {
+    throw new Error("Finish the current response before switching backends.");
+  }
+
+  const settings = await getStoredSettings();
+  const workspaceRoot = normalizeConfiguredPath(settings.workspaceRoot);
+  const currentRuntimeConfig = await readCurrentRuntimeConfig(settings);
+  if (backendKind === "copilot") {
+    const currentCodexCommand =
+      currentRuntimeConfig.backendKind === "codex"
+        ? currentRuntimeConfig.codexBinPath.trim() || currentRuntimeConfig.resolvedCodexBinPath.trim()
+        : "";
+    if (currentCodexCommand && currentCodexCommand !== "copilot") {
+      await setPreferredCodexCommand(currentCodexCommand);
+    }
+  }
+
+  const codexCommand =
+    backendKind === "codex"
+      ? (await getPreferredCodexCommand()).trim() ||
+        (currentRuntimeConfig.backendKind === "codex"
+          ? currentRuntimeConfig.codexBinPath.trim() || currentRuntimeConfig.resolvedCodexBinPath.trim()
+          : "") ||
+        "codex"
+      : "copilot";
+  await bridge.request<RuntimeConfigSnapshot>("runtime.config.update", {
+    workspaceRoot,
+    codexBinPath: codexCommand,
+  });
+
+  if (state.currentConversationId) {
+    conversationRuntime.resetConversation(state.currentConversationId);
+    await clearPersistedConversationThreadId(state.currentConversationId);
+    syncCurrentRuntimeState(state.currentConversationId);
+  } else {
+    state.threadId = undefined;
+    state.activeTurn = null;
+  }
+
+  await triggerCatalogRefresh(workspaceRoot || undefined, { force: true });
+  const runtimeConfig =
+    backendKind === "copilot"
+      ? forceCopilotRuntimeConfig(await readCurrentRuntimeConfig(settings), workspaceRoot)
+      : await readCurrentRuntimeConfig(settings);
+  await persistSelectedModelControls({
+    model: getPreferredModelForRuntimeBackend(runtimeConfig, state.selectedModel),
+    reasoningEffort: state.selectedReasoningEffort,
+    serviceTier: state.selectedServiceTier,
+  });
+
+  return {
+    runtimeConfig,
+    models: state.models,
+    selectedModel: state.selectedModel,
+    selectedReasoningEffort: state.selectedReasoningEffort,
+    selectedServiceTier: state.selectedServiceTier,
+    modelCatalogState: state.modelCatalogState,
+    modelCatalogErrorMessage: state.modelCatalogErrorMessage,
+  };
+}
+
 async function clearPersistedConversationThreadId(conversationId: string): Promise<void> {
   const conversation = (await listConversations()).find((item) => item.id === conversationId);
   if (!conversation?.threadId) {
     if (state.currentDraftConversation?.id === conversationId && state.currentDraftConversation.threadId) {
+      const { threadId: _threadId, ...draftConversationWithoutThreadId } = state.currentDraftConversation;
       state.currentDraftConversation = {
-        ...state.currentDraftConversation,
-        threadId: undefined,
+        ...draftConversationWithoutThreadId,
       };
     }
     return;
   }
 
-  await saveConversation({
-    ...conversation,
-    threadId: undefined,
-  });
+  const { threadId: _threadId, ...conversationWithoutThreadId } = conversation;
+  await saveConversation(conversationWithoutThreadId);
   if (state.currentDraftConversation?.id === conversationId && state.currentDraftConversation.threadId) {
+    const { threadId: _threadId, ...draftConversationWithoutThreadId } = state.currentDraftConversation;
     state.currentDraftConversation = {
-      ...state.currentDraftConversation,
-      threadId: undefined,
+      ...draftConversationWithoutThreadId,
     };
   }
 }

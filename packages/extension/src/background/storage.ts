@@ -30,6 +30,7 @@ const STORAGE_KEYS = {
   settings: "codex.sidepanel.settings",
   conversations: "codex.sidepanel.conversations",
   currentConversationId: "codex.sidepanel.currentConversationId",
+  preferredCodexCommand: "codex.sidepanel.preferredCodexCommand",
   selectedProfileId: "codex.sidepanel.selectedProfileId",
   selectedModel: "codex.sidepanel.selectedModel",
   selectedReasoningEffort: "codex.sidepanel.selectedReasoningEffort",
@@ -135,6 +136,15 @@ export async function resetStoredSettings(): Promise<ExtensionSettings> {
 export async function getSelectedProfileId(): Promise<string | null> {
   const result = (await chrome.storage.local.get(STORAGE_KEYS.selectedProfileId))[STORAGE_KEYS.selectedProfileId];
   return typeof result === "string" ? result : null;
+}
+
+export async function getPreferredCodexCommand(): Promise<string> {
+  const result = (await chrome.storage.local.get(STORAGE_KEYS.preferredCodexCommand))[STORAGE_KEYS.preferredCodexCommand];
+  return typeof result === "string" ? result : "";
+}
+
+export async function setPreferredCodexCommand(command: string): Promise<void> {
+  await chrome.storage.local.set({ [STORAGE_KEYS.preferredCodexCommand]: command.trim() });
 }
 
 export async function setSelectedProfileId(profileId: string): Promise<void> {

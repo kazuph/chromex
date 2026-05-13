@@ -906,6 +906,7 @@ const state = {
   attachmentMenuOpen: false,
   browserActionPermissionMenuOpen: false,
   composerModelMenuOpen: false,
+  runtimeBackendSwitchPending: false,
   appMenuOpen: false,
   settingsDropdownOpen: "" as SettingsSelectId | "",
   settingsDropdownSearch: "",
@@ -3145,6 +3146,57 @@ async function persistSelectedModelControls(): Promise<void> {
   });
 }
 
+async function switchRuntimeBackend(backendKind: "codex" | "copilot"): Promise<void> {
+  if (state.runtimeBackendSwitchPending) {
+    return;
+  }
+  if (backendKind === getSelectedRuntimeBackend()) {
+    state.composerModelMenuOpen = false;
+    renderSync();
+    return;
+  }
+
+  state.runtimeBackendSwitchPending = true;
+  render();
+  try {
+    const result = await sendRuntimeMessage<{
+      runtimeConfig: UiInitPayload["runtimeConfig"];
+      models: CodexModelOption[];
+      selectedModel: string;
+      selectedReasoningEffort: string;
+      selectedServiceTier: string;
+      modelCatalogState: UiInitPayload["modelCatalogState"];
+      modelCatalogErrorMessage: string;
+    }>({
+      type: "runtime.backend.select",
+      backendKind,
+    });
+    state.runtimeConfig = result.runtimeConfig;
+    state.models = result.models;
+    state.selectedModel = result.selectedModel;
+    state.selectedReasoningEffort = result.selectedReasoningEffort;
+    state.selectedServiceTier = result.selectedServiceTier;
+    state.modelCatalogState = result.modelCatalogState;
+    state.modelCatalogErrorMessage = result.modelCatalogErrorMessage ?? "";
+    const previousReasoningEffort = state.selectedReasoningEffort;
+    const previousServiceTier = state.selectedServiceTier;
+    syncSelectedReasoningEffort();
+    if (
+      previousReasoningEffort !== state.selectedReasoningEffort ||
+      previousServiceTier !== state.selectedServiceTier
+    ) {
+      await persistSelectedModelControls();
+    }
+    state.composerModelMenuOpen = false;
+    state.actionStatus = stringsForState().status.connectionRefreshed;
+  } catch (error) {
+    state.actionStatus = toUserFacingRuntimeError(error);
+  } finally {
+    state.runtimeBackendSwitchPending = false;
+    render();
+  }
+}
+
 function getSelectedModelReasoningEfforts(): string[] {
   return getSelectedModelOption()?.reasoningEfforts ?? DEFAULT_REASONING_EFFORTS;
 }
@@ -4564,6 +4616,38 @@ function getActiveRuntimeLabel(runtimeConfig: UiInitPayload["runtimeConfig"]): s
   return runtimeConfig.backendKind === "copilot" ? "GitHub Copilot CLI" : "codex app-server";
 }
 
+function getSelectedRuntimeBackend(): "codex" | "copilot" {
+  return state.runtimeConfig.backendKind === "copilot" ? "copilot" : "codex";
+}
+
+function getRuntimeBackendMenuLabel(backendKind: "codex" | "copilot"): string {
+  return backendKind === "copilot" ? "GitHub Copilot CLI" : "Codex app-server";
+}
+
+function getRuntimeBackendMenuTitle(): string {
+  return "Backend";
+}
+
+function getRuntimeBackendMenuDescription(backendKind: "codex" | "copilot"): string {
+  const locale = getTranslatedUiLocale(state.uiLocale);
+  if (backendKind === "copilot") {
+    if (locale === "ko") {
+      return "GitHub Copilot CLI로 전환하고 모델은 gpt-5.4로 고정합니다.";
+    }
+    if (locale === "ja") {
+      return "GitHub Copilot CLI に切り替え、モデルは gpt-5.4 に固定します。";
+    }
+    return "Switch to GitHub Copilot CLI and pin the model to gpt-5.4.";
+  }
+  if (locale === "ko") {
+    return "Codex app-server로 돌아가 현재 사용 가능한 Codex 모델 목록을 사용합니다.";
+  }
+  if (locale === "ja") {
+    return "codex app-server に戻し、利用可能な Codex モデル一覧を使います。";
+  }
+  return "Switch back to codex app-server and use the available Codex model catalog.";
+}
+
 function getCodexRuntimeSupportCopy(): string {
   const locale = getTranslatedUiLocale(state.uiLocale);
   const runtimeLabel = getActiveRuntimeLabel(state.runtimeConfig);
@@ -4899,9 +4983,12 @@ function renderComposerModelDropdown(
   efforts: string[],
   selectedServiceTier: string,
 ): string {
+  const backendSectionLabel = getRuntimeBackendMenuTitle();
   const intelligenceLabel = strings.labels.intelligence;
   const speedLabel = strings.labels.speed;
   const modelSectionLabel = strings.labels.model;
+  const selectedRuntimeBackend = getSelectedRuntimeBackend();
+  const runtimeBackendDisabled = state.runtimeBackendSwitchPending || Boolean(state.activeTurn);
   const reasoningDescriptions = new Map(
     (selectedModelOption?.reasoningEffortOptions ?? []).map((option) => [option.effort, option.description]),
   );
@@ -4923,6 +5010,31 @@ function renderComposerModelDropdown(
 
   return `
     <div class="composer-model-dropdown" role="menu" aria-label="${escapeAttribute(strings.labels.currentModel)}">
+      <section class="composer-model-menu-section" aria-label="${escapeAttribute(backendSectionLabel)}">
+        <p class="composer-model-menu-title">${escapeHtml(backendSectionLabel)}</p>
+        ${(["codex", "copilot"] as const)
+          .map((backendKind) => {
+            const selected = backendKind === selectedRuntimeBackend;
+            return `
+              <button
+                class="composer-model-menu-row model ${selected ? "selected" : ""}"
+                type="button"
+                role="menuitemradio"
+                aria-checked="${selected ? "true" : "false"}"
+                data-composer-runtime-backend="${backendKind}"
+                ${runtimeBackendDisabled ? "disabled" : ""}
+              >
+                <span class="composer-model-menu-copy">
+                  <strong>${escapeHtml(getRuntimeBackendMenuLabel(backendKind))}</strong>
+                  <span>${escapeHtml(getRuntimeBackendMenuDescription(backendKind))}</span>
+                </span>
+                ${selected ? `<span class="composer-model-menu-check" aria-hidden="true">${renderUiIcon("check")}</span>` : `<span class="composer-model-menu-chevron" aria-hidden="true">${renderUiIcon("chevron-right")}</span>`}
+              </button>
+            `;
+          })
+          .join("")}
+      </section>
+      <div class="composer-model-menu-divider" role="separator"></div>
       <section class="composer-model-menu-section" aria-label="${escapeAttribute(intelligenceLabel)}">
         <p class="composer-model-menu-title">${escapeHtml(intelligenceLabel)}</p>
         ${efforts
@@ -13313,6 +13425,16 @@ function bindEvents(): void {
     });
   });
 
+  root.querySelectorAll<HTMLButtonElement>("[data-composer-runtime-backend]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const backendKind = button.dataset.composerRuntimeBackend;
+      if (backendKind !== "codex" && backendKind !== "copilot") {
+        return;
+      }
+      await switchRuntimeBackend(backendKind);
+    });
+  });
+
   root.querySelectorAll<HTMLButtonElement>("[data-composer-reasoning-option]").forEach((button) => {
     button.addEventListener("click", async () => {
       const effort = button.dataset.composerReasoningOption;
@@ -14909,7 +15031,7 @@ async function sendPrompt(
       resultConversationId !== state.currentConversationId ? getDetachedConversationMessages(resultConversationId) : state.messages;
     removeAssistantFailureMessageInMessages(successMessages, createAssistantFailureMessageId(clientRequestId));
     removeAssistantFailureMessagesForLatestUserTurn(successMessages);
-    state.initError = null;
+    state.initError = "";
     if (result.threadId) {
       rememberConversationThreadId(resultConversationId, result.threadId);
     }

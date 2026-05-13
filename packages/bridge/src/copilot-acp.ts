@@ -1,4 +1,4 @@
-import { spawn, type ChildProcessByStdio } from "node:child_process";
+import { spawn, spawnSync, type ChildProcessByStdio } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { relative, resolve } from "node:path";
 import type { Readable, Writable } from "node:stream";
@@ -123,7 +123,7 @@ export class CopilotAcpRunner {
     const processHandle = spawn(this.#command, args, {
       cwd: options.cwd,
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env },
+      env: createCopilotProcessEnv(process.env),
       ...(process.platform === "win32" ? { shell: true } : {}),
     }) as ChildProcessByStdio<Writable, Readable, Readable>;
 
@@ -356,6 +356,50 @@ function jsonRpcError(id: number | string, code: number, message: string): JsonR
       message,
     },
   };
+}
+
+export function createCopilotProcessEnv(
+  baseEnv: NodeJS.ProcessEnv = process.env,
+  options: {
+    spawnSyncImpl?: typeof spawnSync;
+  } = {},
+): NodeJS.ProcessEnv {
+  const env = { ...baseEnv };
+  if (env.COPILOT_GITHUB_TOKEN || env.GH_TOKEN || env.GITHUB_TOKEN) {
+    return env;
+  }
+
+  const token = readGhAuthToken(baseEnv, options.spawnSyncImpl ?? spawnSync);
+  if (token) {
+    env.GH_TOKEN = token;
+  }
+  return env;
+}
+
+function readGhAuthToken(baseEnv: NodeJS.ProcessEnv, spawnSyncImpl: typeof spawnSync): string {
+  for (const command of resolveGitHubCliCandidates()) {
+    try {
+      const result = spawnSyncImpl(command, ["auth", "token"], {
+        env: { ...baseEnv },
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 3_000,
+      });
+      if (result.status === 0) {
+        return result.stdout.trim();
+      }
+    } catch {
+      // try the next candidate
+    }
+  }
+  return "";
+}
+
+function resolveGitHubCliCandidates(): string[] {
+  if (process.platform === "win32") {
+    return ["gh"];
+  }
+  return ["gh", "/opt/homebrew/bin/gh", "/usr/local/bin/gh"];
 }
 
 export function normalizeCopilotModel(model: string | null | undefined): string | undefined {

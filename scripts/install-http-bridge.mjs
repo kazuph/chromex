@@ -97,17 +97,31 @@ console.log(`Mode: ${sourceMode ? "source-checkout" : "packaged"}`);
 console.log("Chrome restart is not required. Reopen the side panel or press Check connection.");
 
 async function writeLauncher({ launcherPath, hostPath, bridgeEntryPath, allowedOrigins }) {
+  const forwardedLauncherEnv = [
+    "COPILOT_AGENT_SESSION_ID",
+    "COPILOT_CLI",
+    "COPILOT_CLI_BINARY_VERSION",
+    "COPILOT_LOADER_PID",
+    "COPILOT_RUN_APP",
+  ]
+    .map((key) => [key, process.env[key]?.trim() ?? ""])
+    .filter(([, value]) => value);
   const launcherBody = [
     "#!/bin/sh",
     `export BRIDGE_ENTRY="${bridgeEntryPath}"`,
     `export BRIDGE_ALLOWED_ORIGINS="${allowedOrigins.join(",")}"`,
     `export BRIDGE_HTTP_PORT="${HTTP_BRIDGE_PORT}"`,
     `export PATH="${dirname(process.execPath)}:$PATH"`,
+    ...forwardedLauncherEnv.map(([key, value]) => `export ${key}="${escapeShellDoubleQuoted(value)}"`),
     `exec "${process.execPath}" "${hostPath}"`,
     "",
   ].join("\n");
   await writeFile(launcherPath, launcherBody, { mode: 0o755 });
   await chmod(launcherPath, 0o755);
+}
+
+function escapeShellDoubleQuoted(value) {
+  return String(value).replace(/["\\$`]/gu, "\\$&");
 }
 
 function createLaunchAgentPlist({ launcherPath, stdoutPath, stderrPath, workingDirectory }) {

@@ -14905,6 +14905,11 @@ async function sendPrompt(
       return;
     }
     const resultConversationId = result.currentConversationId ?? conversationIdAtStart;
+    const successMessages =
+      resultConversationId !== state.currentConversationId ? getDetachedConversationMessages(resultConversationId) : state.messages;
+    removeAssistantFailureMessageInMessages(successMessages, createAssistantFailureMessageId(clientRequestId));
+    removeAssistantFailureMessagesForLatestUserTurn(successMessages);
+    state.initError = null;
     if (result.threadId) {
       rememberConversationThreadId(resultConversationId, result.threadId);
     }
@@ -16282,6 +16287,37 @@ function upsertAssistantFailureMessageInMessages(
   }
   existing.text = next.text;
   return true;
+}
+
+function removeAssistantFailureMessageInMessages(messages: ConversationMessage[], id: string): boolean {
+  const index = messages.findIndex((message) => message.id === id && message.role === "assistant");
+  if (index < 0) {
+    return false;
+  }
+  messages.splice(index, 1);
+  return true;
+}
+
+function removeAssistantFailureMessagesForLatestUserTurn(messages: ConversationMessage[]): boolean {
+  let latestUserMessageIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === "user") {
+      latestUserMessageIndex = index;
+      break;
+    }
+  }
+  if (latestUserMessageIndex < 0) {
+    return false;
+  }
+  let removed = false;
+  for (let index = messages.length - 1; index > latestUserMessageIndex; index -= 1) {
+    const message = messages[index];
+    if (message?.role === "assistant" && message.id.startsWith("assistant-error-")) {
+      messages.splice(index, 1);
+      removed = true;
+    }
+  }
+  return removed;
 }
 
 function findAssistantFailureDuplicateForLatestUserTurn(

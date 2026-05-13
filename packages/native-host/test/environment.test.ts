@@ -10,6 +10,9 @@ describe("createBridgeProcessEnv", () => {
         HOME: "/Users/example",
         COMSPEC: "C:\\Windows\\System32\\cmd.exe",
         HTTPS_PROXY: "http://proxy.internal:8080",
+        COPILOT_AGENT_SESSION_ID: "session-123",
+        COPILOT_CLI: "1",
+        GH_TOKEN: "gh-token",
         OPENAI_API_KEY: "test-openai-key",
         AWS_SECRET_ACCESS_KEY: "should-not-leak",
       },
@@ -20,6 +23,9 @@ describe("createBridgeProcessEnv", () => {
     expect(env.HOME).toBe("/Users/example");
     expect(env.ComSpec).toBe("C:\\Windows\\System32\\cmd.exe");
     expect(env.HTTPS_PROXY).toBe("http://proxy.internal:8080");
+    expect(env.COPILOT_AGENT_SESSION_ID).toBe("session-123");
+    expect(env.COPILOT_CLI).toBe("1");
+    expect(env.GH_TOKEN).toBe("gh-token");
     expect(env.OPENAI_API_KEY).toBeUndefined();
     expect(env.CODEX_BIN).toBe("/opt/codex/bin/codex");
     expect(env.AWS_SECRET_ACCESS_KEY).toBeUndefined();

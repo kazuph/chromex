@@ -300,9 +300,12 @@ const state = {
   lastAutoCompactBucket: null as number | null,
 };
 
+const pendingPromptClientRequestIds = new Set<string>();
+
 bridge.subscribe((event) => {
   const bridgeEvent = event as { type?: string };
   let eventConversationId: string | null = resolveBridgeEventConversationId(event, conversationRuntime);
+  let suppressBroadcast = false;
   if (bridgeEvent.type === "turn.started") {
     const activeTurn = (event as { activeTurn: CodexActiveTurn }).activeTurn;
     if (eventConversationId) {
@@ -320,13 +323,14 @@ bridge.subscribe((event) => {
       state.activeTurn = null;
     }
   } else if (bridgeEvent.type === "turn.failed") {
-    const failed = event as { threadId: string; turnId: string };
+    const failed = event as { threadId: string; turnId: string; clientRequestId?: string };
     eventConversationId = conversationRuntime.completeTurn(failed.threadId, failed.turnId) ?? eventConversationId;
     if (eventConversationId) {
       syncCurrentRuntimeState(eventConversationId);
     } else if (state.activeTurn?.turnId === failed.turnId) {
       state.activeTurn = null;
     }
+    suppressBroadcast = typeof failed.clientRequestId === "string" && pendingPromptClientRequestIds.has(failed.clientRequestId);
   } else if (bridgeEvent.type === "turn.plan.updated") {
     const plan = (event as { plan: CodexTurnPlan }).plan;
     state.latestPlan = plan;
@@ -340,7 +344,9 @@ bridge.subscribe((event) => {
   } else if (bridgeEvent.type === "catalog.updated") {
     void triggerCatalogRefresh();
   }
-  broadcastBridgeEvent(annotateBridgeEventConversation(event, eventConversationId));
+  if (!suppressBroadcast) {
+    broadcastBridgeEvent(annotateBridgeEventConversation(event, eventConversationId));
+  }
 });
 
 const CONTEXT_MENU_ITEMS: chrome.contextMenus.CreateProperties[] = [
@@ -1410,6 +1416,12 @@ async function handlePromptRoutePreview(payload: PromptRequestPayload): Promise<
 }
 
 async function handlePromptSend(payload: PromptRequestPayload) {
+  const pendingClientRequestId =
+    typeof payload.clientRequestId === "string" && payload.clientRequestId ? payload.clientRequestId : null;
+  if (pendingClientRequestId) {
+    pendingPromptClientRequestIds.add(pendingClientRequestId);
+  }
+  try {
   const runtime = await ensurePromptConversationRuntime(payload);
   const conversationId = runtime.conversationId;
   payload.conversationId = conversationId;
@@ -1540,9 +1552,9 @@ async function handlePromptSend(payload: PromptRequestPayload) {
   }
 
   const cwd = normalizeConfiguredPath(settings.workspaceRoot);
-  const sendPromptTurn = async (modelOverride?: string) => {
+  const sendPromptTurn = async (modelOverride?: string, options: { forceNewThread?: boolean } = {}) => {
     emitPromptStatus(payload, "waiting-for-codex");
-    let threadId = conversationRuntime.get(conversationId).threadId;
+    let threadId = options.forceNewThread ? undefined : conversationRuntime.get(conversationId).threadId;
     if (!threadId) {
       const opened = await bridge.request<{ threadId: string }>("session.open", {
         ...(cwd ? { cwd } : {}),
@@ -1592,7 +1604,9 @@ async function handlePromptSend(payload: PromptRequestPayload) {
     if (!fallbackRuntimeConfig) {
       throw error;
     }
-    promptTurn = await sendPromptTurn(getPreferredModelForRuntimeBackend(fallbackRuntimeConfig, prepared.selectedModel));
+    promptTurn = await sendPromptTurn(getPreferredModelForRuntimeBackend(fallbackRuntimeConfig, prepared.selectedModel), {
+      forceNewThread: true,
+    });
   }
   const result = promptTurn.result;
   const cancellationAfterPrompt = await getPromptCancellationResponse(payload);
@@ -1626,6 +1640,11 @@ async function handlePromptSend(payload: PromptRequestPayload) {
     settings,
     currentConversationId: conversationId,
   };
+  } finally {
+    if (pendingClientRequestId) {
+      pendingPromptClientRequestIds.delete(pendingClientRequestId);
+    }
+  }
 }
 
 async function maybeAutoCompactBeforePrompt(
@@ -1795,6 +1814,7 @@ async function maybeAutoSwitchPromptRuntimeToCopilot(input: {
   state.selectedModel = COPILOT_FIXED_MODEL_ID;
   await setSelectedModel(COPILOT_FIXED_MODEL_ID);
   conversationRuntime.resetConversation(input.conversationId);
+  await clearPersistedConversationThreadId(input.conversationId);
   syncCurrentRuntimeState(input.conversationId);
   await triggerCatalogRefresh(workspaceRoot || undefined, { force: true });
   const refreshedRuntimeConfig = forceCopilotRuntimeConfig(await readCurrentRuntimeConfig(input.settings), workspaceRoot);
@@ -1807,6 +1827,30 @@ async function maybeAutoSwitchPromptRuntimeToCopilot(input: {
     nextBackendKind: refreshedRuntimeConfig.backendKind ?? null,
   });
   return updatedRuntimeConfig;
+}
+
+async function clearPersistedConversationThreadId(conversationId: string): Promise<void> {
+  const conversation = (await listConversations()).find((item) => item.id === conversationId);
+  if (!conversation?.threadId) {
+    if (state.currentDraftConversation?.id === conversationId && state.currentDraftConversation.threadId) {
+      state.currentDraftConversation = {
+        ...state.currentDraftConversation,
+        threadId: undefined,
+      };
+    }
+    return;
+  }
+
+  await saveConversation({
+    ...conversation,
+    threadId: undefined,
+  });
+  if (state.currentDraftConversation?.id === conversationId && state.currentDraftConversation.threadId) {
+    state.currentDraftConversation = {
+      ...state.currentDraftConversation,
+      threadId: undefined,
+    };
+  }
 }
 
 async function handlePromptCancel(clientRequestId?: unknown, threadId?: unknown, turnId?: unknown) {

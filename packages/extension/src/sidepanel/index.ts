@@ -16852,7 +16852,7 @@ function appendStreamedImageToWorkflowMessage(
 }
 
 function shouldKeepTrailingImageWorkflowPlaceholder(event: BridgeImageWorkflowEvent): boolean {
-  return event.workflow === "generated-image" || event.workflow === "infographic" || event.workflow === "slide-images";
+  return event.workflow === "generated-image" || event.workflow === "slide-images";
 }
 
 function isTrailingImageWorkflowPlaceholder(image: ConversationMessageImage): boolean {

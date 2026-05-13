@@ -27,6 +27,21 @@ type RelayOptions = {
   enableNativeMessaging?: boolean;
 };
 
+const DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS = 30_000;
+const IMAGE_EDIT_BRIDGE_RESPONSE_TIMEOUT_MS = 20 * 60 * 1000;
+const IMAGE_GENERATE_BRIDGE_RESPONSE_TIMEOUT_MS = 60 * 60 * 1000;
+
+export function getBridgeResponseTimeoutMs(method: string): number {
+  switch (method) {
+    case "image.edit.start":
+      return IMAGE_EDIT_BRIDGE_RESPONSE_TIMEOUT_MS;
+    case "image.generate.start":
+      return IMAGE_GENERATE_BRIDGE_RESPONSE_TIMEOUT_MS;
+    default:
+      return DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS;
+  }
+}
+
 export class NativeHostRelay {
   readonly #decoder = new NativeMessageStreamDecoder();
   #bridge: ChildProcessByStdio<Writable, Readable, null> | undefined;
@@ -77,11 +92,12 @@ export class NativeHostRelay {
 
   async sendToBridge(message: BridgeMessage): Promise<unknown> {
     return new Promise((resolve, reject) => {
+      const timeoutMs = getBridgeResponseTimeoutMs(message.method);
       const timeout = setTimeout(() => {
         if (this.#pendingResponses.delete(message.id)) {
           reject(new Error("Request timeout"));
         }
-      }, 30_000);
+      }, timeoutMs);
 
       const handler = (response: BridgeResponse) => {
         clearTimeout(timeout);

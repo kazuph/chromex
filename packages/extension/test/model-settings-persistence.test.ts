@@ -20,11 +20,14 @@ function extractBetween(source: string, start: string, end: string): string {
 describe("model settings persistence", () => {
   test("persists model, reasoning effort, and service tier in extension storage", () => {
     expect(storageSource).toContain("preferredCodexCommand: \"codex.sidepanel.preferredCodexCommand\"");
+    expect(storageSource).toContain("preferredRuntimeBackend: \"codex.sidepanel.preferredRuntimeBackend\"");
     expect(storageSource).toContain("selectedModel: \"codex.sidepanel.selectedModel\"");
     expect(storageSource).toContain("selectedReasoningEffort: \"codex.sidepanel.selectedReasoningEffort\"");
     expect(storageSource).toContain("selectedServiceTier: \"codex.sidepanel.selectedServiceTier\"");
     expect(storageSource).toContain("function getPreferredCodexCommand");
     expect(storageSource).toContain("function setPreferredCodexCommand");
+    expect(storageSource).toContain("function getPreferredRuntimeBackend");
+    expect(storageSource).toContain("function setPreferredRuntimeBackend");
     expect(storageSource).toContain("function getSelectedReasoningEffort");
     expect(storageSource).toContain("function setSelectedReasoningEffort");
     expect(storageSource).toContain("function getSelectedServiceTier");
@@ -47,6 +50,9 @@ describe("model settings persistence", () => {
     expect(typesSource).toContain("selectedServiceTier: string;");
     expect(ensureStateLoaded).toContain("getSelectedReasoningEffort");
     expect(ensureStateLoaded).toContain("getSelectedServiceTier");
+    expect(backgroundSource).toContain("getPreferredRuntimeBackend");
+    expect(backgroundSource).toContain("getPreferredCodexCommand");
+    expect(backgroundSource).toContain('preferredRuntimeBackend === "copilot"');
     expect(buildUiInitPayload).toContain("selectedReasoningEffort: state.selectedReasoningEffort");
     expect(buildUiInitPayload).toContain("selectedServiceTier: state.selectedServiceTier");
     expect(ensureStateLoaded).not.toContain("state.selectedModel = currentConversation.model");

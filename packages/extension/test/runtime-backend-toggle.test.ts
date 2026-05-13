@@ -34,6 +34,7 @@ describe("runtime backend toggle", () => {
     expect(backgroundSource).toContain('case "runtime.backend.select"');
     expect(handleRuntimeBackendSelectSource).toContain('bridge.request<RuntimeConfigSnapshot>("runtime.config.update"');
     expect(handleRuntimeBackendSelectSource).toContain("setPreferredCodexCommand");
+    expect(handleRuntimeBackendSelectSource).toContain("setPreferredRuntimeBackend");
     expect(handleRuntimeBackendSelectSource).toContain("getPreferredCodexCommand");
     expect(handleRuntimeBackendSelectSource).toContain("clearPersistedConversationThreadId");
     expect(handleRuntimeBackendSelectSource).toContain("triggerCatalogRefresh");

@@ -69,6 +69,7 @@ import {
   deleteConversation,
   getCurrentConversation,
   getPreferredCodexCommand,
+  getPreferredRuntimeBackend,
   getSelectedModel,
   getSelectedProfileId,
   getSelectedReasoningEffort,
@@ -86,6 +87,7 @@ import {
   resetStoredSettings,
   setCurrentConversationId,
   setPreferredCodexCommand,
+  setPreferredRuntimeBackend,
   setSelectedModel,
   setSelectedProfileId,
   setSelectedReasoningEffort,
@@ -1872,6 +1874,7 @@ async function handleRuntimeBackendSelect(backendKind: "codex" | "copilot"): Pro
     workspaceRoot,
     codexBinPath: codexCommand,
   });
+  await setPreferredRuntimeBackend(backendKind);
 
   if (state.currentConversationId) {
     conversationRuntime.resetConversation(state.currentConversationId);
@@ -5038,8 +5041,15 @@ async function handleSettingsUpdate(patch: Partial<ExtensionSettings>): Promise<
 }
 
 async function syncBridgeRuntimeConfig(settings: ExtensionSettings): Promise<void> {
+  const preferredRuntimeBackend = await getPreferredRuntimeBackend();
+  const preferredCodexCommand = await getPreferredCodexCommand();
+  const configuredCommand =
+    preferredRuntimeBackend === "copilot"
+      ? "copilot"
+      : preferredCodexCommand.trim() || undefined;
   await bridge.request("runtime.config.update", {
     workspaceRoot: normalizeConfiguredPath(settings.workspaceRoot),
+    ...(configuredCommand ? { codexBinPath: configuredCommand } : {}),
   });
 }
 

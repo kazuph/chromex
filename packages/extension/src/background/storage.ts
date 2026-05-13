@@ -31,6 +31,7 @@ const STORAGE_KEYS = {
   conversations: "codex.sidepanel.conversations",
   currentConversationId: "codex.sidepanel.currentConversationId",
   preferredCodexCommand: "codex.sidepanel.preferredCodexCommand",
+  preferredRuntimeBackend: "codex.sidepanel.preferredRuntimeBackend",
   selectedProfileId: "codex.sidepanel.selectedProfileId",
   selectedModel: "codex.sidepanel.selectedModel",
   selectedReasoningEffort: "codex.sidepanel.selectedReasoningEffort",
@@ -145,6 +146,15 @@ export async function getPreferredCodexCommand(): Promise<string> {
 
 export async function setPreferredCodexCommand(command: string): Promise<void> {
   await chrome.storage.local.set({ [STORAGE_KEYS.preferredCodexCommand]: command.trim() });
+}
+
+export async function getPreferredRuntimeBackend(): Promise<"codex" | "copilot" | ""> {
+  const result = (await chrome.storage.local.get(STORAGE_KEYS.preferredRuntimeBackend))[STORAGE_KEYS.preferredRuntimeBackend];
+  return result === "codex" || result === "copilot" ? result : "";
+}
+
+export async function setPreferredRuntimeBackend(backendKind: "codex" | "copilot"): Promise<void> {
+  await chrome.storage.local.set({ [STORAGE_KEYS.preferredRuntimeBackend]: backendKind });
 }
 
 export async function setSelectedProfileId(profileId: string): Promise<void> {

@@ -2651,17 +2651,11 @@ export class AppServerCodexPlane implements BridgeCodexPlane {
   }
 
   async #materializeInlineImage(dataUrl: string, contextIndex: number, assetIndex: number): Promise<string> {
-    const match = /^data:(.+?);base64,(.+)$/u.exec(dataUrl);
-    if (!match) {
-      throw new Error("Unsupported inline vision asset. Expected a base64 data URL.");
-    }
-
-    const mimeType = match[1] ?? "image/png";
-    const base64 = match[2] ?? "";
+    const { mimeType, bytes } = decodeInlineVisionAssetDataUrl(dataUrl);
     const extension = mimeTypeToExtension(mimeType);
     const tempDir = await this.#tempDirPromise;
     const filePath = join(tempDir, `context-${contextIndex + 1}-asset-${assetIndex + 1}.${extension}`);
-    await writeFile(filePath, Buffer.from(base64, "base64"));
+    await writeFile(filePath, bytes);
     return filePath;
   }
 
@@ -3700,17 +3694,11 @@ export class CodexImagePlane implements BridgeImagePlane {
   }
 
   async #materializeInlineImage(dataUrl: string, contextIndex: number, assetIndex: number): Promise<string> {
-    const match = /^data:(.+?);base64,(.+)$/u.exec(dataUrl);
-    if (!match) {
-      throw new Error("Unsupported inline vision asset. Expected a base64 data URL.");
-    }
-
-    const mimeType = match[1] ?? "image/png";
-    const base64 = match[2] ?? "";
+    const { mimeType, bytes } = decodeInlineVisionAssetDataUrl(dataUrl);
     const extension = mimeTypeToExtension(mimeType);
     const tempDir = await this.#tempDirPromise;
     const filePath = join(tempDir, `context-${contextIndex + 1}-asset-${assetIndex + 1}.${extension}`);
-    await writeFile(filePath, Buffer.from(base64, "base64"));
+    await writeFile(filePath, bytes);
     return filePath;
   }
 
@@ -3927,8 +3915,40 @@ function normalizeOptionalCwd(value: string | undefined | null): string | undefi
   return value?.trim() ? value.trim() : undefined;
 }
 
+export function decodeInlineVisionAssetDataUrl(dataUrl: string): { mimeType: string; bytes: Buffer } {
+  const trimmed = dataUrl.trim();
+  if (!trimmed.startsWith("data:")) {
+    throw new Error("Unsupported inline vision asset. Expected a data URL.");
+  }
+  const commaIndex = trimmed.indexOf(",");
+  if (commaIndex < 0) {
+    throw new Error("Unsupported inline vision asset. Expected a data URL payload.");
+  }
+  const metadata = trimmed.slice(5, commaIndex);
+  const payload = trimmed.slice(commaIndex + 1);
+  const metadataParts = metadata.split(";");
+  const rawMimeType = metadataParts[0]?.trim().toLowerCase() ?? "";
+  const mimeType = rawMimeType || "text/plain";
+  const isBase64 = metadataParts.slice(1).some((part) => part.trim().toLowerCase() === "base64");
+  if (!payload) {
+    throw new Error("Unsupported inline vision asset. Expected a non-empty data URL payload.");
+  }
+  if (isBase64) {
+    return {
+      mimeType,
+      bytes: Buffer.from(payload, "base64"),
+    };
+  }
+  return {
+    mimeType,
+    bytes: Buffer.from(decodeURIComponent(payload), "utf8"),
+  };
+}
+
 function mimeTypeToExtension(mimeType: string): string {
   switch (mimeType) {
+    case "image/svg+xml":
+      return "svg";
     case "image/jpeg":
       return "jpg";
     case "image/webp":

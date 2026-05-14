@@ -11,7 +11,7 @@ import {
   type BridgeEvent,
   type PromptSendParams,
 } from "../src/index.js";
-import { normalizeLocalImagePath } from "../src/codex-plane.js";
+import { decodeInlineVisionAssetDataUrl, normalizeLocalImagePath } from "../src/codex-plane.js";
 import { BridgeImageAssetStore, isBridgeImageAssetRef } from "../src/image-assets.js";
 import type { ProfileTemplate } from "@codex-sidepanel/shared";
 
@@ -2050,6 +2050,22 @@ describe("AppServerCodexPlane", () => {
       4,
       5,
     ]);
+  });
+});
+
+describe("decodeInlineVisionAssetDataUrl", () => {
+  test("accepts base64 image data URLs", () => {
+    const result = decodeInlineVisionAssetDataUrl("data:image/png;base64,YWJj");
+
+    expect(result.mimeType).toBe("image/png");
+    expect(result.bytes.toString("utf8")).toBe("abc");
+  });
+
+  test("accepts percent-encoded inline image data URLs", () => {
+    const result = decodeInlineVisionAssetDataUrl("data:image/svg+xml,%3Csvg%20viewBox%3D%220%200%201%201%22%3E%3C%2Fsvg%3E");
+
+    expect(result.mimeType).toBe("image/svg+xml");
+    expect(result.bytes.toString("utf8")).toBe('<svg viewBox="0 0 1 1"></svg>');
   });
 });
 
